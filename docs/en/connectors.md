@@ -151,6 +151,70 @@ connectionStringSecretRef:
   key: connectionString
 ```
 
+### TLS Certificates from Secrets
+
+For TLS configuration, the operator automatically determines whether the value from the secret is a file path or certificate content.
+
+**How it works:**
+- If the value starts with `-----BEGIN` (e.g., `-----BEGIN CERTIFICATE-----` or `-----BEGIN PRIVATE KEY-----`), the operator recognizes it as certificate content and creates a temporary file
+- If the value doesn't start with `-----BEGIN` and exists as a file, it's used as a file path
+- If the value doesn't start with `-----BEGIN` and the file doesn't exist, it's also treated as certificate content
+
+**Supported formats:**
+1. **Certificate content** (PEM format) - stored in `stringData` or decoded from `data`
+2. **Base64-encoded content** - stored in secret's `data` field (Kubernetes automatically decodes it)
+3. **File path** - path to an existing certificate file
+
+**Example:**
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kafka-tls-certs
+type: Opaque
+stringData:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+  client.crt: |
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+  client.key: |
+    -----BEGIN PRIVATE KEY-----
+    ...
+    -----END PRIVATE KEY-----
+---
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-tls-example
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - secure-kafka:9093
+      topic: secure-topic
+      tls:
+        caSecretRef:
+          name: kafka-tls-certs
+          key: ca.crt
+        certSecretRef:
+          name: kafka-tls-certs
+          key: client.crt
+        keySecretRef:
+          name: kafka-tls-certs
+          key: client.key
+```
+
+**Important:**
+- Temporary files are automatically created for certificate content and cleaned up after use
+- When using base64-encoded values in the `data` field, Kubernetes automatically decodes them when reading
+- Ensure certificates are in proper PEM format with `-----BEGIN` and `-----END` headers
+
 ### Security
 
 - **RBAC**: The operator requires permissions to read secrets (`get`, `list`, `watch`)
@@ -188,6 +252,24 @@ Ensure:
 1. Secret exists in the specified namespace
 2. The specified key exists in the secret
 3. The operator has permissions to read secrets
+
+#### TLS Certificate Issues
+
+If you encounter errors with TLS certificates:
+
+1. **"file name too long" error**: Ensure the certificate is stored correctly in the secret:
+   - If using `stringData`, the certificate should be in PEM format with `-----BEGIN` and `-----END` headers
+   - If using `data` (base64), ensure the value is correctly encoded
+   - The operator automatically detects certificate content by the `-----BEGIN` prefix
+
+2. **"failed to read CA file" error**: Check the certificate format:
+   ```bash
+   # Check secret content
+   kubectl get secret <secret-name> -n <namespace> -o jsonpath='{.data.ca\.crt}' | base64 -d
+   ```
+   Ensure the certificate starts with `-----BEGIN CERTIFICATE-----`
+
+3. **Temporary file creation error**: Check operator permissions to create files in the temporary directory
 
 For complete connector documentation, see the [Russian version](../ru/connectors.md).
 

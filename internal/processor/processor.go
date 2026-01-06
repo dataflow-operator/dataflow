@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/dataflow-operator/dataflow/api/v1"
+	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/connectors"
 	"github.com/dataflow-operator/dataflow/internal/transformers"
 	"github.com/dataflow-operator/dataflow/internal/types"

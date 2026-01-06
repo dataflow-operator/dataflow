@@ -18,15 +18,19 @@ package connectors
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"hash"
 	"os"
 	"sync"
 
 	"github.com/IBM/sarama"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/xdg-go/scram"
 )
 
 // KafkaSourceConnector implements SourceConnector for Kafka
@@ -99,8 +103,14 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 		switch k.config.SASL.Mechanism {
 		case "scram-sha-256":
 			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+				return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
+			}
 		case "scram-sha-512":
 			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+				return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
+			}
 		}
 	}
 
@@ -284,8 +294,14 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 		switch k.config.SASL.Mechanism {
 		case "scram-sha-256":
 			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+				return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
+			}
 		case "scram-sha-512":
 			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+				return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
+			}
 		}
 	}
 
@@ -297,6 +313,40 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 	k.producer = producer
 	return nil
 }
+
+// XDGSCRAMClient implements sarama.SCRAMClient for SCRAM authentication
+type XDGSCRAMClient struct {
+	*scram.Client
+	*scram.ClientConversation
+	scram.HashGeneratorFcn
+}
+
+// Begin prepares the client for the SCRAM exchange
+func (x *XDGSCRAMClient) Begin(userName, password, authzID string) (err error) {
+	x.Client, err = x.HashGeneratorFcn.NewClient(userName, password, authzID)
+	if err != nil {
+		return err
+	}
+	x.ClientConversation = x.Client.NewConversation()
+	return nil
+}
+
+// Step continues the SCRAM exchange
+func (x *XDGSCRAMClient) Step(challenge string) (response string, err error) {
+	response, err = x.ClientConversation.Step(challenge)
+	return
+}
+
+// Done returns true if the SCRAM exchange is complete
+func (x *XDGSCRAMClient) Done() bool {
+	return x.ClientConversation.Done()
+}
+
+// SHA256 hash generator function for SCRAM-SHA-256
+var SHA256 scram.HashGeneratorFcn = func() hash.Hash { return sha256.New() }
+
+// SHA512 hash generator function for SCRAM-SHA-512
+var SHA512 scram.HashGeneratorFcn = func() hash.Hash { return sha512.New() }
 
 // Write writes messages to Kafka
 func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {

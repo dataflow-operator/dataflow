@@ -464,6 +464,13 @@ func (r *SecretResolver) resolveRabbitMQSinkSpec(ctx context.Context, namespace 
 	return nil
 }
 
+// isCertificateContent checks if the value is certificate/key content (starts with -----BEGIN)
+// rather than a file path
+func isCertificateContent(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return strings.HasPrefix(trimmed, "-----BEGIN")
+}
+
 func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string, config *dataflowv1.TLSConfig) error {
 	if config.CertSecretRef != nil {
 		value, err := r.ResolveSecretValue(ctx, namespace, config.CertSecretRef)
@@ -471,8 +478,8 @@ func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string,
 			return err
 		}
 		// Check if value is a file path or certificate content
-		// If it doesn't exist as a file, treat it as certificate content and create temp file
-		if _, err := os.Stat(value); os.IsNotExist(err) {
+		// If it starts with -----BEGIN, it's certificate content
+		if isCertificateContent(value) {
 			// Value is certificate content, create temporary file
 			tempFile, err := r.createTempFile("cert-", []byte(value))
 			if err != nil {
@@ -480,8 +487,18 @@ func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string,
 			}
 			config.CertFile = tempFile
 		} else {
-			// Value is a file path
-			config.CertFile = value
+			// Check if it's a valid file path
+			if _, err := os.Stat(value); err == nil {
+				// Value is a file path
+				config.CertFile = value
+			} else {
+				// Treat as certificate content if file doesn't exist
+				tempFile, err := r.createTempFile("cert-", []byte(value))
+				if err != nil {
+					return fmt.Errorf("failed to create temporary cert file: %w", err)
+				}
+				config.CertFile = tempFile
+			}
 		}
 	}
 
@@ -491,7 +508,8 @@ func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string,
 			return err
 		}
 		// Check if value is a file path or key content
-		if _, err := os.Stat(value); os.IsNotExist(err) {
+		// If it starts with -----BEGIN, it's key content
+		if isCertificateContent(value) {
 			// Value is key content, create temporary file
 			tempFile, err := r.createTempFile("key-", []byte(value))
 			if err != nil {
@@ -499,8 +517,18 @@ func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string,
 			}
 			config.KeyFile = tempFile
 		} else {
-			// Value is a file path
-			config.KeyFile = value
+			// Check if it's a valid file path
+			if _, err := os.Stat(value); err == nil {
+				// Value is a file path
+				config.KeyFile = value
+			} else {
+				// Treat as key content if file doesn't exist
+				tempFile, err := r.createTempFile("key-", []byte(value))
+				if err != nil {
+					return fmt.Errorf("failed to create temporary key file: %w", err)
+				}
+				config.KeyFile = tempFile
+			}
 		}
 	}
 
@@ -510,7 +538,8 @@ func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string,
 			return err
 		}
 		// Check if value is a file path or CA certificate content
-		if _, err := os.Stat(value); os.IsNotExist(err) {
+		// If it starts with -----BEGIN, it's CA certificate content
+		if isCertificateContent(value) {
 			// Value is CA certificate content, create temporary file
 			tempFile, err := r.createTempFile("ca-", []byte(value))
 			if err != nil {
@@ -518,8 +547,18 @@ func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string,
 			}
 			config.CAFile = tempFile
 		} else {
-			// Value is a file path
-			config.CAFile = value
+			// Check if it's a valid file path
+			if _, err := os.Stat(value); err == nil {
+				// Value is a file path
+				config.CAFile = value
+			} else {
+				// Treat as CA certificate content if file doesn't exist
+				tempFile, err := r.createTempFile("ca-", []byte(value))
+				if err != nil {
+					return fmt.Errorf("failed to create temporary CA file: %w", err)
+				}
+				config.CAFile = tempFile
+			}
 		}
 	}
 
@@ -590,5 +629,3 @@ func (r *SecretResolver) resolveSASLConfig(ctx context.Context, namespace string
 
 	return nil
 }
-
-

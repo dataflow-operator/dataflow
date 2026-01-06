@@ -116,6 +116,40 @@ kubectl apply -f config/samples/kafka-to-postgres-secrets.yaml
 
 For TLS configuration, the operator automatically determines whether the value from the secret is a file path or certificate content.
 
+**How it works:**
+- If the value starts with `-----BEGIN` (e.g., `-----BEGIN CERTIFICATE-----`), the operator recognizes it as certificate content and creates a temporary file
+- If the value doesn't start with `-----BEGIN` and exists as a file, it's used as a file path
+- Certificates can be stored in secrets either as plain text (PEM format) or as base64-encoded values (in the secret's `data` field)
+
+**Supported formats:**
+
+1. **Certificate content** (PEM format):
+   ```yaml
+   ca.crt: |
+     -----BEGIN CERTIFICATE-----
+     MIIDXTCCAkWgAwIBAgIJAK...
+     -----END CERTIFICATE-----
+   ```
+
+2. **Base64-encoded content** (in secret's `data` field):
+   ```yaml
+   apiVersion: v1
+   kind: Secret
+   metadata:
+     name: kafka-tls-certs
+   type: Opaque
+   data:
+     ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t...  # base64
+   ```
+   Kubernetes automatically decodes base64 when reading from the secret.
+
+3. **File path**:
+   ```yaml
+   ca.crt: /etc/kafka/ca.crt
+   ```
+
+**Example:**
+
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -144,6 +178,11 @@ spec:
           name: kafka-tls-certs
           key: ca.crt
 ```
+
+**Important:**
+- Temporary files are automatically created for certificate content and cleaned up after use
+- When using base64-encoded values in the `data` field, Kubernetes automatically decodes them when reading
+- Ensure certificates are in proper PEM format with `-----BEGIN` and `-----END` headers
 
 ### Benefits of Using SecretRef
 

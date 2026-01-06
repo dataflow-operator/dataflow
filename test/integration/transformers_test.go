@@ -138,8 +138,8 @@ func TestTransformersIntegration(t *testing.T) {
 
 	t.Run("Mask Transformer", func(t *testing.T) {
 		transformer := transformers.NewMaskTransformer(&v1.MaskTransformation{
-			Fields:    []string{"password", "email"},
-			MaskChar:  "*",
+			Fields:     []string{"password", "email"},
+			MaskChar:   "*",
 			KeepLength: true,
 		})
 
@@ -317,8 +317,8 @@ func TestTransformersChainIntegration(t *testing.T) {
 	})
 
 	maskTransformer := transformers.NewMaskTransformer(&v1.MaskTransformation{
-		Fields:    []string{"password"},
-		MaskChar:  "*",
+		Fields:     []string{"password"},
+		MaskChar:   "*",
 		KeepLength: true,
 	})
 
@@ -368,4 +368,3 @@ func TestTransformersChainIntegration(t *testing.T) {
 	assert.NotEqual(t, "secret123", output["password"])
 	assert.Contains(t, output["password"].(string), "*")
 }
-
