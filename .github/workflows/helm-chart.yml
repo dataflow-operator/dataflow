@@ -74,22 +74,11 @@ jobs:
         run: |
           helm package ${{ env.CHART_PATH }} --destination ./charts
 
-      - name: Determine chart tag
-        id: chart_tag
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          else
-            TAG="${{ steps.chart_version.outputs.version }}-${GITHUB_SHA:0:7}"
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Chart tag: $TAG"
-
       - name: Push Helm chart to OCI registry
         run: |
           CHART_FILE=$(ls ./charts/${{ env.CHART_NAME }}-*.tgz | head -n 1)
           helm push $CHART_FILE oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/helm-charts
-          echo "Published: oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/helm-charts/${{ env.CHART_NAME }}:${{ steps.chart_tag.outputs.tag }}"
+          echo "Published: oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/helm-charts/${{ env.CHART_NAME }}:${{ steps.chart_version.outputs.version }}"
 
       - name: Upload chart artifact
         uses: actions/upload-artifact@v4
