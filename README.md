@@ -27,6 +27,20 @@ Kubernetes operator for streaming data between different sources (Kafka, Postgre
 
 ### Installation
 
+#### Installing CRD
+
+Before installing the operator, you need to install the Custom Resource Definition (CRD):
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/ilyario/dataflow/refs/heads/main/config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+```
+
+Or use a local file:
+
+```bash
+kubectl apply -f config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+```
+
 #### Installation via Helm (Recommended)
 
 1. Install the operator in the cluster:

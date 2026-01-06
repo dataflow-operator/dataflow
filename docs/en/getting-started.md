@@ -20,6 +20,20 @@ This guide will help you get started with DataFlow Operator. You'll learn how to
 
 ## Installation
 
+### Installing CRD
+
+Before installing the operator, you need to install the Custom Resource Definition (CRD):
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/ilyario/dataflow/refs/heads/main/config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+```
+
+Or use a local file:
+
+```bash
+kubectl apply -f config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+```
+
 ### Installation via Helm (Recommended)
 
 #### Basic Installation

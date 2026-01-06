@@ -1,0 +1,48 @@
+config/local/
+
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Test coverage
+coverage.out
+coverage.html
+*.coverprofile
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Generated documentation
+site/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Kubernetes
+*.kubeconfig
+
+# Go workspace file
+go.work
+go.work.sum

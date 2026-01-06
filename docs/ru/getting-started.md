@@ -20,6 +20,20 @@
 
 ## Установка
 
+### Установка CRD
+
+Перед установкой оператора необходимо установить Custom Resource Definition (CRD):
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/ilyario/dataflow/refs/heads/main/config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+```
+
+Или используйте локальный файл:
+
+```bash
+kubectl apply -f config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+```
+
 ### Установка через Helm (рекомендуется)
 
 #### Базовая установка

@@ -1,0 +1,80 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+docs/
+site/
+*.md
+!README.md
+mkdocs.yml
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Binaries and test files
+bin/
+*.test
+*.out
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+coverage.out
+coverage.html
+*.coverprofile
+test/
+
+# Environment and config
+.env
+.env.local
+.env.*.local
+config/local/
+
+# Logs
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# Docker files
+Dockerfile*
+.dockerignore
+docker-compose.yml
+.docker/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+
+# Scripts (development scripts)
+scripts/
+
+# Helm charts (usually not needed in image)
+helm/
+
+# Kubernetes configs
+*.kubeconfig
+kubeconfig
+
+# Go workspace
+go.work
+go.work.sum
+
+# Task runner
+Taskfile.yml
+
+# Hack directory
+hack/
