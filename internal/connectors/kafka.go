@@ -95,6 +95,14 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 
 	// Configure SASL if provided
 	if k.config.SASL != nil {
+		// Validate SASL configuration
+		if k.config.SASL.Username == "" {
+			return fmt.Errorf("SASL username is required but not provided")
+		}
+		if k.config.SASL.Password == "" {
+			return fmt.Errorf("SASL password is required but not provided (check if passwordSecretRef is correctly configured)")
+		}
+
 		saramaConfig.Net.SASL.Enable = true
 		saramaConfig.Net.SASL.User = k.config.SASL.Username
 		saramaConfig.Net.SASL.Password = k.config.SASL.Password
@@ -114,6 +122,11 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 		}
 	}
 
+	// Validate brokers
+	if len(k.config.Brokers) == 0 {
+		return fmt.Errorf("no Kafka brokers specified")
+	}
+
 	consumerGroup := k.config.ConsumerGroup
 	if consumerGroup == "" {
 		consumerGroup = "dataflow-operator"
@@ -121,7 +134,8 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 
 	consumer, err := sarama.NewConsumerGroup(k.config.Brokers, consumerGroup, saramaConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create consumer group: %w", err)
+		return fmt.Errorf("failed to create consumer group (brokers: %v, group: %s, tls: %v, sasl: %v): %w",
+			k.config.Brokers, consumerGroup, k.config.TLS != nil, k.config.SASL != nil, err)
 	}
 
 	k.consumer = consumer
@@ -286,6 +300,14 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 
 	// Configure SASL if provided
 	if k.config.SASL != nil {
+		// Validate SASL configuration
+		if k.config.SASL.Username == "" {
+			return fmt.Errorf("SASL username is required but not provided")
+		}
+		if k.config.SASL.Password == "" {
+			return fmt.Errorf("SASL password is required but not provided (check if passwordSecretRef is correctly configured)")
+		}
+
 		saramaConfig.Net.SASL.Enable = true
 		saramaConfig.Net.SASL.User = k.config.SASL.Username
 		saramaConfig.Net.SASL.Password = k.config.SASL.Password
@@ -305,9 +327,15 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 		}
 	}
 
+	// Validate brokers
+	if len(k.config.Brokers) == 0 {
+		return fmt.Errorf("no Kafka brokers specified")
+	}
+
 	producer, err := sarama.NewSyncProducer(k.config.Brokers, saramaConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create producer: %w", err)
+		return fmt.Errorf("failed to create producer (brokers: %v, tls: %v, sasl: %v): %w",
+			k.config.Brokers, k.config.TLS != nil, k.config.SASL != nil, err)
 	}
 
 	k.producer = producer

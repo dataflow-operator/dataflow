@@ -611,6 +611,17 @@ func (r *SecretResolver) CleanupTempFiles() error {
 }
 
 func (r *SecretResolver) resolveSASLConfig(ctx context.Context, namespace string, config *dataflowv1.SASLConfig) error {
+	// Validate that username is provided either directly or via secret reference
+	if config.Username == "" && config.UsernameSecretRef == nil {
+		return fmt.Errorf("SASL username is required: either 'username' or 'usernameSecretRef' must be specified")
+	}
+
+	// Validate that password is provided either directly or via secret reference
+	if config.Password == "" && config.PasswordSecretRef == nil {
+		return fmt.Errorf("SASL password is required: either 'password' or 'passwordSecretRef' must be specified")
+	}
+
+	// Resolve username from secret if secret reference is provided
 	if config.UsernameSecretRef != nil {
 		value, err := r.ResolveSecretValue(ctx, namespace, config.UsernameSecretRef)
 		if err != nil {
@@ -619,6 +630,7 @@ func (r *SecretResolver) resolveSASLConfig(ctx context.Context, namespace string
 		config.Username = value
 	}
 
+	// Resolve password from secret if secret reference is provided
 	if config.PasswordSecretRef != nil {
 		value, err := r.ResolveSecretValue(ctx, namespace, config.PasswordSecretRef)
 		if err != nil {
