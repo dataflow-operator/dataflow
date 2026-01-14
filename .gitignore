@@ -2,6 +2,7 @@ config/local/
 
 # Binaries
 bin/
+dataflow
 *.exe
 *.exe~
 *.dll
