@@ -197,12 +197,21 @@ Each `DataFlow` resource has a status that includes:
 - **ProcessedCount** - number of processed messages
 - **ErrorCount** - number of errors
 
+The operator also exports Prometheus metrics for detailed monitoring:
+- Number of messages received/sent per manifest
+- Errors in connectors and transformers
+- Message processing time and transformer execution time
+- Connector connection status
+
+See [Metrics](metrics.md) for more details.
+
 ## Documentation
 
 - [Getting Started](getting-started.md) - detailed getting started guide
 - [Connectors](connectors.md) - detailed description of all connectors
 - [Transformations](transformations.md) - detailed transformation descriptions with examples
 - [Examples](examples.md) - practical usage examples
+- [Metrics](metrics.md) - Prometheus metrics and monitoring
 - [Development](development.md) - developer guide
 
 ## License

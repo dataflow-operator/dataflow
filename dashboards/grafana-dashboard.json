@@ -1,0 +1,339 @@
+{
+  "dashboard": {
+    "title": "DataFlow Operator",
+    "tags": ["dataflow", "kubernetes", "operator"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Сообщения получено по манифестам",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_messages_received_total[5m])) by (namespace, name, source_type)",
+            "legendFormat": "{{namespace}}/{{name}} ({{source_type}})",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Сообщений/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 2,
+        "title": "Сообщения отправлено по манифестам",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_messages_sent_total[5m])) by (namespace, name, sink_type, route)",
+            "legendFormat": "{{namespace}}/{{name}} ({{sink_type}}/{{route}})",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Сообщений/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 3,
+        "title": "Ошибки коннекторов",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_connector_errors_total[5m])) by (namespace, name, connector_type, connector_name, operation, error_type)",
+            "legendFormat": "{{namespace}}/{{name}} - {{connector_type}}/{{connector_name}} - {{operation}} - {{error_type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Ошибок/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 4,
+        "title": "Ошибки трансформеров",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_transformer_errors_total[5m])) by (namespace, name, transformer_type, transformer_index, error_type)",
+            "legendFormat": "{{namespace}}/{{name}} - {{transformer_type}}[{{transformer_index}}] - {{error_type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Ошибок/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 5,
+        "title": "Время обработки сообщений",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(dataflow_processing_duration_seconds_bucket[5m])) by (namespace, name, le))",
+            "legendFormat": "p95 - {{namespace}}/{{name}}",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(dataflow_processing_duration_seconds_bucket[5m])) by (namespace, name, le))",
+            "legendFormat": "p99 - {{namespace}}/{{name}}",
+            "refId": "B"
+          },
+          {
+            "expr": "avg(dataflow_processing_duration_seconds) by (namespace, name)",
+            "legendFormat": "avg - {{namespace}}/{{name}}",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Время"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 6,
+        "title": "Время выполнения трансформеров",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(dataflow_transformer_duration_seconds_bucket[5m])) by (namespace, name, transformer_type, transformer_index, le))",
+            "legendFormat": "p95 - {{namespace}}/{{name}} - {{transformer_type}}[{{transformer_index}}]",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(dataflow_transformer_duration_seconds_bucket[5m])) by (namespace, name, transformer_type, transformer_index, le))",
+            "legendFormat": "p99 - {{namespace}}/{{name}} - {{transformer_type}}[{{transformer_index}}]",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Время"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 7,
+        "title": "Статус подключения коннекторов",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+        "targets": [
+          {
+            "expr": "dataflow_connector_connection_status",
+            "format": "table",
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {
+                "Time": true,
+                "__name__": true
+              },
+              "indexByName": {
+                "namespace": 0,
+                "name": 1,
+                "connector_type": 2,
+                "connector_name": 3,
+                "Value": 4
+              },
+              "renameByName": {
+                "namespace": "Namespace",
+                "name": "Name",
+                "connector_type": "Тип",
+                "connector_name": "Коннектор",
+                "Value": "Статус"
+              }
+            }
+          }
+        ],
+        "fieldConfig": {
+          "overrides": [
+            {
+              "matcher": {"id": "byName", "options": "Статус"},
+              "properties": [
+                {
+                  "id": "custom.displayMode",
+                  "value": "color-background"
+                },
+                {
+                  "id": "thresholds",
+                  "value": {
+                    "mode": "absolute",
+                    "steps": [
+                      {"color": "red", "value": 0},
+                      {"color": "green", "value": 1}
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": 8,
+        "title": "Статус DataFlow манифестов",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+        "targets": [
+          {
+            "expr": "dataflow_status",
+            "format": "table",
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {
+                "Time": true,
+                "__name__": true
+              },
+              "indexByName": {
+                "namespace": 0,
+                "name": 1,
+                "phase": 2,
+                "Value": 3
+              },
+              "renameByName": {
+                "namespace": "Namespace",
+                "name": "Name",
+                "phase": "Phase",
+                "Value": "Статус"
+              }
+            }
+          }
+        ],
+        "fieldConfig": {
+          "overrides": [
+            {
+              "matcher": {"id": "byName", "options": "Статус"},
+              "properties": [
+                {
+                  "id": "custom.displayMode",
+                  "value": "color-background"
+                },
+                {
+                  "id": "thresholds",
+                  "value": {
+                    "mode": "absolute",
+                    "steps": [
+                      {"color": "red", "value": 0},
+                      {"color": "green", "value": 1}
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": 9,
+        "title": "Сообщения в коннекторах (чтение)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_connector_messages_read_total[5m])) by (namespace, name, connector_type, connector_name)",
+            "legendFormat": "{{namespace}}/{{name}} - {{connector_type}}/{{connector_name}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Сообщений/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 10,
+        "title": "Сообщения в коннекторах (запись)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_connector_messages_written_total[5m])) by (namespace, name, connector_type, connector_name, route)",
+            "legendFormat": "{{namespace}}/{{name}} - {{connector_type}}/{{connector_name}} ({{route}})",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Сообщений/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 11,
+        "title": "Выполнения трансформеров",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_transformer_executions_total[5m])) by (namespace, name, transformer_type, transformer_index)",
+            "legendFormat": "{{namespace}}/{{name}} - {{transformer_type}}[{{transformer_index}}]",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Выполнений/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      },
+      {
+        "id": 12,
+        "title": "Сообщения в/из трансформеров",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+        "targets": [
+          {
+            "expr": "sum(rate(dataflow_transformer_messages_in_total[5m])) by (namespace, name, transformer_type, transformer_index)",
+            "legendFormat": "Вход - {{namespace}}/{{name}} - {{transformer_type}}[{{transformer_index}}]",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(dataflow_transformer_messages_out_total[5m])) by (namespace, name, transformer_type, transformer_index)",
+            "legendFormat": "Выход - {{namespace}}/{{name}} - {{transformer_type}}[{{transformer_index}}]",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Сообщений/сек"},
+          {"format": "short"}
+        ],
+        "xaxis": {"mode": "time", "show": true}
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    }
+  }
+}

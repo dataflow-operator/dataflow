@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/connectors"
+	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/transformers"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
@@ -38,24 +40,36 @@ type Processor struct {
 	errorCount     int64
 	mu             sync.RWMutex
 	logger         logr.Logger
+	namespace      string
+	name           string
+	spec           *v1.DataFlowSpec
 }
 
 // NewProcessor creates a new processor
 func NewProcessor(spec *v1.DataFlowSpec) (*Processor, error) {
-	return NewProcessorWithLogger(spec, logr.Discard())
+	return NewProcessorWithLoggerAndMetadata(spec, logr.Discard(), "", "")
 }
 
 // NewProcessorWithLogger creates a new processor with logger
 func NewProcessorWithLogger(spec *v1.DataFlowSpec, logger logr.Logger) (*Processor, error) {
+	return NewProcessorWithLoggerAndMetadata(spec, logger, "", "")
+}
+
+// NewProcessorWithLoggerAndMetadata creates a new processor with logger and metadata
+func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger, namespace, name string) (*Processor, error) {
+
 	// Create source connector
 	source, err := connectors.CreateSourceConnector(&spec.Source)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create source connector: %w", err)
 	}
 
-	// Set logger if connector supports it
+	// Set logger and metadata if connector supports it
 	if loggerConnector, ok := source.(interface{ SetLogger(logr.Logger) }); ok {
 		loggerConnector.SetLogger(logger)
+	}
+	if metadataConnector, ok := source.(interface{ SetMetadata(string, string) }); ok {
+		metadataConnector.SetMetadata(namespace, name)
 	}
 
 	// Create sink connector
@@ -64,9 +78,12 @@ func NewProcessorWithLogger(spec *v1.DataFlowSpec, logger logr.Logger) (*Process
 		return nil, fmt.Errorf("failed to create sink connector: %w", err)
 	}
 
-	// Set logger if connector supports it
+	// Set logger and metadata if connector supports it
 	if loggerConnector, ok := sink.(interface{ SetLogger(logr.Logger) }); ok {
 		loggerConnector.SetLogger(logger)
+	}
+	if metadataConnector, ok := sink.(interface{ SetMetadata(string, string) }); ok {
+		metadataConnector.SetMetadata(namespace, name)
 	}
 
 	// Create transformers
@@ -102,6 +119,9 @@ func NewProcessorWithLogger(spec *v1.DataFlowSpec, logger logr.Logger) (*Process
 		transformers: transformerList,
 		routerSinks:  routerSinks,
 		logger:       logger,
+		namespace:    namespace,
+		name:         name,
+		spec:         spec,
 	}, nil
 }
 
@@ -157,12 +177,19 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				return
 			}
 
+			// Record message received
+			metrics.RecordMessageReceived(p.namespace, p.name, p.spec.Source.Type)
+			startTime := time.Now()
+
 			// Apply transformations
 			messages := []*types.Message{msg}
 			for i, transformer := range p.transformers {
+				transformerType := getTransformerType(p.spec, i)
 				newMessages := make([]*types.Message, 0)
 				inputCount := len(messages)
+				metrics.RecordTransformerMessagesIn(p.namespace, p.name, transformerType, i, inputCount)
 				for _, m := range messages {
+					msgStart := time.Now()
 					p.logger.V(1).Info("Applying transformer",
 						"transformerIndex", i,
 						"inputMessageSize", len(m.Data),
@@ -173,11 +200,14 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 						p.logger.Error(err, "Transformation failed",
 							"transformerIndex", i,
 							"message", string(m.Data))
+						metrics.RecordTransformerError(p.namespace, p.name, transformerType, i, getErrorType(err))
 						p.mu.Lock()
 						p.errorCount++
 						p.mu.Unlock()
 						continue
 					}
+					metrics.RecordTransformerExecution(p.namespace, p.name, transformerType, i)
+					metrics.RecordTransformerDuration(p.namespace, p.name, transformerType, i, time.Since(msgStart).Seconds())
 
 					// Log transformation results
 					for j, tmsg := range transformed {
@@ -207,11 +237,15 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				}
 
 				messages = newMessages
+				metrics.RecordTransformerMessagesOut(p.namespace, p.name, transformerType, i, len(newMessages))
 			}
 
 			if len(messages) > 0 {
 				p.logger.V(1).Info("Processed message", "inputMessages", 1, "outputMessages", len(messages))
 			}
+
+			// Record processing duration
+			metrics.DataFlowProcessingDuration.WithLabelValues(p.namespace, p.name).Observe(time.Since(startTime).Seconds())
 
 			// Send transformed messages
 			for _, m := range messages {
@@ -220,6 +254,9 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 					p.mu.Lock()
 					p.processedCount++
 					p.mu.Unlock()
+					// Record message sent (route will be determined in writeMessages)
+					route := getRouteFromMessage(m)
+					metrics.RecordMessageSent(p.namespace, p.name, p.spec.Sink.Type, route)
 				case <-ctx.Done():
 					return
 				}
@@ -351,4 +388,29 @@ func (p *Processor) GetStats() (processedCount, errorCount int64) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.processedCount, p.errorCount
+}
+
+// getTransformerType возвращает тип трансформера по индексу
+func getTransformerType(spec *v1.DataFlowSpec, index int) string {
+	if index < len(spec.Transformations) {
+		return spec.Transformations[index].Type
+	}
+	return "unknown"
+}
+
+// getRouteFromMessage извлекает маршрут из метаданных сообщения
+func getRouteFromMessage(msg *types.Message) string {
+	if route, ok := msg.Metadata["routed_condition"].(string); ok {
+		return route
+	}
+	return "default"
+}
+
+// getErrorType извлекает тип ошибки из ошибки
+func getErrorType(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	// Можно расширить логику для более детальной классификации ошибок
+	return "transformation_error"
 }

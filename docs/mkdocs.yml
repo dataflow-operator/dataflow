@@ -29,6 +29,7 @@ nav:
   - Connectors: en/connectors.md
   - Transformations: en/transformations.md
   - Examples: en/examples.md
+  - Metrics: en/metrics.md
   - Development: en/development.md
   - "---"
   - "Русский":
@@ -37,6 +38,7 @@ nav:
     - "Коннекторы": ru/connectors.md
     - "Трансформации": ru/transformations.md
     - "Примеры": ru/examples.md
+    - "Метрики": ru/metrics.md
     - "Разработка": ru/development.md
 
 markdown_extensions:

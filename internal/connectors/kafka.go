@@ -36,6 +36,7 @@ import (
 
 	"github.com/IBM/sarama"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"github.com/hamba/avro/v2"
@@ -52,6 +53,8 @@ type KafkaSourceConnector struct {
 	avroSchema   avro.Schema           // Avro schema for deserialization (when not using Schema Registry)
 	schemaCache  *schemaCache          // Cache for schemas from Schema Registry
 	schemaClient *schemaRegistryClient // Client for Schema Registry
+	namespace    string                // Namespace for metrics
+	name         string                // Name for metrics
 }
 
 // schemaCache caches Avro schemas by ID
@@ -79,6 +82,12 @@ func NewKafkaSourceConnector(config *v1.KafkaSourceSpec) *KafkaSourceConnector {
 // SetLogger sets the logger for the connector
 func (k *KafkaSourceConnector) SetLogger(logger logr.Logger) {
 	k.logger = logger
+}
+
+// SetMetadata sets the metadata for metrics
+func (k *KafkaSourceConnector) SetMetadata(namespace, name string) {
+	k.namespace = namespace
+	k.name = name
 }
 
 // Connect establishes connection to Kafka
@@ -200,29 +209,38 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 	}
 
 	consumer, err := sarama.NewConsumerGroup(k.config.Brokers, consumerGroup, saramaConfig)
-	if err != nil {
-		saslMechanism := "none"
-		if k.config.SASL != nil {
-			saslMechanism = k.config.SASL.Mechanism
-			if saslMechanism == "" {
-				saslMechanism = "plain"
-			}
-		}
-		k.logger.Error(err, "Failed to create consumer group",
-			"brokers", k.config.Brokers,
-			"group", consumerGroup)
-		return fmt.Errorf("failed to create consumer group (brokers: %v, group: %s, tls: %v, tlsSkipVerify: %v, sasl: %v, saslMechanism: %s, username: %s): %w",
-			k.config.Brokers, consumerGroup, k.config.TLS != nil,
-			k.config.TLS != nil && k.config.TLS.InsecureSkipVerify,
-			k.config.SASL != nil, saslMechanism,
-			func() string {
-				if k.config.SASL != nil {
-					return k.config.SASL.Username
+			if err != nil {
+				// Record error metric
+				if k.namespace != "" && k.name != "" {
+					metrics.RecordConnectorError(k.namespace, k.name, "kafka", "source", "connect", "consumer_group_error")
 				}
-				return ""
-			}(), err)
-	}
-	k.consumer = consumer
+				saslMechanism := "none"
+				if k.config.SASL != nil {
+					saslMechanism = k.config.SASL.Mechanism
+					if saslMechanism == "" {
+						saslMechanism = "plain"
+					}
+				}
+				k.logger.Error(err, "Failed to create consumer group",
+					"brokers", k.config.Brokers,
+					"group", consumerGroup)
+				return fmt.Errorf("failed to create consumer group (brokers: %v, group: %s, tls: %v, tlsSkipVerify: %v, sasl: %v, saslMechanism: %s, username: %s): %w",
+					k.config.Brokers, consumerGroup, k.config.TLS != nil,
+					k.config.TLS != nil && k.config.TLS.InsecureSkipVerify,
+					k.config.SASL != nil, saslMechanism,
+					func() string {
+						if k.config.SASL != nil {
+							return k.config.SASL.Username
+						}
+						return ""
+					}(), err)
+			}
+		k.consumer = consumer
+
+		// Record connection status
+		if k.namespace != "" && k.name != "" {
+			metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "source", true)
+		}
 
 	// Initialize Schema Registry client if configured
 	if k.config.Format == "avro" && k.config.SchemaRegistry != nil {
@@ -590,6 +608,10 @@ func (k *KafkaSourceConnector) Close() error {
 
 	k.closed = true
 	if k.consumer != nil {
+		// Record connection status
+		if k.namespace != "" && k.name != "" {
+			metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "source", false)
+		}
 		return k.consumer.Close()
 	}
 	return nil
@@ -648,6 +670,10 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 			select {
 			case h.msgChan <- msg:
 				session.MarkMessage(message, "")
+				// Record metrics
+				if h.connector.namespace != "" && h.connector.name != "" {
+					metrics.RecordConnectorMessageRead(h.connector.namespace, h.connector.name, "kafka", "source")
+				}
 			case <-session.Context().Done():
 				return nil
 			}
@@ -659,11 +685,13 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 
 // KafkaSinkConnector implements SinkConnector for Kafka
 type KafkaSinkConnector struct {
-	config   *v1.KafkaSinkSpec
-	producer sarama.SyncProducer
-	closed   bool
-	mu       sync.Mutex
-	logger   logr.Logger
+	config    *v1.KafkaSinkSpec
+	producer  sarama.SyncProducer
+	closed    bool
+	mu        sync.Mutex
+	logger    logr.Logger
+	namespace string // Namespace for metrics
+	name      string // Name for metrics
 }
 
 // NewKafkaSinkConnector creates a new Kafka sink connector
@@ -677,6 +705,12 @@ func NewKafkaSinkConnector(config *v1.KafkaSinkSpec) *KafkaSinkConnector {
 // SetLogger sets the logger for the connector
 func (k *KafkaSinkConnector) SetLogger(logger logr.Logger) {
 	k.logger = logger
+}
+
+// SetMetadata sets the metadata for metrics
+func (k *KafkaSinkConnector) SetMetadata(namespace, name string) {
+	k.namespace = namespace
+	k.name = name
 }
 
 // Connect establishes connection to Kafka
@@ -807,29 +841,39 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 		return fmt.Errorf("no Kafka brokers specified")
 	}
 
-	producer, err := sarama.NewSyncProducer(k.config.Brokers, saramaConfig)
-	if err != nil {
-		saslMechanism := "none"
-		if k.config.SASL != nil {
-			saslMechanism = k.config.SASL.Mechanism
-			if saslMechanism == "" {
-				saslMechanism = "plain"
+		producer, err := sarama.NewSyncProducer(k.config.Brokers, saramaConfig)
+		if err != nil {
+			// Record error metric
+			if k.namespace != "" && k.name != "" {
+				metrics.RecordConnectorError(k.namespace, k.name, "kafka", "sink", "connect", "producer_error")
 			}
-		}
-		k.logger.Error(err, "Failed to create producer",
-			"brokers", k.config.Brokers)
-		return fmt.Errorf("failed to create producer (brokers: %v, tls: %v, tlsSkipVerify: %v, sasl: %v, saslMechanism: %s, username: %s): %w",
-			k.config.Brokers, k.config.TLS != nil,
-			k.config.TLS != nil && k.config.TLS.InsecureSkipVerify,
-			k.config.SASL != nil, saslMechanism,
-			func() string {
-				if k.config.SASL != nil {
-					return k.config.SASL.Username
+			saslMechanism := "none"
+			if k.config.SASL != nil {
+				saslMechanism = k.config.SASL.Mechanism
+				if saslMechanism == "" {
+					saslMechanism = "plain"
 				}
-				return ""
-			}(), err)
-	}
-	k.producer = producer
+			}
+			k.logger.Error(err, "Failed to create producer",
+				"brokers", k.config.Brokers)
+			return fmt.Errorf("failed to create producer (brokers: %v, tls: %v, tlsSkipVerify: %v, sasl: %v, saslMechanism: %s, username: %s): %w",
+				k.config.Brokers, k.config.TLS != nil,
+				k.config.TLS != nil && k.config.TLS.InsecureSkipVerify,
+				k.config.SASL != nil, saslMechanism,
+				func() string {
+					if k.config.SASL != nil {
+						return k.config.SASL.Username
+					}
+					return ""
+				}(), err)
+		}
+		k.producer = producer
+
+		// Record connection status
+		if k.namespace != "" && k.name != "" {
+			metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "sink", true)
+		}
+
 	return nil
 }
 
@@ -894,7 +938,17 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 
 			partition, offset, err := k.producer.SendMessage(kafkaMsg)
 			if err != nil {
+				// Record error metric
+				if k.namespace != "" && k.name != "" {
+					metrics.RecordConnectorError(k.namespace, k.name, "kafka", "sink", "write", "send_error")
+				}
 				return fmt.Errorf("failed to send message: %w", err)
+			}
+
+			// Record metrics
+			if k.namespace != "" && k.name != "" {
+				route := getRouteFromMessage(msg)
+				metrics.RecordConnectorMessageWritten(k.namespace, k.name, "kafka", "sink", route)
 			}
 
 			msg.Metadata["partition"] = partition
@@ -914,7 +968,19 @@ func (k *KafkaSinkConnector) Close() error {
 
 	k.closed = true
 	if k.producer != nil {
+		// Record connection status
+		if k.namespace != "" && k.name != "" {
+			metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "sink", false)
+		}
 		return k.producer.Close()
 	}
 	return nil
+}
+
+// getRouteFromMessage извлекает маршрут из метаданных сообщения
+func getRouteFromMessage(msg *types.Message) string {
+	if route, ok := msg.Metadata["routed_condition"].(string); ok {
+		return route
+	}
+	return "default"
 }

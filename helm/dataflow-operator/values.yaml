@@ -71,6 +71,20 @@ health:
   # The address the probe endpoint binds to
   probePort: 9091
 
+# Service configuration
+service:
+  type: ClusterIP
+  port: 9090
+
+# ServiceMonitor configuration for Prometheus
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels: {}
+    # prometheus: kube-prometheus
+    # release: prometheus
+
 nodeSelector: {}
 
 tolerations: []

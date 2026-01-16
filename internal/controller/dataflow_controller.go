@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/processor"
 )
 
@@ -145,6 +146,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}); err != nil {
 			log.Error(err, "unable to update DataFlow status")
 		}
+		metrics.SetDataFlowStatus(req.Namespace, req.Name, "Stopped")
 		return ctrl.Result{}, nil
 	}
 
@@ -204,8 +206,8 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 
-		// Create new processor with logger
-		proc, err := processor.NewProcessorWithLogger(resolvedSpec, log)
+		// Create new processor with logger and metadata
+		proc, err := processor.NewProcessorWithLoggerAndMetadata(resolvedSpec, log, req.Namespace, req.Name)
 		if err != nil {
 			log.Error(err, "failed to create processor")
 			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
@@ -272,8 +274,11 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			dataflow.Status.ErrorCount = errorCount
 			dataflow.Status.LastProcessedTime = &metav1.Time{Time: metav1.Now().Time}
 		}
-		dataflow.Status.Phase = "Running"
+			dataflow.Status.Phase = "Running"
 	}
+
+	// Update metrics with current status
+	metrics.SetDataFlowStatus(req.Namespace, req.Name, dataflow.Status.Phase)
 
 	// Update status with retry logic to handle optimistic locking conflicts
 	// Используем отдельный контекст, чтобы избежать проблем с отменой
