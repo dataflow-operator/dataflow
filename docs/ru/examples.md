@@ -266,6 +266,52 @@ spec:
         fieldName: processed_at
 ```
 
+## PostgreSQL → PostgreSQL (репликация / ETL)
+
+Пример чтения данных из одной PostgreSQL базы и записи преобразованных данных в другую PostgreSQL базу.
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: postgres-to-postgres
+spec:
+  source:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@source-postgres:5432/source_db?sslmode=disable"
+      table: source_orders
+      query: "SELECT * FROM source_orders WHERE updated_at > NOW() - INTERVAL '5 minutes'"
+      pollInterval: 60
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@target-postgres:5432/target_db?sslmode=disable"
+      table: target_orders
+      autoCreateTable: true
+      batchSize: 100
+  transformations:
+    # Оставляем только нужные поля
+    - type: select
+      select:
+        fields:
+          - id
+          - customer_id
+          - total
+          - status
+          - updated_at
+    # Добавляем время синхронизации
+    - type: timestamp
+      timestamp:
+        fieldName: synced_at
+```
+
+**Варианты использования:**
+
+- **Онлайн-репликация**: периодическое копирование обновленных записей из операционной БД в аналитическую
+- **ETL-пайплайн**: подготовка и очистка данных при переносе между схемами/кластерами PostgreSQL
+
+
 ## Комплексный пример: ETL пайплайн
 
 Полноценный ETL пайплайн с множественными трансформациями.

@@ -34,6 +34,51 @@ spec:
 kubectl apply -f config/samples/kafka-to-postgres.yaml
 ```
 
+## PostgreSQL → PostgreSQL (replication / ETL)
+
+Example of reading data from one PostgreSQL database and writing transformed data into another PostgreSQL database.
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: postgres-to-postgres
+spec:
+  source:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@source-postgres:5432/source_db?sslmode=disable"
+      table: source_orders
+      query: "SELECT * FROM source_orders WHERE updated_at > NOW() - INTERVAL '5 minutes'"
+      pollInterval: 60
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@target-postgres:5432/target_db?sslmode=disable"
+      table: target_orders
+      autoCreateTable: true
+      batchSize: 100
+  transformations:
+    # Keep only required fields
+    - type: select
+      select:
+        fields:
+          - id
+          - customer_id
+          - total
+          - status
+          - updated_at
+    # Add sync time
+    - type: timestamp
+      timestamp:
+        fieldName: synced_at
+```
+
+**Typical use cases:**
+
+- **Online replication**: periodically copying updated rows from OLTP database to analytics database
+- **ETL pipeline**: cleaning and reshaping data when moving between PostgreSQL schemas/clusters
+
 ## Using Secrets for Credentials
 
 DataFlow Operator supports configuring connectors from Kubernetes Secrets through `*SecretRef` fields. This allows secure storage of credentials without explicitly specifying them in the DataFlow specification.
