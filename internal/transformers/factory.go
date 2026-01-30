@@ -70,6 +70,17 @@ func CreateTransformer(transformation *v1.TransformationSpec) (Transformer, erro
 			return nil, fmt.Errorf("camelCase transformation configuration is required")
 		}
 		return NewCamelCaseTransformer(transformation.CamelCase), nil
+	// TODO: replaceField and headerFrom transformations are not yet implemented in API
+	// case "replaceField":
+	// 	if transformation.ReplaceField == nil {
+	// 		return nil, fmt.Errorf("replaceField transformation configuration is required")
+	// 	}
+	// 	return NewReplaceFieldTransformer(transformation.ReplaceField), nil
+	// case "headerFrom":
+	// 	if transformation.HeaderFrom == nil {
+	// 		return nil, fmt.Errorf("headerFrom transformation configuration is required")
+	// 	}
+	// 	return NewHeaderFromTransformer(transformation.HeaderFrom), nil
 	default:
 		return nil, fmt.Errorf("unsupported transformation type: %s", transformation.Type)
 	}

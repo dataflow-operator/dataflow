@@ -142,6 +142,110 @@ var (
 		},
 		[]string{"namespace", "name", "phase"},
 	)
+
+	// TaskStageDuration - время выполнения отдельных этапов задачи
+	TaskStageDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dataflow_task_stage_duration_seconds",
+			Help:    "Time spent in each task execution stage",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 14), // от 0.1ms до ~1.6s
+		},
+		[]string{"namespace", "name", "stage"},
+	)
+
+	// TaskMessageSize - размер сообщений на разных этапах обработки
+	TaskMessageSize = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dataflow_task_message_size_bytes",
+			Help:    "Size of messages at different processing stages",
+			Buckets: prometheus.ExponentialBuckets(64, 2, 16), // от 64 байт до ~4MB
+		},
+		[]string{"namespace", "name", "stage"},
+	)
+
+	// TaskStageLatency - задержка между этапами обработки
+	TaskStageLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dataflow_task_stage_latency_seconds",
+			Help:    "Latency between processing stages",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // от 0.1ms до ~400ms
+		},
+		[]string{"namespace", "name", "from_stage", "to_stage"},
+	)
+
+	// TaskThroughput - пропускная способность (сообщений в секунду)
+	TaskThroughput = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dataflow_task_throughput_messages_per_second",
+			Help: "Current throughput in messages per second",
+		},
+		[]string{"namespace", "name"},
+	)
+
+	// TaskSuccessRate - процент успешных задач
+	TaskSuccessRate = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dataflow_task_success_rate",
+			Help: "Success rate of task execution (0.0 to 1.0)",
+		},
+		[]string{"namespace", "name"},
+	)
+
+	// TaskEndToEndLatency - полное время жизни сообщения от получения до отправки
+	TaskEndToEndLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dataflow_task_end_to_end_latency_seconds",
+			Help:    "End-to-end latency from message receipt to delivery",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 12), // от 1ms до ~2s
+		},
+		[]string{"namespace", "name"},
+	)
+
+	// TaskActiveMessages - количество активных сообщений в обработке
+	TaskActiveMessages = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dataflow_task_active_messages",
+			Help: "Number of messages currently being processed",
+		},
+		[]string{"namespace", "name"},
+	)
+
+	// TaskQueueSize - размер очереди сообщений
+	TaskQueueSize = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dataflow_task_queue_size",
+			Help: "Current size of message queue",
+		},
+		[]string{"namespace", "name", "queue_type"},
+	)
+
+	// TaskQueueWaitTime - время ожидания в очереди
+	TaskQueueWaitTime = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dataflow_task_queue_wait_time_seconds",
+			Help:    "Time messages spend waiting in queue",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // от 0.1ms до ~400ms
+		},
+		[]string{"namespace", "name", "queue_type"},
+	)
+
+	// TaskOperationsTotal - общее количество операций по типу
+	TaskOperationsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dataflow_task_operations_total",
+			Help: "Total number of operations by type",
+		},
+		[]string{"namespace", "name", "operation", "status"},
+	)
+
+	// TaskStageErrors - количество ошибок на каждом этапе
+	TaskStageErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dataflow_task_stage_errors_total",
+			Help: "Total number of errors per stage",
+		},
+		[]string{"namespace", "name", "stage", "error_type"},
+	)
 )
 
 func init() {
@@ -160,6 +264,17 @@ func init() {
 		TransformerMessagesIn,
 		TransformerMessagesOut,
 		DataFlowStatus,
+		TaskStageDuration,
+		TaskMessageSize,
+		TaskStageLatency,
+		TaskThroughput,
+		TaskSuccessRate,
+		TaskEndToEndLatency,
+		TaskActiveMessages,
+		TaskQueueSize,
+		TaskQueueWaitTime,
+		TaskOperationsTotal,
+		TaskStageErrors,
 	)
 }
 
@@ -235,4 +350,59 @@ func SetDataFlowStatus(namespace, name, phase string) {
 // formatIndex форматирует индекс как строку
 func formatIndex(index int) string {
 	return fmt.Sprintf("%d", index)
+}
+
+// RecordTaskStageDuration записывает время выполнения этапа задачи
+func RecordTaskStageDuration(namespace, name, stage string, durationSeconds float64) {
+	TaskStageDuration.WithLabelValues(namespace, name, stage).Observe(durationSeconds)
+}
+
+// RecordTaskMessageSize записывает размер сообщения на этапе обработки
+func RecordTaskMessageSize(namespace, name, stage string, sizeBytes int) {
+	TaskMessageSize.WithLabelValues(namespace, name, stage).Observe(float64(sizeBytes))
+}
+
+// RecordTaskStageLatency записывает задержку между этапами
+func RecordTaskStageLatency(namespace, name, fromStage, toStage string, latencySeconds float64) {
+	TaskStageLatency.WithLabelValues(namespace, name, fromStage, toStage).Observe(latencySeconds)
+}
+
+// SetTaskThroughput устанавливает текущую пропускную способность
+func SetTaskThroughput(namespace, name string, messagesPerSecond float64) {
+	TaskThroughput.WithLabelValues(namespace, name).Set(messagesPerSecond)
+}
+
+// SetTaskSuccessRate устанавливает процент успешных задач
+func SetTaskSuccessRate(namespace, name string, rate float64) {
+	TaskSuccessRate.WithLabelValues(namespace, name).Set(rate)
+}
+
+// RecordTaskEndToEndLatency записывает полное время жизни сообщения
+func RecordTaskEndToEndLatency(namespace, name string, latencySeconds float64) {
+	TaskEndToEndLatency.WithLabelValues(namespace, name).Observe(latencySeconds)
+}
+
+// SetTaskActiveMessages устанавливает количество активных сообщений
+func SetTaskActiveMessages(namespace, name string, count int) {
+	TaskActiveMessages.WithLabelValues(namespace, name).Set(float64(count))
+}
+
+// SetTaskQueueSize устанавливает размер очереди
+func SetTaskQueueSize(namespace, name, queueType string, size int) {
+	TaskQueueSize.WithLabelValues(namespace, name, queueType).Set(float64(size))
+}
+
+// RecordTaskQueueWaitTime записывает время ожидания в очереди
+func RecordTaskQueueWaitTime(namespace, name, queueType string, waitTimeSeconds float64) {
+	TaskQueueWaitTime.WithLabelValues(namespace, name, queueType).Observe(waitTimeSeconds)
+}
+
+// RecordTaskOperation записывает выполнение операции
+func RecordTaskOperation(namespace, name, operation, status string) {
+	TaskOperationsTotal.WithLabelValues(namespace, name, operation, status).Inc()
+}
+
+// RecordTaskStageError записывает ошибку на этапе обработки
+func RecordTaskStageError(namespace, name, stage, errorType string) {
+	TaskStageErrors.WithLabelValues(namespace, name, stage, errorType).Inc()
 }

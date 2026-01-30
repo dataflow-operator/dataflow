@@ -1,0 +1,64 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnector
+metadata:
+  name: kc-iceberg-asmt-material-lifecycle-prod01
+  namespace: kafka-connect
+  labels:
+    strimzi.io/cluster: kc-iceberg-sink-prod01
+  annotations:
+    strimzi.io/use-connector-resources: "true"
+spec:
+  class: io.tabular.iceberg.connect.IcebergSinkConnector
+  tasksMax: 1
+  config:
+    # === Catalog & Authentication ===
+    iceberg.catalog.ref: main
+    iceberg.catalog.type: nessie
+    iceberg.write.format: parquet
+    iceberg.catalog.uri: http://nessie.nessie:19120/api/v2
+    iceberg.catalog.authentication.type: BEARER
+    iceberg.catalog.authentication.token: ${secrets:kafka-connect/kc-kafka-cred-tp-prod-env-vars:bearer-token}
+    iceberg.catalog.io-impl: org.apache.iceberg.aws.s3.S3FileIO
+    iceberg.catalog.s3.access-key-id: ${secrets:kafka-connect/kc-kafka-cred-tp-prod-env-vars:s3-access-key}
+    iceberg.catalog.s3.secret-access-key: ${secrets:kafka-connect/kc-kafka-cred-tp-prod-env-vars:s3-secret-key}
+    iceberg.catalog.s3.endpoint: https://storage.yandexcloud.net
+    iceberg.catalog.s3.path-style-access: 'true'
+    iceberg.tables: material.lifecycle
+    iceberg.tables.auto-create-enabled: 'false'
+    iceberg.control.commit.interval-ms: '60000'
+    iceberg.object-store-layout.enabled: 'true'
+    iceberg.tables.evolve-schema-enabled: 'true'
+    iceberg.tables.schema-case-insensitive: 'true'
+    iceberg.control.topic: com-data-platform-int-control-iceberg-0-prod01
+    iceberg.catalog.warehouse: s3a://com-data-platform-prod1-data-lake-prod1
+
+    # === Kafka Topics ===
+    topics: com-asmt-lc-export-prod
+
+    # === Key Converter
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: false
+
+    # === Value Converter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: false
+
+    # === Transforms ===
+    transforms: flatten,renameFields,insertKafkaTimestamp
+
+    # Flatten nested structure
+    transforms.flatten.type: org.apache.kafka.connect.transforms.Flatten$Value
+    transforms.flatten.delimiter: .
+
+    # Rename flattened fields to clean names
+    transforms.renameFields.type: org.apache.kafka.connect.transforms.ReplaceField$Value
+    transforms.renameFields.renames: key.sku:sku,body.lc:lc,body.skuType:skuType,body.skuTypeId:skuTypeId
+
+    # Add Kafka message timestamp
+    transforms.insertKafkaTimestamp.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.insertKafkaTimestamp.timestamp.field: timestamp_from
+
+    # === Error handling ===
+    errors.tolerance: all
+    errors.log.enable: true
+    errors.log.include.messages: true

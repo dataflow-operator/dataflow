@@ -17,6 +17,7 @@ limitations under the License.
 package v1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -31,6 +32,26 @@ type DataFlowSpec struct {
 	// Transformations is a list of transformations to apply to messages
 	// +optional
 	Transformations []TransformationSpec `json:"transformations,omitempty"`
+
+	// Errors defines the error sink for messages that failed to be written to the main sink
+	// +optional
+	Errors *SinkSpec `json:"errors,omitempty"`
+
+	// Resources defines the resource requirements for the processor pod
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// NodeSelector is a selector which must be true for the pod to fit on a node
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Affinity is a group of affinity scheduling rules
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// Tolerations are attached to tolerate any taint that matches the triple <key,value,effect>
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // SourceSpec defines the source configuration

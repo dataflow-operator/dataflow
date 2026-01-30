@@ -321,3 +321,112 @@ func TestProcessor_WithRouterTransformation(t *testing.T) {
 	// This is an internal detail, but we can check that the processor was created successfully
 	assert.NotNil(t, processor)
 }
+
+func TestNewProcessor_WithErrorSink(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    *v1.DataFlowSpec
+		wantErr bool
+	}{
+		{
+			name: "processor with error sink",
+			spec: &v1.DataFlowSpec{
+				Source: v1.SourceSpec{
+					Type: "kafka",
+					Kafka: &v1.KafkaSourceSpec{
+						Brokers:       []string{"localhost:9092"},
+						Topic:         "test-topic",
+						ConsumerGroup: "test-group",
+					},
+				},
+				Sink: v1.SinkSpec{
+					Type: "postgresql",
+					PostgreSQL: &v1.PostgreSQLSinkSpec{
+						ConnectionString: "postgres://user:pass@localhost:5432/db",
+						Table:            "output_table",
+					},
+				},
+				Errors: &v1.SinkSpec{
+					Type: "kafka",
+					Kafka: &v1.KafkaSinkSpec{
+						Brokers: []string{"localhost:9092"},
+						Topic:   "error-topic",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "processor with invalid error sink",
+			spec: &v1.DataFlowSpec{
+				Source: v1.SourceSpec{
+					Type: "kafka",
+					Kafka: &v1.KafkaSourceSpec{
+						Brokers:       []string{"localhost:9092"},
+						Topic:         "test-topic",
+						ConsumerGroup: "test-group",
+					},
+				},
+				Sink: v1.SinkSpec{
+					Type: "kafka",
+					Kafka: &v1.KafkaSinkSpec{
+						Brokers: []string{"localhost:9092"},
+						Topic:   "output-topic",
+					},
+				},
+				Errors: &v1.SinkSpec{
+					Type: "invalid",
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			processor, err := NewProcessor(tt.spec)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, processor)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, processor)
+			}
+		})
+	}
+}
+
+func TestProcessor_ErrorSinkConfiguration(t *testing.T) {
+	spec := &v1.DataFlowSpec{
+		Source: v1.SourceSpec{
+			Type: "kafka",
+			Kafka: &v1.KafkaSourceSpec{
+				Brokers:       []string{"localhost:9092"},
+				Topic:         "test-topic",
+				ConsumerGroup: "test-group",
+			},
+		},
+		Sink: v1.SinkSpec{
+			Type: "postgresql",
+			PostgreSQL: &v1.PostgreSQLSinkSpec{
+				ConnectionString: "postgres://user:pass@localhost:5432/db",
+				Table:            "output_table",
+			},
+		},
+		Errors: &v1.SinkSpec{
+			Type: "kafka",
+			Kafka: &v1.KafkaSinkSpec{
+				Brokers: []string{"localhost:9092"},
+				Topic:   "error-topic",
+			},
+		},
+	}
+
+	processor, err := NewProcessor(spec)
+	require.NoError(t, err)
+	require.NotNil(t, processor)
+
+	// Verify that processor was created with error sink configuration
+	// The actual error sink connector will be created during Start()
+	assert.NotNil(t, processor)
+}

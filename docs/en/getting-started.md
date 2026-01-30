@@ -203,7 +203,7 @@ spec:
   sink:
     type: postgresql
     postgresql:
-      connectionString: "postgres://user:password@postgres-host:5432/dbname?lmode=disable"
+      connectionString: "postgres://user:password@postgres-host:5432/dbname?sslmode=disable"
       table: output_table
       autoCreateTable: true
 ```
@@ -213,6 +213,8 @@ Apply the resource:
 ```bash
 kubectl apply -f config/samples/kafka-to-postgres.yaml
 ```
+
+**Note**: Each DataFlow resource creates a separate pod (Deployment) for processing. You can configure resources, node selection, affinity, and tolerations. See [Examples](examples.md#configuring-pod-resources-and-placement) for details.
 
 ### Example with Kubernetes Secrets
 

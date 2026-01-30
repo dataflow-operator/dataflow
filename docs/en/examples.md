@@ -34,6 +34,97 @@ spec:
 kubectl apply -f config/samples/kafka-to-postgres.yaml
 ```
 
+## Error Handling with Error Sink
+
+Example of configuring a separate sink for messages that failed to be written to the main sink.
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-with-errors
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: output_table
+      autoCreateTable: true
+  errors:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: error-topic
+```
+
+**Error Message Structure:**
+
+When a message fails to be written to the main sink, it is sent to the error sink with the following structure:
+
+```json
+{
+  "error": {
+    "message": "error text (e.g., failed to send message: connection refused)",
+    "timestamp": "2026-01-24T12:34:56Z",
+    "original_sink": "postgresql",
+    "metadata": {
+      // Metadata from the original message (if present)
+    }
+  },
+  "original_message": {
+    // Original message data
+    // If the original message was JSON, it will be here as an object
+    // If not - there will be an "original_data" field with a string
+  }
+}
+```
+
+**Example Error Message:**
+
+If the original message was:
+```json
+{
+  "id": 1,
+  "name": "test",
+  "value": 100
+}
+```
+
+Then the error sink will contain:
+```json
+{
+  "error": {
+    "message": "failed to send message: connection refused",
+    "timestamp": "2026-01-24T12:34:56Z",
+    "original_sink": "postgresql"
+  },
+  "original_message": {
+    "id": 1,
+    "name": "test",
+    "value": 100
+  }
+}
+```
+
+**Important:**
+- If `errors` is not specified, write errors will cause processing to stop
+- Error sink can be of any type (Kafka, PostgreSQL, Trino)
+- Original message data is preserved in the `original_message` field
+- Error information is embedded in the message structure, ensuring it is preserved regardless of the error sink type
+
+**Apply:**
+```bash
+kubectl apply -f config/samples/kafka-to-postgres-with-errors.yaml
+```
+
 ## PostgreSQL → PostgreSQL (replication / ETL)
 
 Example of reading data from one PostgreSQL database and writing transformed data into another PostgreSQL database.
@@ -240,6 +331,135 @@ spec:
 - **RBAC**: Access control through Kubernetes RBAC
 
 For more details, see the [Using Kubernetes Secrets](../ru/connectors.md#использование-secrets-в-kubernetes) section in the connectors documentation.
+
+## Configuring Pod Resources and Placement
+
+Each DataFlow resource creates a separate pod (Deployment) for processing. You can configure resources, node selection, affinity, and tolerations for these pods.
+
+### Example: Custom Resources and Node Selection
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-with-resources
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: output_table
+  # Configure resources for the processor pod
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  # Select nodes for pod placement
+  nodeSelector:
+    node-type: compute
+    zone: us-east-1
+  # Affinity rules for more precise placement control
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/arch
+            operator: In
+            values:
+            - amd64
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+          - key: node-type
+            operator: In
+            values:
+            - compute
+    podAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 50
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app
+              operator: In
+              values:
+              - dataflow-processor
+          topologyKey: kubernetes.io/hostname
+  # Tolerations for working with tainted nodes
+  tolerations:
+  - key: dedicated
+    operator: Equal
+    value: dataflow
+    effect: NoSchedule
+  - key: workload-type
+    operator: Equal
+    value: batch
+    effect: NoSchedule
+```
+
+**Apply:**
+```bash
+kubectl apply -f config/samples/kafka-to-postgres-with-resources.yaml
+```
+
+### Resource Configuration
+
+- **resources**: Defines CPU and memory requests and limits for the processor pod
+  - If not specified, defaults are used: `100m` CPU / `128Mi` memory (requests), `500m` CPU / `512Mi` memory (limits)
+  - Use this to ensure pods have sufficient resources for high-throughput processing
+
+### Node Selection
+
+- **nodeSelector**: Simple key-value pairs to select specific nodes
+  - Example: `node-type: compute` ensures pods run only on nodes labeled with `node-type=compute`
+
+### Affinity Rules
+
+- **affinity**: Advanced placement rules using Kubernetes affinity
+  - **nodeAffinity**: Control which nodes pods can run on
+  - **podAffinity**: Prefer to run pods near other pods (e.g., other dataflow processors)
+  - **podAntiAffinity**: Avoid running pods near other pods (e.g., spread across nodes)
+
+### Tolerations
+
+- **tolerations**: Allow pods to run on tainted nodes
+  - Useful for dedicated compute nodes or specialized hardware
+  - Example: Run dataflow processors on nodes dedicated to batch workloads
+
+### Default Behavior
+
+If resources, nodeSelector, affinity, or tolerations are not specified:
+- Default resources are applied (100m CPU / 128Mi memory requests, 500m CPU / 512Mi memory limits)
+- Pods can run on any node (no nodeSelector)
+- No affinity rules are applied
+- Pods cannot run on tainted nodes (no tolerations)
+
+### Checking Pod Status
+
+After creating a DataFlow with custom resources, check the pod:
+
+```bash
+# List pods created by DataFlow
+kubectl get pods -l app=dataflow-processor
+
+# Describe a specific pod
+kubectl describe pod dataflow-<name>-<hash>
+
+# Check resource usage
+kubectl top pod dataflow-<name>-<hash>
+```
 
 For more examples, see the [Russian version](../ru/examples.md) or check `config/samples/` directory.
 

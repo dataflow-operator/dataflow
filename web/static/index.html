@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataFlow GUI</title>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/monokai.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/yaml/yaml.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1.5rem 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .tab {
+            padding: 1rem 2rem;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 1rem;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            color: #667eea;
+        }
+
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            font-weight: 600;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .card-header h2 {
+            font-size: 1.3rem;
+            color: #333;
+        }
+
+        .btn {
+            padding: 0.6rem 1.2rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
+        .btn-secondary {
+            background: #95a5a6;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #7f8c8d;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #555;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .status-running {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-stopped {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #555;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.7rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.95rem;
+        }
+
+        .form-group textarea {
+            min-height: 200px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .logs-container {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+        }
+
+        .metric-card h3 {
+            font-size: 0.9rem;
+            opacity: 0.9;
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-card .value {
+            font-size: 2rem;
+            font-weight: 600;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+        }
+
+        .namespace-selector {
+            margin-bottom: 1.5rem;
+        }
+
+        .namespace-selector select {
+            padding: 0.7rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.95rem;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            overflow: auto;
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 2% auto;
+            padding: 0;
+            border: none;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 1200px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .modal-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 8px 8px 0 0;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        .close {
+            color: white;
+            font-size: 2rem;
+            font-weight: bold;
+            cursor: pointer;
+            background: none;
+            border: none;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .close:hover {
+            opacity: 0.7;
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: flex-end;
+            gap: 1rem;
+        }
+
+        .json-editor {
+            width: 100%;
+            min-height: 500px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            padding: 1rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: #f8f9fa;
+            resize: vertical;
+            white-space: pre;
+            overflow-wrap: normal;
+            overflow-x: auto;
+        }
+
+        .CodeMirror {
+            height: 500px;
+            font-size: 0.9rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+        }
+
+        .CodeMirror-scroll {
+            min-height: 500px;
+        }
+
+        .view-mode {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>DataFlow Management GUI</h1>
+    </div>
+
+    <div class="container">
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('manifests')">Манифесты</button>
+            <button class="tab" onclick="switchTab('logs')">Логи</button>
+            <button class="tab" onclick="switchTab('metrics')">Метрики</button>
+        </div>
+
+        <!-- Манифесты -->
+        <div id="manifests" class="tab-content active">
+            <div class="card">
+                <div class="card-header">
+                    <h2>DataFlow Манифесты</h2>
+                    <button class="btn btn-primary" onclick="showCreateForm()">Создать новый</button>
+                </div>
+                <div class="namespace-selector">
+                    <label>Namespace:</label>
+                    <select id="namespace-select" onchange="loadDataFlows()">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </div>
+                <div id="dataflows-list"></div>
+            </div>
+        </div>
+
+        <!-- Логи -->
+        <div id="logs" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Логи обработки</h2>
+                </div>
+                <div class="form-group">
+                    <label>Namespace:</label>
+                    <select id="logs-namespace">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>DataFlow:</label>
+                    <select id="logs-dataflow" onchange="loadLogs()">
+                        <option value="">Выберите DataFlow</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Количество строк:</label>
+                    <input type="number" id="logs-tail" value="100" min="1" max="10000">
+                </div>
+                <button class="btn btn-primary" onclick="loadLogs()">Загрузить логи</button>
+                <button class="btn btn-secondary" onclick="toggleFollow()" id="follow-btn">Следить за логами</button>
+                <div id="logs-container" class="logs-container" style="margin-top: 1rem; display: none;"></div>
+            </div>
+        </div>
+
+        <!-- Метрики -->
+        <div id="metrics" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Метрики и статус обработки</h2>
+                </div>
+                <div class="form-group">
+                    <label>Namespace:</label>
+                    <select id="metrics-namespace">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>DataFlow:</label>
+                    <select id="metrics-dataflow" onchange="loadMetrics()">
+                        <option value="">Выберите DataFlow</option>
+                    </select>
+                </div>
+                <div id="metrics-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно для просмотра/редактирования манифеста -->
+    <div id="manifest-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">Манифест</h2>
+                <button class="close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="edit-container">
+                    <textarea id="json-editor" class="json-editor" placeholder="Введите YAML манифеста..." style="display: none;"></textarea>
+                    <div id="yaml-editor-wrapper"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Закрыть</button>
+                <button class="btn btn-primary" id="save-btn" onclick="saveManifest()" style="display: none;">Сохранить</button>
+                <button class="btn btn-primary" id="create-btn" onclick="createManifest()" style="display: none;">Создать</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let followLogs = false;
+        let eventSource = null;
+        let yamlEditor = null;
+
+        // Переключение вкладок
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+
+            if (tabName === 'manifests') {
+                loadDataFlows();
+            } else if (tabName === 'logs') {
+                loadDataFlowList('logs-dataflow');
+            } else if (tabName === 'metrics') {
+                loadDataFlowList('metrics-dataflow');
+            }
+        }
+
+        // Загрузка списка DataFlow
+        async function loadDataFlows() {
+            const namespace = document.getElementById('namespace-select').value;
+            
+            try {
+                const response = await fetch(`/api/dataflows?namespace=${namespace}`);
+                if (!response.ok) throw new Error('Failed to load DataFlows');
+                
+                const dataflows = await response.json();
+                const container = document.getElementById('dataflows-list');
+                
+                if (dataflows.length === 0) {
+                    container.innerHTML = '<p class="loading">Нет DataFlow манифестов</p>';
+                    return;
+                }
+
+                let html = '<table><thead><tr><th>Имя</th><th>Namespace</th><th>Статус</th><th>Обработано</th><th>Ошибок</th><th>Действия</th></tr></thead><tbody>';
+                
+                dataflows.forEach(df => {
+                    const statusClass = getStatusClass(df.status?.phase || 'Unknown');
+                    html += `
+                        <tr>
+                            <td>${df.metadata.name}</td>
+                            <td>${df.metadata.namespace}</td>
+                            <td><span class="status-badge ${statusClass}">${df.status?.phase || 'Unknown'}</span></td>
+                            <td>${df.status?.processedCount || 0}</td>
+                            <td>${df.status?.errorCount || 0}</td>
+                            <td>
+                                <button class="btn btn-secondary" onclick="viewManifest('${df.metadata.namespace}', '${df.metadata.name}')">Просмотр/Редактирование</button>
+                                <button class="btn btn-danger" onclick="deleteDataFlow('${df.metadata.namespace}', '${df.metadata.name}')">Удалить</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (error) {
+                document.getElementById('dataflows-list').innerHTML = `<div class="error">Ошибка: ${error.message}</div>`;
+            }
+        }
+
+        function getStatusClass(status) {
+            const statusLower = status.toLowerCase();
+            if (statusLower === 'running') return 'status-running';
+            if (statusLower === 'pending') return 'status-pending';
+            if (statusLower === 'error') return 'status-error';
+            if (statusLower === 'stopped') return 'status-stopped';
+            return 'status-stopped';
+        }
+
+        let currentManifest = null;
+        let editingNamespace = '';
+        let editingName = '';
+        let isEditMode = false;
+
+        // Просмотр манифеста
+        async function viewManifest(namespace, name) {
+            editingNamespace = namespace;
+            editingName = name;
+            isEditMode = false;
+            
+            try {
+                const response = await fetch(`/api/dataflows/${name}?namespace=${namespace}`);
+                if (!response.ok) throw new Error('Failed to load DataFlow');
+                
+                const df = await response.json();
+                currentManifest = df;
+                showManifestModal(df);
+            } catch (error) {
+                alert('Ошибка: ' + error.message);
+            }
+        }
+
+        // Показать модальное окно с манифестом
+        function showManifestModal(df) {
+            const modal = document.getElementById('manifest-modal');
+            const modalTitle = document.getElementById('modal-title');
+            const editContainer = document.getElementById('edit-container');
+            const saveBtn = document.getElementById('save-btn');
+            const createBtn = document.getElementById('create-btn');
+            
+            modalTitle.textContent = `Редактирование манифеста: ${df.metadata.name} (${df.metadata.namespace})`;
+            
+            // Сохраняем манифест для использования в редакторе
+            currentManifest = df;
+            isEditMode = true;
+            
+            // Конвертируем в YAML
+            let yamlText;
+            try {
+                yamlText = jsyaml.dump(df, {
+                    indent: 2,
+                    lineWidth: -1,
+                    quotingType: '"',
+                    forceQuotes: false
+                });
+            } catch (error) {
+                console.error('Error converting to YAML:', error);
+                // Fallback to JSON if YAML conversion fails
+                yamlText = JSON.stringify(df, null, 2);
+            }
+            
+            // Показываем кнопку сохранения
+            saveBtn.style.display = 'block';
+            createBtn.style.display = 'none';
+            
+            // Инициализируем CodeMirror если еще не инициализирован
+            setTimeout(() => {
+                const editorWrapper = document.getElementById('yaml-editor-wrapper');
+                if (!yamlEditor) {
+                    // Создаем новый div для редактора
+                    if (editorWrapper.firstChild) {
+                        editorWrapper.removeChild(editorWrapper.firstChild);
+                    }
+                    yamlEditor = CodeMirror(editorWrapper, {
+                        value: yamlText,
+                        mode: 'yaml',
+                        theme: 'monokai',
+                        lineNumbers: true,
+                        indentUnit: 2,
+                        lineWrapping: true,
+                        autoCloseBrackets: true,
+                        matchBrackets: true,
+                        foldGutter: true,
+                        gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter']
+                    });
+                } else {
+                    yamlEditor.setValue(yamlText);
+                    yamlEditor.refresh();
+                }
+            }, 100);
+            
+            modal.style.display = 'block';
+        }
+
+
+        // Сохранение манифеста
+        async function saveManifest() {
+            if (!isEditMode) return;
+            
+            let yamlText;
+            if (yamlEditor) {
+                yamlText = yamlEditor.getValue();
+            } else {
+                yamlText = document.getElementById('json-editor').value;
+            }
+            
+            let updatedManifest;
+            
+            try {
+                // Пробуем парсить как YAML
+                updatedManifest = jsyaml.load(yamlText);
+                if (!updatedManifest) {
+                    throw new Error('Пустой манифест');
+                }
+            } catch (error) {
+                // Если не получилось как YAML, пробуем как JSON
+                try {
+                    updatedManifest = JSON.parse(yamlText);
+                } catch (jsonError) {
+                    alert('Ошибка: Неверный формат YAML/JSON. ' + error.message);
+                    return;
+                }
+            }
+            
+            // Проверяем, что имя и namespace не изменились
+            if (updatedManifest.metadata.name !== editingName || 
+                updatedManifest.metadata.namespace !== editingNamespace) {
+                alert('Ошибка: Нельзя изменять имя или namespace манифеста');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/dataflows/${editingName}?namespace=${editingNamespace}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(updatedManifest),
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(errorText || 'Failed to update DataFlow');
+                }
+                
+                const updated = await response.json();
+                currentManifest = updated;
+                
+                // Обновляем список
+                loadDataFlows();
+                
+                // Обновляем содержимое редактора
+                try {
+                    const yamlText = jsyaml.dump(updated, {
+                        indent: 2,
+                        lineWidth: -1,
+                        quotingType: '"',
+                        forceQuotes: false
+                    });
+                    if (yamlEditor) {
+                        yamlEditor.setValue(yamlText);
+                    }
+                } catch (error) {
+                    if (yamlEditor) {
+                        yamlEditor.setValue(JSON.stringify(updated, null, 2));
+                    }
+                }
+                
+                alert('Манифест успешно обновлен!');
+            } catch (error) {
+                alert('Ошибка при сохранении: ' + error.message);
+            }
+        }
+
+        // Закрыть модальное окно
+        function closeModal() {
+            document.getElementById('manifest-modal').style.display = 'none';
+            currentManifest = null;
+            isEditMode = false;
+            // Не удаляем редактор, чтобы сохранить состояние
+        }
+
+        // Закрытие по клику вне модального окна
+        window.onclick = function(event) {
+            const modal = document.getElementById('manifest-modal');
+            if (event.target == modal) {
+                closeModal();
+            }
+        }
+
+        // Удаление DataFlow
+        async function deleteDataFlow(namespace, name) {
+            if (!confirm(`Удалить DataFlow "${name}"?`)) return;
+            
+            try {
+                const response = await fetch(`/api/dataflows/${name}?namespace=${namespace}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) throw new Error('Failed to delete DataFlow');
+                
+                loadDataFlows();
+            } catch (error) {
+                alert('Ошибка: ' + error.message);
+            }
+        }
+
+        // Загрузка списка DataFlow для выбора
+        async function loadDataFlowList(selectId) {
+            const namespace = document.getElementById('logs-namespace')?.value || 
+                             document.getElementById('metrics-namespace')?.value || 
+                             'default';
+            
+            try {
+                const response = await fetch(`/api/dataflows?namespace=${namespace}`);
+                if (!response.ok) throw new Error('Failed to load DataFlows');
+                
+                const dataflows = await response.json();
+                const select = document.getElementById(selectId);
+                
+                select.innerHTML = '<option value="">Выберите DataFlow</option>';
+                dataflows.forEach(df => {
+                    const option = document.createElement('option');
+                    option.value = df.metadata.name;
+                    option.textContent = df.metadata.name;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading DataFlows:', error);
+            }
+        }
+
+        // Загрузка логов
+        async function loadLogs() {
+            const namespace = document.getElementById('logs-namespace').value;
+            const name = document.getElementById('logs-dataflow').value;
+            const tail = document.getElementById('logs-tail').value;
+            
+            if (!name) {
+                alert('Выберите DataFlow');
+                return;
+            }
+
+            const container = document.getElementById('logs-container');
+            container.style.display = 'block';
+            container.textContent = 'Загрузка логов...';
+
+            if (followLogs) {
+                stopFollowLogs();
+            }
+
+            try {
+                const response = await fetch(`/api/logs?namespace=${namespace}&name=${name}&tailLines=${tail}&follow=false`);
+                if (!response.ok) throw new Error('Failed to load logs');
+                
+                const logs = await response.text();
+                container.textContent = logs || 'Логи пусты';
+            } catch (error) {
+                container.textContent = 'Ошибка: ' + error.message;
+            }
+        }
+
+        // Переключение режима следования за логами
+        function toggleFollow() {
+            if (followLogs) {
+                stopFollowLogs();
+            } else {
+                startFollowLogs();
+            }
+        }
+
+        function startFollowLogs() {
+            const namespace = document.getElementById('logs-namespace').value;
+            const name = document.getElementById('logs-dataflow').value;
+            
+            if (!name) {
+                alert('Выберите DataFlow');
+                return;
+            }
+
+            followLogs = true;
+            document.getElementById('follow-btn').textContent = 'Остановить слежение';
+            
+            const container = document.getElementById('logs-container');
+            container.style.display = 'block';
+            container.textContent = 'Подключение...\n';
+
+            eventSource = new EventSource(`/api/logs?namespace=${namespace}&name=${name}&tailLines=100&follow=true`);
+            
+            eventSource.onmessage = function(event) {
+                container.textContent += event.data + '\n';
+                container.scrollTop = container.scrollHeight;
+            };
+
+            eventSource.onerror = function(error) {
+                console.error('SSE error:', error);
+                stopFollowLogs();
+            };
+        }
+
+        function stopFollowLogs() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            followLogs = false;
+            document.getElementById('follow-btn').textContent = 'Следить за логами';
+        }
+
+        // Загрузка метрик
+        async function loadMetrics() {
+            const namespace = document.getElementById('metrics-namespace').value;
+            const name = document.getElementById('metrics-dataflow').value;
+            
+            if (!name) {
+                document.getElementById('metrics-container').innerHTML = '<p class="loading">Выберите DataFlow</p>';
+                return;
+            }
+
+            const container = document.getElementById('metrics-container');
+            container.innerHTML = '<p class="loading">Загрузка метрик...</p>';
+
+            try {
+                // Загружаем статус
+                const statusResponse = await fetch(`/api/status?namespace=${namespace}&name=${name}`);
+                if (!statusResponse.ok) throw new Error('Failed to load status');
+                
+                const status = await statusResponse.json();
+                
+                let html = `
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <h3>Статус</h3>
+                            <div class="value">${status.phase || 'Unknown'}</div>
+                        </div>
+                        <div class="metric-card">
+                            <h3>Обработано сообщений</h3>
+                            <div class="value">${status.processedCount || 0}</div>
+                        </div>
+                        <div class="metric-card">
+                            <h3>Ошибок</h3>
+                            <div class="value">${status.errorCount || 0}</div>
+                        </div>
+                        <div class="metric-card">
+                            <h3>Последняя обработка</h3>
+                            <div class="value" style="font-size: 1rem;">${status.lastProcessedTime ? new Date(status.lastProcessedTime).toLocaleString('ru-RU') : 'N/A'}</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>Сообщение статуса</h3>
+                        <p>${status.message || 'Нет сообщения'}</p>
+                    </div>
+                `;
+                
+                container.innerHTML = html;
+            } catch (error) {
+                container.innerHTML = `<div class="error">Ошибка: ${error.message}</div>`;
+            }
+        }
+
+        function showCreateForm() {
+            // Создаем пустой манифест для редактирования
+            const newManifest = {
+                apiVersion: "dataflow.dataflow.io/v1",
+                kind: "DataFlow",
+                metadata: {
+                    name: "",
+                    namespace: document.getElementById('namespace-select').value || "default"
+                },
+                spec: {
+                    source: {
+                        type: "kafka",
+                        kafka: {
+                            brokers: [],
+                            topic: ""
+                        }
+                    },
+                    sink: {
+                        type: "postgresql",
+                        postgresql: {
+                            connectionString: "",
+                            table: ""
+                        }
+                    },
+                    transformations: []
+                }
+            };
+            
+            editingNamespace = newManifest.metadata.namespace;
+            editingName = "";
+            isEditMode = true;
+            
+            const modal = document.getElementById('manifest-modal');
+            const modalTitle = document.getElementById('modal-title');
+            const viewContainer = document.getElementById('view-container');
+            const editContainer = document.getElementById('edit-container');
+            const jsonEditor = document.getElementById('json-editor');
+            
+            modalTitle.textContent = 'Создание нового DataFlow';
+            
+            // Показываем режим редактирования
+            editContainer.style.display = 'block';
+            
+            // Конвертируем в YAML
+            let yamlText;
+            try {
+                yamlText = jsyaml.dump(newManifest, {
+                    indent: 2,
+                    lineWidth: -1,
+                    quotingType: '"',
+                    forceQuotes: false
+                });
+            } catch (error) {
+                // Fallback to JSON
+                yamlText = JSON.stringify(newManifest, null, 2);
+            }
+            
+            // Инициализируем CodeMirror если еще не инициализирован
+            setTimeout(() => {
+                if (!yamlEditor) {
+                    yamlEditor = CodeMirror.fromTextArea(jsonEditor, {
+                        mode: 'yaml',
+                        theme: 'monokai',
+                        lineNumbers: true,
+                        indentUnit: 2,
+                        lineWrapping: true,
+                        autoCloseBrackets: true,
+                        matchBrackets: true,
+                        foldGutter: true,
+                        gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter']
+                    });
+                }
+                yamlEditor.setValue(yamlText);
+                yamlEditor.refresh();
+            }, 100);
+            
+            modal.style.display = 'block';
+        }
+
+        // Создание нового манифеста
+        async function createManifest() {
+            let yamlText;
+            if (yamlEditor) {
+                yamlText = yamlEditor.getValue();
+            } else {
+                yamlText = document.getElementById('json-editor').value;
+            }
+            
+            let newManifest;
+            
+            try {
+                // Пробуем парсить как YAML
+                newManifest = jsyaml.load(yamlText);
+                if (!newManifest) {
+                    throw new Error('Пустой манифест');
+                }
+            } catch (error) {
+                // Если не получилось как YAML, пробуем как JSON
+                try {
+                    newManifest = JSON.parse(yamlText);
+                } catch (jsonError) {
+                    alert('Ошибка: Неверный формат YAML/JSON. ' + error.message);
+                    return;
+                }
+            }
+            
+            if (!newManifest.metadata.name) {
+                alert('Ошибка: Необходимо указать имя манифеста');
+                return;
+            }
+            
+            const namespace = newManifest.metadata.namespace || document.getElementById('namespace-select').value || 'default';
+            
+            try {
+                const response = await fetch(`/api/dataflows?namespace=${namespace}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(newManifest),
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(errorText || 'Failed to create DataFlow');
+                }
+                
+                const created = await response.json();
+                
+                // Обновляем список
+                loadDataFlows();
+                
+                // Закрываем модальное окно
+                closeModal();
+                
+                alert('Манифест успешно создан!');
+            } catch (error) {
+                alert('Ошибка при создании: ' + error.message);
+            }
+        }
+
+        // Загрузка списка namespaces
+        async function loadNamespaces() {
+            try {
+                const response = await fetch('/api/namespaces');
+                if (!response.ok) throw new Error('Failed to load namespaces');
+                
+                const namespaces = await response.json();
+                
+                // Обновляем все селекторы namespaces
+                const selectors = ['namespace-select', 'logs-namespace', 'metrics-namespace'];
+                selectors.forEach(selectorId => {
+                    const select = document.getElementById(selectorId);
+                    if (select) {
+                        select.innerHTML = '';
+                        namespaces.forEach(ns => {
+                            const option = document.createElement('option');
+                            option.value = ns;
+                            option.textContent = ns;
+                            select.appendChild(option);
+                        });
+                        // Устанавливаем default если есть
+                        if (namespaces.includes('default')) {
+                            select.value = 'default';
+                        } else if (namespaces.length > 0) {
+                            select.value = namespaces[0];
+                        }
+                    }
+                });
+                
+                // Загружаем данные после обновления namespaces
+                loadDataFlows();
+                loadDataFlowList('logs-dataflow');
+                loadDataFlowList('metrics-dataflow');
+            } catch (error) {
+                console.error('Error loading namespaces:', error);
+                // Устанавливаем default в случае ошибки
+                const selectors = ['namespace-select', 'logs-namespace', 'metrics-namespace'];
+                selectors.forEach(selectorId => {
+                    const select = document.getElementById(selectorId);
+                    if (select) {
+                        select.innerHTML = '<option value="default">default</option>';
+                        select.value = 'default';
+                    }
+                });
+            }
+        }
+
+        // Инициализация при загрузке страницы
+        window.onload = function() {
+            loadNamespaces();
+        };
+    </script>
+</body>
+</html>

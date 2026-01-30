@@ -1,0 +1,42 @@
+{{- if and .Values.gui.enabled .Values.gui.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dataflow-operator.gui.fullname" . }}
+  labels:
+    {{- include "dataflow-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gui
+  {{- with .Values.gui.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.gui.ingress.className }}
+  ingressClassName: {{ .Values.gui.ingress.className }}
+  {{- end }}
+  {{- if .Values.gui.ingress.tls }}
+  tls:
+    {{- range .Values.gui.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.gui.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "dataflow-operator.gui.fullname" $ }}
+                port:
+                  number: {{ $.Values.gui.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

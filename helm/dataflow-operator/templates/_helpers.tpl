@@ -61,3 +61,21 @@ Create the name of the service account to use
 {{- end }}
 {{- end }}
 
+{{/*
+Full name for GUI deployment and service
+*/}}
+{{- define "dataflow-operator.gui.fullname" -}}
+{{- printf "%s-gui" (include "dataflow-operator.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Service account name for GUI (uses operator SA if gui.serviceAccount.name not set)
+*/}}
+{{- define "dataflow-operator.gui.serviceAccountName" -}}
+{{- if .Values.gui.serviceAccount.name }}
+{{- .Values.gui.serviceAccount.name }}
+{{- else }}
+{{- include "dataflow-operator.serviceAccountName" . }}
+{{- end }}
+{{- end }}
+

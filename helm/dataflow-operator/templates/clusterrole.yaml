@@ -40,5 +40,22 @@ rules:
   - get
   - list
   - watch
+{{- if .Values.gui.enabled }}
+# GUI needs read-only access to pods and pod logs
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+{{- end }}
 {{- end }}
 

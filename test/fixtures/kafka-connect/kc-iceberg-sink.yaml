@@ -1,0 +1,123 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnect
+metadata:
+  name: kc-iceberg-sink
+  namespace: kafka-connect
+  annotations:
+    strimzi.io/use-connector-resources: "true"
+spec:
+  image: "harbor.tech.mvideo.ru/mvideoru/mdo-devops/containers/production/debezium-pg-mongodb:master-0fe56752"
+  authentication:
+    type: scram-sha-512
+    username: com-data-platform-kc-prod
+    passwordSecret:
+      password: kafka-password
+      secretName: kc-kafka-cred-tp-prod-env-vars
+  bootstrapServers: >-
+     rc1a-hd87l57gvr84oggg.mdb.yandexcloud.net:9091, rc1b-tp6jn81lehb8cmfa.mdb.yandexcloud.net:9091, rc1d-q4m8e90ianbtej5p.mdb.yandexcloud.net:9091
+  replicas: 1
+  resources:
+    requests:
+      memory: 6Gi
+      ephemeral-storage: 20Gi
+    limits:
+      ephemeral-storage: 20Gi
+  metricsConfig:
+    type: jmxPrometheusExporter
+    valueFrom:
+      configMapKeyRef:
+        name: connect-metrics
+        key: metrics-config.yml
+  jmxOptions: {}
+  jvmOptions:
+    javaSystemProperties:
+      - name: java.io.tmpdir
+        value: /mnt/iceberg/tmp
+  logging:
+    type: external
+    valueFrom:
+      configMapKeyRef:
+        key: log4j.properties
+        name: connect-logging-configmap
+  tls:
+    trustedCertificates:
+      - certificate: CA.pem
+        secretName: kc-kafka-cred-tp-prod-env-vars
+  template:
+    pod:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 0
+      imagePullSecrets:
+        - name: harbor-auth
+      volumes:
+        - name: iceberg-tmp-storage
+          persistentVolumeClaim:
+            claimName: kafka-connect-tmp-storage
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: service
+                    operator: In
+                    values:
+                      - worker
+    connectContainer:
+      env:
+        - name: AWS_REGION
+          value: "ru-central1"
+      securityContext:
+        runAsUser: 1001
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: iceberg-tmp-storage
+          mountPath: /mnt/iceberg
+  config:
+    # === Общие настройки Kafka Connect ===
+    topic.creation.enable: false
+
+    # === Оффсеты ===
+    offset.flush.interval.ms: "10000"
+    offset.flush.timeout.ms: "15000"
+
+    # === Consumer group (для worker'а)
+    consumer.session.timeout.ms: "45000"
+    consumer.heartbeat.interval.ms: "15000"
+    consumer.max.poll.interval.ms: "1200000"
+
+    config.providers: secrets,configmaps
+    config.storage.replication.factor: 3
+    status.storage.replication.factor: 3
+    offset.storage.replication.factor: 3
+    group.id: iceberg-sink-prices-1
+    config.storage.topic: com-data-platform-int-iceberg-sink-prod-config
+    status.storage.topic: com-data-platform-int-iceberg-sink-prod-status
+    offset.storage.topic: com-data-platform-int-iceberg-sink-prod-offsets
+    config.providers.secrets.class: io.strimzi.kafka.KubernetesSecretConfigProvider
+    config.providers.configmaps.class: io.strimzi.kafka.KubernetesConfigMapConfigProvider
+
+    # === Iceberg: временная директория (важно!) ===
+    iceberg.catalog.io.temp-dir: /mnt/iceberg
+
+    # === Опционально: контроль буферизации ===
+    # Уменьшите, если данные объёмные или медленно пишутся в S3
+    iceberg.batch.size: 2000                     # баланс: не слишком много, не слишком мало
+    iceberg.flush.size: 10000                    # flush ~каждые 5 poll(), но не чаще чем раз в 10–20 сек
+    iceberg.control.commit.interval-ms: 10000    # коммит оффсетов каждые 10 сек (как и flush.interval)
+
+    # Avro converter settings, тут тоже обязательно как и в KafkaConnect, в других коннекоторах или переопределяем или выключаем
+    key.converter: io.confluent.connect.avro.AvroConverter
+    value.converter: io.confluent.connect.avro.AvroConverter
+    key.converter.scrub.invalid.names: true
+    value.converter.scrub.invalid.names: true
+    key.converter.basic.auth.credentials.source: USER_INFO
+    value.converter.basic.auth.credentials.source: USER_INFO
+    key.converter.basic.auth.user.info: ${secrets:kafka-connect/kc-kafka-cred-tp-prod-env-vars:basic_auth}
+    value.converter.basic.auth.user.info: ${secrets:kafka-connect/kc-kafka-cred-tp-prod-env-vars:basic_auth}
+    key.converter.schema.registry.url: https://rc1a-hd87l57gvr84oggg.mdb.yandexcloud.net,https://rc1b-tp6jn81lehb8cmfa.mdb.yandexcloud.net,https://rc1d-q4m8e90ianbtej5p.mdb.yandexcloud.net
+    value.converter.schema.registry.url: https://rc1a-hd87l57gvr84oggg.mdb.yandexcloud.net,https://rc1b-tp6jn81lehb8cmfa.mdb.yandexcloud.net,https://rc1d-q4m8e90ianbtej5p.mdb.yandexcloud.net

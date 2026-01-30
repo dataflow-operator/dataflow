@@ -214,6 +214,8 @@ spec:
 kubectl apply -f config/samples/kafka-to-postgres.yaml
 ```
 
+**Примечание**: Каждый ресурс DataFlow создает отдельный под (Deployment) для обработки данных. Вы можете настроить ресурсы, выбор нод, affinity и tolerations. Подробнее см. [Примеры](examples.md#настройка-ресурсов-и-размещения-подов).
+
 ### Пример с Kubernetes Secrets
 
 Для безопасного хранения credentials используйте Kubernetes Secrets. См. пример:

@@ -17,6 +17,8 @@ DataFlow Operator supports various message transformations that are applied sequ
 | Remove | Removes fields | 1 message | 1 message |
 | SnakeCase | Converts keys to snake_case | 1 message | 1 message |
 | CamelCase | Converts keys to CamelCase | 1 message | 1 message |
+| ReplaceField | Renames fields | 1 message | 1 message |
+| HeaderFrom | Extracts data from Kafka headers | 1 message | 1 message |
 
 ## Timestamp
 
@@ -223,6 +225,97 @@ transformations:
   "IsActive": true
 }
 ```
+
+## ReplaceField
+
+Renames fields in messages. Useful for normalizing data structure and changing field paths.
+
+### Configuration
+
+```yaml
+transformations:
+  - type: replaceField
+    replaceField:
+      # List of rename rules in format "old.path:new.path" (required)
+      renames:
+        - key.sku:sku
+        - body.lc:lc
+```
+
+### Rename Rule Format
+
+Rename rules have the format `old.path:new.path`:
+- Left part (before `:`) - JSONPath to existing field
+- Right part (after `:`) - JSONPath to new field
+- JSONPath syntax is supported (you can use `$.` prefix)
+
+### Example
+
+**Input:**
+```json
+{
+  "key": {
+    "sku": "12345"
+  },
+  "body": {
+    "lc": "en"
+  }
+}
+```
+
+**Output:**
+```json
+{
+  "sku": "12345",
+  "lc": "en"
+}
+```
+
+## HeaderFrom
+
+Extracts data from Kafka message headers and adds them to the message body. Useful for enriching messages with metadata from headers.
+
+### Configuration
+
+```yaml
+transformations:
+  - type: headerFrom
+    headerFrom:
+      # List of mappings in format "headerName:field.path" (required)
+      mappings:
+        - X-Request-Id:requestId
+        - X-Language:metadata.language
+```
+
+### Mapping Format
+
+Mappings have the format `headerName:field.path`:
+- Left part (before `:`) - Kafka message header name
+- Right part (after `:`) - JSONPath to field in message body where header value will be written
+- JSONPath syntax is supported (you can use `$.` prefix)
+
+### Example
+
+**Input message (with header `X-Request-Id: req-123`):**
+```json
+{
+  "data": "value"
+}
+```
+
+**Output:**
+```json
+{
+  "data": "value",
+  "requestId": "req-123"
+}
+```
+
+### Notes
+
+- Headers are only available for messages from Kafka sources
+- If a header doesn't exist, the mapping is skipped
+- Header values are always added as strings
 
 For complete transformation documentation with examples, see the [Russian version](../ru/transformations.md).
 

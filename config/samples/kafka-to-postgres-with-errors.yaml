@@ -1,0 +1,23 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-with-errors
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: output_table
+  errors:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: error-topic

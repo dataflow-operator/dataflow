@@ -20,9 +20,13 @@ import (
 	"context"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -35,6 +39,8 @@ func TestNewDataFlowReconciler(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
 	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
+	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewDataFlowReconciler(fakeClient, scheme)
@@ -42,12 +48,14 @@ func TestNewDataFlowReconciler(t *testing.T) {
 	assert.NotNil(t, reconciler)
 	assert.Equal(t, fakeClient, reconciler.Client)
 	assert.Equal(t, scheme, reconciler.Scheme)
-	assert.NotNil(t, reconciler.processors)
+	assert.NotEmpty(t, reconciler.processorImage)
 }
 
-func TestDataFlowReconciler_Reconcile_CreateProcessor(t *testing.T) {
+func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -93,7 +101,7 @@ func TestDataFlowReconciler_Reconcile_CreateProcessor(t *testing.T) {
 		},
 	}
 
-	// Reconcile may fail due to connection errors, but processor should be created
+	// Reconcile should create Deployment and ConfigMap
 	result, err := reconciler.Reconcile(ctx, req)
 	// We don't require no error because connection to Kafka will fail in background
 
@@ -102,21 +110,34 @@ func TestDataFlowReconciler_Reconcile_CreateProcessor(t *testing.T) {
 	getErr := fakeClient.Get(ctx, req.NamespacedName, &updatedDataflow)
 	require.NoError(t, getErr, "DataFlow should exist after reconcile")
 
-	// Processor should be created (even if it fails to start later)
-	reconciler.mu.RLock()
-	key := "default/test-dataflow"
-	_, exists := reconciler.processors[key]
-	reconciler.mu.RUnlock()
-	assert.True(t, exists, "processor should be created")
+	// Verify Deployment was created
+	var deployment appsv1.Deployment
+	deploymentName := types.NamespacedName{
+		Name:      "dataflow-test-dataflow",
+		Namespace: "default",
+	}
+	err = fakeClient.Get(ctx, deploymentName, &deployment)
+	assert.NoError(t, err, "Deployment should be created")
+	assert.Equal(t, "dataflow-test-dataflow", deployment.Name)
 
-	// Status update may fail with fake client, but we verify processor was created
-	// In real scenario, status would be "Running" or "Error"
+	// Verify ConfigMap was created
+	var configMap corev1.ConfigMap
+	configMapName := types.NamespacedName{
+		Name:      "dataflow-test-dataflow-spec",
+		Namespace: "default",
+	}
+	err = fakeClient.Get(ctx, configMapName, &configMap)
+	assert.NoError(t, err, "ConfigMap should be created")
+	assert.Contains(t, configMap.Data, "spec.json")
+
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
 func TestDataFlowReconciler_Reconcile_DeleteDataFlow(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -178,9 +199,143 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow(t *testing.T) {
 	// We just verify that reconcile completes without error/panic
 }
 
+func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T) {
+	scheme := runtime.NewScheme()
+	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
+	require.NoError(t, err)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+
+	ctx := context.Background()
+
+	cpuRequest := resource.MustParse("200m")
+	memoryRequest := resource.MustParse("256Mi")
+	cpuLimit := resource.MustParse("1000m")
+	memoryLimit := resource.MustParse("1Gi")
+
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "output-topic",
+				},
+			},
+			Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    cpuRequest,
+					corev1.ResourceMemory: memoryRequest,
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    cpuLimit,
+					corev1.ResourceMemory: memoryLimit,
+				},
+			},
+			NodeSelector: map[string]string{
+				"node-type": "compute",
+				"zone":      "us-east-1",
+			},
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "kubernetes.io/arch",
+										Operator: corev1.NodeSelectorOpIn,
+										Values:   []string{"amd64"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			Tolerations: []corev1.Toleration{
+				{
+					Key:      "dedicated",
+					Operator: corev1.TolerationOpEqual,
+					Value:    "dataflow",
+					Effect:   corev1.TaintEffectNoSchedule,
+				},
+			},
+		},
+	}
+
+	err = fakeClient.Create(ctx, dataflow)
+	require.NoError(t, err)
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+	}
+
+	// Reconcile should create Deployment with custom resources and node selector
+	result, err := reconciler.Reconcile(ctx, req)
+	// We don't require no error because connection to Kafka will fail in background
+
+	// Verify Deployment was created with correct settings
+	var deployment appsv1.Deployment
+	deploymentName := types.NamespacedName{
+		Name:      "dataflow-test-dataflow",
+		Namespace: "default",
+	}
+	err = fakeClient.Get(ctx, deploymentName, &deployment)
+	require.NoError(t, err, "Deployment should be created")
+
+	// Verify resources
+	container := deployment.Spec.Template.Spec.Containers[0]
+	// Use Cmp() method for resource.Quantity comparison
+	assert.Equal(t, 0, cpuRequest.Cmp(container.Resources.Requests[corev1.ResourceCPU]))
+	assert.Equal(t, 0, memoryRequest.Cmp(container.Resources.Requests[corev1.ResourceMemory]))
+	assert.Equal(t, 0, cpuLimit.Cmp(container.Resources.Limits[corev1.ResourceCPU]))
+	assert.Equal(t, 0, memoryLimit.Cmp(container.Resources.Limits[corev1.ResourceMemory]))
+
+	// Verify nodeSelector
+	assert.Equal(t, "compute", deployment.Spec.Template.Spec.NodeSelector["node-type"])
+	assert.Equal(t, "us-east-1", deployment.Spec.Template.Spec.NodeSelector["zone"])
+
+	// Verify affinity
+	assert.NotNil(t, deployment.Spec.Template.Spec.Affinity)
+	assert.NotNil(t, deployment.Spec.Template.Spec.Affinity.NodeAffinity)
+	assert.Equal(t, "amd64", deployment.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions[0].Values[0])
+
+	// Verify tolerations
+	assert.Len(t, deployment.Spec.Template.Spec.Tolerations, 1)
+	assert.Equal(t, "dedicated", deployment.Spec.Template.Spec.Tolerations[0].Key)
+	assert.Equal(t, "dataflow", deployment.Spec.Template.Spec.Tolerations[0].Value)
+
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
 func TestDataFlowReconciler_Reconcile_InvalidSpec(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -246,6 +401,8 @@ func TestDataFlowReconciler_Reconcile_InvalidSpec(t *testing.T) {
 func TestDataFlowReconciler_Reconcile_UpdateStats(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -314,6 +471,8 @@ func TestDataFlowReconciler_Reconcile_UpdateStats(t *testing.T) {
 func TestDataFlowReconciler_Reconcile_NotFound(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()

@@ -1,0 +1,68 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-with-resources
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: output_table
+  # Настройка ресурсов для пода процессора
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  # Выбор нод для размещения пода
+  nodeSelector:
+    node-type: compute
+    zone: us-east-1
+  # Правила affinity для более точного контроля размещения
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/arch
+            operator: In
+            values:
+            - amd64
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+          - key: node-type
+            operator: In
+            values:
+            - compute
+    podAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 50
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app
+              operator: In
+              values:
+              - dataflow-processor
+          topologyKey: kubernetes.io/hostname
+  # Tolerations для работы с tainted нодами
+  tolerations:
+  - key: dedicated
+    operator: Equal
+    value: dataflow
+    effect: NoSchedule
+  - key: workload-type
+    operator: Equal
+    value: batch
+    effect: NoSchedule

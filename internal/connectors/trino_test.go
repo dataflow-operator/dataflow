@@ -48,9 +48,10 @@ func TestTrinoSinkConnector_formatValueForType_Timestamp(t *testing.T) {
 			columnType: "timestamp",
 			checkFunc: func(t *testing.T, result string) {
 				// Should be formatted as TIMESTAMP 'YYYY-MM-DD HH:MM:SS' without timezone
+				// Time is converted to UTC: 13:55:03+08:00 = 05:55:03 UTC
 				assert.Contains(t, result, "TIMESTAMP '")
 				assert.Contains(t, result, "2026-01-16")
-				assert.Contains(t, result, "13:55:03")
+				assert.Contains(t, result, "05:55:03") // UTC time
 				// Should not contain timezone offset
 				assert.NotContains(t, result, "+08:00")
 				assert.NotContains(t, result, "-08:00")
@@ -171,9 +172,10 @@ func TestTrinoSinkConnector_formatValueForType_TimestampEdgeCases(t *testing.T) 
 			columnType: "timestamp",
 			validate: func(t *testing.T, result string) {
 				// Should parse and format correctly
+				// Time is converted to UTC: 13:55:03+08:00 = 05:55:03 UTC
 				assert.Contains(t, result, "TIMESTAMP '")
 				assert.Contains(t, result, "2026-01-16")
-				assert.Contains(t, result, "13:55:03")
+				assert.Contains(t, result, "05:55:03") // UTC time
 				// Should not contain timezone
 				assert.NotContains(t, result, "+08:00")
 			},
@@ -226,9 +228,10 @@ func TestTrinoSinkConnector_formatValueForType_TimestampFormat(t *testing.T) {
 	result := connector.formatValueForType(rfc3339Str, "timestamp")
 
 	// Should be in format: TIMESTAMP 'YYYY-MM-DD HH:MM:SS'
+	// Time is converted to UTC: 13:55:03+08:00 = 05:55:03 UTC
 	assert.Contains(t, result, "TIMESTAMP '")
 	assert.Contains(t, result, "2026-01-16")
-	assert.Contains(t, result, "13:55:03")
+	assert.Contains(t, result, "05:55:03") // UTC time
 
 	// Extract the timestamp part and verify it's parseable
 	// Format should be: TIMESTAMP '2026-01-16 05:55:03' (converted to UTC)

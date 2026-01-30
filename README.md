@@ -16,6 +16,9 @@ Kubernetes operator for streaming data between different sources (Kafka, Postgre
   - SnakeCase - convert field names to snake_case
   - CamelCase - convert field names to CamelCase
 - **Kubernetes Secrets Support**: Configure connectors using `SecretRef` for secure credential management
+- **Per-Resource Pod Deployment**: Each DataFlow resource creates a separate pod (Deployment) for processing
+- **Resource Management**: Configure CPU and memory resources for processor pods
+- **Pod Placement Control**: Configure nodeSelector, affinity, and tolerations for fine-grained pod placement
 
 ## Quick Start
 
@@ -188,6 +191,35 @@ make test
 ./scripts/setup-kind.sh
 make test-integration
 ```
+
+## Web GUI
+
+DataFlow включает веб-интерфейс для управления манифестами, просмотра логов и мониторинга метрик.
+
+### Запуск GUI сервера
+
+```bash
+go run cmd/gui-server/main.go --bind-address :8080
+```
+
+Или с параметрами:
+
+```bash
+go run cmd/gui-server/main.go \
+  --bind-address :8080 \
+  --kubeconfig ~/.kube/config \
+  --log-level info
+```
+
+### Использование
+
+1. Откройте браузер и перейдите на `http://localhost:8080`
+2. Используйте вкладки для:
+   - **Манифесты**: Управление DataFlow ресурсами (создание, просмотр, обновление, удаление)
+   - **Логи**: Просмотр логов обработки в реальном времени
+   - **Метрики**: Мониторинг статуса обработки, количества обработанных сообщений и ошибок
+
+Подробнее см. [cmd/gui-server/README.md](cmd/gui-server/README.md)
 
 ## Security
 

@@ -1,0 +1,21 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: connect-logging-configmap
+  namespace: kafka-connect
+data:
+  log4j.properties: |-
+    # Аппендер: вывод в консоль (stdout)
+    log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender
+    log4j.appender.CONSOLE.layout=org.apache.log4j.PatternLayout
+    log4j.appender.CONSOLE.layout.ConversionPattern=%d{ISO8601} %p %m (%c) [%t]%n
+    
+    # Корневой логгер: только CONSOLE
+    connect.root.logger.level=INFO
+    log4j.rootLogger=${connect.root.logger.level}, CONSOLE
+    
+    # Уровни логирования для сторонних компонентов
+    log4j.logger.org.apache.zookeeper=ERROR
+    log4j.logger.org.I0Itec.zkclient=ERROR
+    log4j.logger.org.reflections=ERROR

@@ -1,0 +1,19 @@
+{{- if .Values.gui.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dataflow-operator.gui.fullname" . }}
+  labels:
+    {{- include "dataflow-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gui
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.gui.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "dataflow-operator.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gui
+{{- end }}

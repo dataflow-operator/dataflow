@@ -358,29 +358,29 @@ source:
   trino:
     # Trino server URL (required)
     serverURL: "http://trino:8080"
-    
+
     # Catalog to use (required)
     catalog: hive
-    
+
     # Schema to use (required)
     schema: default
-    
+
     # Table to read from (required, if not using query)
     table: source_table
-    
+
     # Custom SQL query (optional)
     # If specified, used instead of reading from table
     query: "SELECT * FROM hive.default.source_table WHERE id > 100"
-    
+
     # Poll interval in seconds (optional, default: 5)
     # Used for periodic reading of new data
     pollInterval: 60
-    
+
     # Keycloak authentication (optional)
     keycloak:
       # Option 1: Use long-lived token directly (recommended for long-lived tokens)
       token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
-      
+
       # Option 2: Use OAuth2 flow (alternative to direct token)
       # serverURL: "https://keycloak.example.com"
       # realm: myrealm
@@ -440,24 +440,24 @@ sink:
   trino:
     # Trino server URL (required)
     serverURL: "http://trino:8080"
-    
+
     # Catalog to use (required)
     catalog: hive
-    
+
     # Schema to use (required)
     schema: default
-    
+
     # Table to write to (required)
     table: target_table
-    
+
     # Batch size for inserts (optional, default: 1)
     # Increase for better performance
     batchSize: 100
-    
+
     # Auto-create table (optional, default: false)
     # If true, creates table with VARCHAR column for JSON data
     autoCreateTable: true
-    
+
     # Keycloak authentication (optional)
     keycloak:
       serverURL: "https://keycloak.example.com"
@@ -501,7 +501,7 @@ spec:
       keycloak:
         # Use long-lived token obtained from Keycloak
         token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
-        
+
         # Alternative: Use OAuth2 flow
         # serverURL: "https://keycloak.example.com"
         # realm: myrealm
@@ -510,6 +510,58 @@ spec:
         # username: trino-user
         # password: trino-password
 ```
+
+## Error Handling (Error Sink)
+
+DataFlow Operator supports configuring a separate sink for messages that failed to be written to the main sink. This allows preserving problematic messages for later analysis and processing.
+
+### Configuration
+
+The `errors` section in the DataFlow spec defines the error sink:
+
+```yaml
+spec:
+  source:
+    # ... source configuration
+  sink:
+    # ... main sink configuration
+  errors:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: error-topic
+```
+
+### Error Message Structure
+
+When a message fails to be written to the main sink, it is sent to the error sink with the following structure:
+
+```json
+{
+  "error": {
+    "message": "error text",
+    "timestamp": "2026-01-24T12:34:56Z",
+    "original_sink": "postgresql",
+    "metadata": {
+      // Metadata from the original message (if present)
+    }
+  },
+  "original_message": {
+    // Original message data
+    // If the original message was JSON, it will be here as an object
+    // If not - there will be an "original_data" field with a string
+  }
+}
+```
+
+### Features
+
+- **Any sink type**: Error sink can be of any type (Kafka, PostgreSQL, Trino)
+- **Data preservation**: Original message data is preserved in the `original_message` field
+- **Error information**: Error information is embedded in the message structure, ensuring it is preserved regardless of the error sink type
+- **Error handling**: If `errors` is not specified, write errors will cause processing to stop
+- **Router sinks**: Error sink also works for messages sent through router transformation
 
 For complete connector documentation, see the [Russian version](../ru/connectors.md).
 

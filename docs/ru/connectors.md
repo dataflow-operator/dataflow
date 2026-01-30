@@ -621,6 +621,160 @@ spec:
         #   key: password
 ```
 
+## Обработка ошибок (Error Sink)
+
+DataFlow Operator поддерживает настройку отдельного приемника для сообщений, которые не удалось записать в основной sink. Это позволяет сохранять проблемные сообщения для последующего анализа и обработки.
+
+### Конфигурация Error Sink
+
+Секция `errors` в спецификации DataFlow определяет приемник для сообщений об ошибках:
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: example-with-errors
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://user:pass@postgres:5432/db"
+      table: output_table
+  errors:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: error-topic
+```
+
+### Структура сообщения об ошибке
+
+Когда сообщение не удается записать в основной sink, оно отправляется в error sink со следующей структурой:
+
+```json
+{
+  "error": {
+    "message": "текст ошибки",
+    "timestamp": "2026-01-24T12:34:56Z",
+    "original_sink": "postgresql",
+    "metadata": {
+      // Метаданные из оригинального сообщения (если были)
+    }
+  },
+  "original_message": {
+    // Оригинальные данные сообщения
+    // Если оригинальное сообщение было JSON, оно будет здесь как объект
+    // Если нет - будет поле "original_data" со строкой
+  }
+}
+```
+
+### Примеры использования
+
+#### Kafka как Error Sink
+
+```yaml
+errors:
+  type: kafka
+  kafka:
+    brokers:
+      - localhost:9092
+    topic: error-topic
+```
+
+#### PostgreSQL как Error Sink
+
+```yaml
+errors:
+  type: postgresql
+  postgresql:
+    connectionString: "postgres://user:pass@postgres:5432/db"
+    table: error_messages
+    autoCreateTable: true
+```
+
+#### Trino как Error Sink
+
+```yaml
+errors:
+  type: trino
+  trino:
+    serverURL: "http://trino:8080"
+    catalog: hive
+    schema: default
+    table: error_messages
+    keycloak:
+      token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Особенности
+
+- **Любой тип sink**: Error sink может быть любого типа (Kafka, PostgreSQL, Trino)
+- **Сохранение данных**: Оригинальные данные сообщения сохраняются в поле `original_message`
+- **Метаданные**: Информация об ошибке встраивается в структуру сообщения, что гарантирует её сохранение независимо от типа error sink
+- **Обработка ошибок**: Если `errors` не указан, ошибки записи будут приводить к остановке обработки
+- **Router sinks**: Error sink также работает для сообщений, отправляемых через router transformation
+
+### Пример полного конфига
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-with-errors
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: output_table
+      autoCreateTable: true
+  errors:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: error-topic
+```
+
+### Использование Secrets для Error Sink
+
+Error sink также поддерживает использование Kubernetes Secrets:
+
+```yaml
+errors:
+  type: kafka
+  kafka:
+    brokersSecretRef:
+      name: kafka-credentials
+      key: brokers
+    topicSecretRef:
+      name: kafka-credentials
+      key: error-topic
+    sasl:
+      mechanism: scram-sha-256
+      usernameSecretRef:
+        name: kafka-credentials
+        key: username
+      passwordSecretRef:
+        name: kafka-credentials
+        key: password
+```
+
 ## Использование Secrets в Kubernetes
 
 DataFlow Operator поддерживает конфигурацию коннекторов из Kubernetes Secrets. Это позволяет безопасно хранить чувствительные данные (пароли, токены, connection strings) без их явного указания в спецификации DataFlow.

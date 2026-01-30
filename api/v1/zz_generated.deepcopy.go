@@ -21,6 +21,7 @@ limitations under the License.
 package v1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -131,6 +132,35 @@ func (in *DataFlowSpec) DeepCopyInto(out *DataFlowSpec) {
 	if in.Transformations != nil {
 		in, out := &in.Transformations, &out.Transformations
 		*out = make([]TransformationSpec, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.Errors != nil {
+		in, out := &in.Errors, &out.Errors
+		*out = new(SinkSpec)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Resources != nil {
+		in, out := &in.Resources, &out.Resources
+		*out = new(corev1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.NodeSelector != nil {
+		in, out := &in.NodeSelector, &out.NodeSelector
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.Affinity != nil {
+		in, out := &in.Affinity, &out.Affinity
+		*out = new(corev1.Affinity)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Tolerations != nil {
+		in, out := &in.Tolerations, &out.Tolerations
+		*out = make([]corev1.Toleration, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
@@ -372,6 +402,16 @@ func (in *PostgreSQLSinkSpec) DeepCopyInto(out *PostgreSQLSinkSpec) {
 	if in.AutoCreateTable != nil {
 		in, out := &in.AutoCreateTable, &out.AutoCreateTable
 		*out = new(bool)
+		**out = **in
+	}
+	if in.UpsertMode != nil {
+		in, out := &in.UpsertMode, &out.UpsertMode
+		*out = new(bool)
+		**out = **in
+	}
+	if in.ConflictKey != nil {
+		in, out := &in.ConflictKey, &out.ConflictKey
+		*out = new(string)
 		**out = **in
 	}
 	if in.ConnectionStringSecretRef != nil {

@@ -49,6 +49,46 @@ DataFlow Operator экспортирует метрики Prometheus для мо
 - `dataflow_transformer_messages_out_total` - количество исходящих сообщений из трансформера
   - Метки: `namespace`, `name`, `transformer_type`, `transformer_index`
 
+### Детальные метрики выполнения задач
+
+- `dataflow_task_stage_duration_seconds` - время выполнения отдельных этапов задачи (гистограмма)
+  - Метки: `namespace`, `name`, `stage`
+  - Этапы: `read`, `transformation`, `write`, `sink_write`, `error_sink_write`, `transformer_0`, `transformer_1`, и т.д.
+
+- `dataflow_task_message_size_bytes` - размер сообщений на разных этапах обработки (гистограмма)
+  - Метки: `namespace`, `name`, `stage`
+  - Этапы: `input`, `output`, `transformer_0_input`, `transformer_0_output`, и т.д.
+
+- `dataflow_task_stage_latency_seconds` - задержка между этапами обработки (гистограмма)
+  - Метки: `namespace`, `name`, `from_stage`, `to_stage`
+
+- `dataflow_task_throughput_messages_per_second` - текущая пропускная способность (сообщений в секунду)
+  - Метки: `namespace`, `name`
+
+- `dataflow_task_success_rate` - процент успешных задач (0.0 до 1.0)
+  - Метки: `namespace`, `name`
+
+- `dataflow_task_end_to_end_latency_seconds` - полное время жизни сообщения от получения до отправки (гистограмма)
+  - Метки: `namespace`, `name`
+
+- `dataflow_task_active_messages` - количество активных сообщений в обработке
+  - Метки: `namespace`, `name`
+
+- `dataflow_task_queue_size` - текущий размер очереди сообщений
+  - Метки: `namespace`, `name`, `queue_type`
+  - Типы очередей: `routing`, `output`, `default`, и маршруты роутера
+
+- `dataflow_task_queue_wait_time_seconds` - время ожидания сообщений в очереди (гистограмма)
+  - Метки: `namespace`, `name`, `queue_type`
+
+- `dataflow_task_operations_total` - общее количество операций по типу
+  - Метки: `namespace`, `name`, `operation`, `status`
+  - Операции: `transform`, `write`, `sink_write`, `error_sink_write`
+  - Статусы: `success`, `error`, `cancelled`
+
+- `dataflow_task_stage_errors_total` - количество ошибок на каждом этапе
+  - Метки: `namespace`, `name`, `stage`, `error_type`
+
 ## Настройка мониторинга
 
 ### Prometheus ServiceMonitor
@@ -120,4 +160,63 @@ histogram_quantile(0.95, sum(rate(dataflow_processing_duration_seconds_bucket[5m
 
 ```promql
 sum(dataflow_status) by (namespace, name)
+```
+
+### Пропускная способность задач
+
+```promql
+dataflow_task_throughput_messages_per_second
+```
+
+### Процент успешных задач
+
+```promql
+dataflow_task_success_rate * 100
+```
+
+### p95 время выполнения этапа чтения
+
+```promql
+histogram_quantile(0.95, sum(rate(dataflow_task_stage_duration_seconds_bucket{stage="read"}[5m])) by (namespace, name, le))
+```
+
+### Средний размер сообщений на входе
+
+```promql
+avg(dataflow_task_message_size_bytes{stage="input"}) by (namespace, name)
+```
+
+### p99 end-to-end latency
+
+```promql
+histogram_quantile(0.99, sum(rate(dataflow_task_end_to_end_latency_seconds_bucket[5m])) by (namespace, name, le))
+```
+
+### Количество активных сообщений в обработке
+
+```promql
+dataflow_task_active_messages
+```
+
+### Размер очереди сообщений
+
+```promql
+dataflow_task_queue_size
+```
+
+### Среднее время ожидания в очереди
+
+```promql
+avg(rate(dataflow_task_queue_wait_time_seconds_sum[5m])) by (namespace, name, queue_type)
+/
+avg(rate(dataflow_task_queue_wait_time_seconds_count[5m])) by (namespace, name, queue_type)
+```
+
+### Процент ошибок по этапам
+
+```promql
+sum(rate(dataflow_task_stage_errors_total[5m])) by (namespace, name, stage)
+/
+sum(rate(dataflow_task_operations_total[5m])) by (namespace, name)
+* 100
 ```

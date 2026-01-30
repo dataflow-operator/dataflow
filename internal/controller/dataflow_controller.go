@@ -18,45 +18,47 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
-	"reflect"
-	"sync"
+	"os"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
-	"github.com/dataflow-operator/dataflow/internal/processor"
 )
 
 // DataFlowReconciler reconciles a DataFlow object
 type DataFlowReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
-	processors     map[string]*processorContext
-	mu             sync.RWMutex
 	secretResolver *SecretResolver
-}
-
-type processorContext struct {
-	processor *processor.Processor
-	cancel    context.CancelFunc
-	spec      dataflowv1.DataFlowSpec
+	processorImage string
 }
 
 func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme) *DataFlowReconciler {
+	// Получаем образ процессора из переменной окружения или используем дефолтный
+	processorImage := "ghcr.io/ilyario/dataflow:latest"
+	if img := os.Getenv("PROCESSOR_IMAGE"); img != "" {
+		processorImage = img
+	}
+
 	return &DataFlowReconciler{
 		Client:         client,
 		Scheme:         scheme,
-		processors:     make(map[string]*processorContext),
 		secretResolver: NewSecretResolver(client),
+		processorImage: processorImage,
 	}
 }
 
@@ -117,6 +119,8 @@ func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -129,17 +133,15 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	key := fmt.Sprintf("%s/%s", req.Namespace, req.Name)
 	log.Info("Reconciling DataFlow", "name", dataflow.Name, "namespace", dataflow.Namespace)
 
 	// Check if DataFlow is being deleted
 	if !dataflow.DeletionTimestamp.IsZero() {
-		r.mu.Lock()
-		if procCtx, exists := r.processors[key]; exists {
-			procCtx.cancel()
-			delete(r.processors, key)
+		// Удаляем Deployment и ConfigMap при удалении DataFlow
+		if err := r.cleanupResources(ctx, req); err != nil {
+			log.Error(err, "failed to cleanup resources")
+			return ctrl.Result{}, err
 		}
-		r.mu.Unlock()
 
 		if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Stopped"
@@ -150,8 +152,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	// Check if processor already exists and if spec has changed
-	// Resolve secrets first to compare resolved specs
+	// Resolve secrets
 	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, req.Namespace, &dataflow.Spec)
 	if err != nil {
 		log.Error(err, "failed to resolve secrets")
@@ -165,116 +166,55 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	r.mu.RLock()
-	procCtx, exists := r.processors[key]
-	needsRestart := false
-	if exists {
-		// Compare current resolved spec with the one used to create the processor
-		if !reflect.DeepEqual(procCtx.spec, *resolvedSpec) {
-			log.Info("DataFlow spec has changed, restarting processor", "name", dataflow.Name, "namespace", dataflow.Namespace)
-			needsRestart = true
+	// Создаем или обновляем ConfigMap со spec
+	if err := r.createOrUpdateConfigMap(ctx, req, resolvedSpec); err != nil {
+		log.Error(err, "failed to create or update ConfigMap")
+		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+			df.Status.Phase = "Error"
+			df.Status.Message = fmt.Sprintf("Failed to create ConfigMap: %v", err)
+		})
+		if updateErr != nil {
+			log.Error(updateErr, "unable to update DataFlow status")
 		}
-	}
-	r.mu.RUnlock()
-
-	// If spec changed, stop old processor
-	if needsRestart {
-		r.mu.Lock()
-		if procCtx != nil {
-			log.Info("Stopping old processor due to spec change", "name", dataflow.Name, "namespace", dataflow.Namespace)
-			procCtx.cancel()
-			delete(r.processors, key)
-		}
-		r.mu.Unlock()
-		// Wait a bit for graceful shutdown
-		time.Sleep(500 * time.Millisecond)
-		exists = false
+		return ctrl.Result{}, err
 	}
 
-	if !exists {
-		// Resolve secrets before creating processor
-		resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, req.Namespace, &dataflow.Spec)
-		if err != nil {
-			log.Error(err, "failed to resolve secrets")
-			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-				df.Status.Phase = "Error"
-				df.Status.Message = fmt.Sprintf("Failed to resolve secrets: %v", err)
-			})
-			if updateErr != nil {
-				log.Error(updateErr, "unable to update DataFlow status")
-			}
-			return ctrl.Result{}, err
+	// Создаем или обновляем Deployment
+	if err := r.createOrUpdateDeployment(ctx, req, &dataflow); err != nil {
+		log.Error(err, "failed to create or update Deployment")
+		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+			df.Status.Phase = "Error"
+			df.Status.Message = fmt.Sprintf("Failed to create Deployment: %v", err)
+		})
+		if updateErr != nil {
+			log.Error(updateErr, "unable to update DataFlow status")
 		}
+		return ctrl.Result{}, err
+	}
 
-		// Create new processor with logger and metadata
-		proc, err := processor.NewProcessorWithLoggerAndMetadata(resolvedSpec, log, req.Namespace, req.Name)
-		if err != nil {
-			log.Error(err, "failed to create processor")
-			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-				df.Status.Phase = "Error"
-				df.Status.Message = fmt.Sprintf("Failed to create processor: %v", err)
-			})
-			if updateErr != nil {
-				log.Error(updateErr, "unable to update DataFlow status")
-			}
-			return ctrl.Result{}, err
-		}
-
-		// Start processor in background
-		procCtx, cancel := context.WithCancel(context.Background())
-		r.mu.Lock()
-		r.processors[key] = &processorContext{
-			processor: proc,
-			cancel:    cancel,
-			spec:      *resolvedSpec,
-		}
-		r.mu.Unlock()
-
-		go func() {
-			if err := proc.Start(procCtx); err != nil {
-				log.Error(err, "processor error")
-				r.mu.Lock()
-				delete(r.processors, key)
-				r.mu.Unlock()
-
-				// Update status with a separate context that won't be canceled
-				// Use retry logic to handle transient errors and conflicts
-				updateCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-
-				// Сохраняем ошибку для использования в функции обновления
-				processorErr := err
-				if updateErr := r.updateStatusWithRetry(updateCtx, req, func(df *dataflowv1.DataFlow) {
-					df.Status.Phase = "Error"
-					df.Status.Message = fmt.Sprintf("Processor error: %v", processorErr)
-				}); updateErr != nil {
-					log.Error(updateErr, "unable to update DataFlow status after processor error")
-				} else {
-					log.Info("Successfully updated DataFlow status to Error")
-				}
-			}
-		}()
-
-		if needsRestart {
-			dataflow.Status.Phase = "Running"
-			dataflow.Status.Message = "Processor restarted due to spec change"
+	// Проверяем статус Deployment
+	deployment := &appsv1.Deployment{}
+	deploymentName := fmt.Sprintf("dataflow-%s", dataflow.Name)
+	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, deployment); err != nil {
+		if apierrors.IsNotFound(err) {
+			dataflow.Status.Phase = "Pending"
+			dataflow.Status.Message = "Deployment not found"
 		} else {
-			dataflow.Status.Phase = "Running"
-			dataflow.Status.Message = "Processor started"
+			log.Error(err, "failed to get Deployment")
+			return ctrl.Result{}, err
 		}
 	} else {
-		// Update stats
-		r.mu.RLock()
-		procCtx := r.processors[key]
-		r.mu.RUnlock()
-
-		if procCtx != nil {
-			processedCount, errorCount := procCtx.processor.GetStats()
-			dataflow.Status.ProcessedCount = processedCount
-			dataflow.Status.ErrorCount = errorCount
-			dataflow.Status.LastProcessedTime = &metav1.Time{Time: metav1.Now().Time}
-		}
+		// Обновляем статус на основе состояния Deployment
+		if deployment.Status.ReadyReplicas > 0 {
 			dataflow.Status.Phase = "Running"
+			dataflow.Status.Message = "Processor pod is running"
+		} else if deployment.Status.Replicas > 0 {
+			dataflow.Status.Phase = "Pending"
+			dataflow.Status.Message = "Processor pod is starting"
+		} else {
+			dataflow.Status.Phase = "Error"
+			dataflow.Status.Message = "No replicas available"
+		}
 	}
 
 	// Update metrics with current status
@@ -314,9 +254,218 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
+// createOrUpdateConfigMap создает или обновляет ConfigMap со spec
+func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ctrl.Request, spec *dataflowv1.DataFlowSpec) error {
+	log := log.FromContext(ctx)
+
+	// Сериализуем spec в JSON
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		return fmt.Errorf("failed to marshal spec: %w", err)
+	}
+
+	configMapName := fmt.Sprintf("dataflow-%s-spec", req.Name)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: req.Namespace,
+		},
+		Data: map[string]string{
+			"spec.json": string(specJSON),
+		},
+	}
+
+	// Получаем DataFlow для установки owner reference
+	var df dataflowv1.DataFlow
+	if err := r.Get(ctx, req.NamespacedName, &df); err != nil {
+		return fmt.Errorf("failed to get DataFlow: %w", err)
+	}
+
+	// Устанавливаем owner reference
+	if err := ctrl.SetControllerReference(&df, configMap, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+
+	// Проверяем, существует ли ConfigMap
+	existing := &corev1.ConfigMap{}
+	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: req.Namespace}, existing)
+	if err != nil && apierrors.IsNotFound(err) {
+		// Создаем новый ConfigMap
+		if err := r.Create(ctx, configMap); err != nil {
+			return fmt.Errorf("failed to create ConfigMap: %w", err)
+		}
+		log.Info("Created ConfigMap", "name", configMapName)
+	} else if err != nil {
+		return fmt.Errorf("failed to get ConfigMap: %w", err)
+	} else {
+		// Обновляем существующий ConfigMap
+		existing.Data = configMap.Data
+		if err := r.Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed to update ConfigMap: %w", err)
+		}
+		log.Info("Updated ConfigMap", "name", configMapName)
+	}
+
+	return nil
+}
+
+// createOrUpdateDeployment создает или обновляет Deployment для процессора
+func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
+	log := log.FromContext(ctx)
+
+	deploymentName := fmt.Sprintf("dataflow-%s", dataflow.Name)
+	configMapName := fmt.Sprintf("dataflow-%s-spec", dataflow.Name)
+
+	labels := map[string]string{
+		"app":                        "dataflow-processor",
+		"dataflow.dataflow.io/name":  dataflow.Name,
+		"dataflow.dataflow.io/owned": "true",
+	}
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName,
+			Namespace: req.Namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: func() *int32 { r := int32(1); return &r }(),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "processor",
+							Image: r.processorImage,
+							Command: []string{
+								"/processor",
+								"--spec-path=/etc/dataflow/spec.json",
+								"--namespace=" + req.Namespace,
+								"--name=" + dataflow.Name,
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "spec",
+									MountPath: "/etc/dataflow",
+									ReadOnly:  true,
+								},
+							},
+							Resources: r.getResourceRequirements(dataflow),
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "spec",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: configMapName,
+									},
+								},
+							},
+						},
+					},
+					NodeSelector: dataflow.Spec.NodeSelector,
+					Affinity:     dataflow.Spec.Affinity,
+					Tolerations:  dataflow.Spec.Tolerations,
+				},
+			},
+		},
+	}
+
+	// Устанавливаем owner reference
+	if err := ctrl.SetControllerReference(dataflow, deployment, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+
+	// Проверяем, существует ли Deployment
+	existing := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, existing)
+	if err != nil && apierrors.IsNotFound(err) {
+		// Создаем новый Deployment
+		if err := r.Create(ctx, deployment); err != nil {
+			return fmt.Errorf("failed to create Deployment: %w", err)
+		}
+		log.Info("Created Deployment", "name", deploymentName)
+	} else if err != nil {
+		return fmt.Errorf("failed to get Deployment: %w", err)
+	} else {
+		// Обновляем существующий Deployment, если spec изменился
+		existing.Spec = deployment.Spec
+		if err := r.Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed to update Deployment: %w", err)
+		}
+		log.Info("Updated Deployment", "name", deploymentName)
+	}
+
+	return nil
+}
+
+// getResourceRequirements возвращает требования к ресурсам из spec или дефолтные значения
+func (r *DataFlowReconciler) getResourceRequirements(dataflow *dataflowv1.DataFlow) corev1.ResourceRequirements {
+	// Если ресурсы указаны в spec, используем их
+	if dataflow.Spec.Resources != nil {
+		return *dataflow.Spec.Resources
+	}
+
+	// Иначе используем дефолтные значения
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+}
+
+// cleanupResources удаляет Deployment и ConfigMap
+func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Request) error {
+	log := log.FromContext(ctx)
+
+	deploymentName := fmt.Sprintf("dataflow-%s", req.Name)
+	configMapName := fmt.Sprintf("dataflow-%s-spec", req.Name)
+
+	// Удаляем Deployment
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName,
+			Namespace: req.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, deployment); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "failed to delete Deployment", "name", deploymentName)
+		return err
+	}
+	log.Info("Deleted Deployment", "name", deploymentName)
+
+	// Удаляем ConfigMap
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: req.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, configMap); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "failed to delete ConfigMap", "name", configMapName)
+		return err
+	}
+	log.Info("Deleted ConfigMap", "name", configMapName)
+
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DataFlowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dataflowv1.DataFlow{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.ConfigMap{}).
 		Complete(r)
 }

@@ -100,6 +100,92 @@ spec:
 }
 ```
 
+## Обработка ошибок с error sink
+
+Пример настройки отдельного приемника для сообщений, которые не удалось записать в основной sink.
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-with-errors
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: output_table
+      autoCreateTable: true
+  errors:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: error-topic
+```
+
+**Структура сообщения в error sink:**
+
+Когда сообщение не удается записать в основной sink, оно отправляется в error sink со следующей структурой:
+
+```json
+{
+  "error": {
+    "message": "текст ошибки (например: failed to send message: connection refused)",
+    "timestamp": "2026-01-24T12:34:56Z",
+    "original_sink": "postgresql",
+    "metadata": {
+      // Метаданные из оригинального сообщения (если были)
+    }
+  },
+  "original_message": {
+    // Оригинальные данные сообщения
+    // Если оригинальное сообщение было JSON, оно будет здесь как объект
+    // Если нет - будет поле "original_data" со строкой
+  }
+}
+```
+
+**Пример сообщения об ошибке:**
+
+Если оригинальное сообщение было:
+```json
+{
+  "id": 1,
+  "name": "test",
+  "value": 100
+}
+```
+
+То в error sink будет записано:
+```json
+{
+  "error": {
+    "message": "failed to send message: connection refused",
+    "timestamp": "2026-01-24T12:34:56Z",
+    "original_sink": "postgresql"
+  },
+  "original_message": {
+    "id": 1,
+    "name": "test",
+    "value": 100
+  }
+}
+```
+
+**Важно:**
+- Если `errors` не указан, ошибки записи будут приводить к остановке обработки
+- Error sink может быть любого типа (Kafka, PostgreSQL, Trino)
+- Оригинальные данные сообщения сохраняются в поле `original_message`
+- Информация об ошибке добавляется в структуру сообщения, что гарантирует её сохранение независимо от типа error sink
+
 ## С роутером для множественных приемников
 
 Пример маршрутизации сообщений в разные приемники на основе условий.
@@ -682,10 +768,140 @@ status:
 - Настройте правильные consumer groups для Kafka
 - Мониторьте статус DataFlow ресурсов
 
+## Настройка ресурсов и размещения подов
+
+Каждый ресурс DataFlow создает отдельный под (Deployment) для обработки данных. Вы можете настроить ресурсы, выбор нод, affinity и tolerations для этих подов.
+
+### Пример: Кастомные ресурсы и выбор нод
+
+```yaml
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-with-resources
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: postgresql
+    postgresql:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: output_table
+  # Настройка ресурсов для пода процессора
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  # Выбор нод для размещения пода
+  nodeSelector:
+    node-type: compute
+    zone: us-east-1
+  # Правила affinity для более точного контроля размещения
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/arch
+            operator: In
+            values:
+            - amd64
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+          - key: node-type
+            operator: In
+            values:
+            - compute
+    podAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 50
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app
+              operator: In
+              values:
+              - dataflow-processor
+          topologyKey: kubernetes.io/hostname
+  # Tolerations для работы с tainted нодами
+  tolerations:
+  - key: dedicated
+    operator: Equal
+    value: dataflow
+    effect: NoSchedule
+  - key: workload-type
+    operator: Equal
+    value: batch
+    effect: NoSchedule
+```
+
+**Применение:**
+```bash
+kubectl apply -f config/samples/kafka-to-postgres-with-resources.yaml
+```
+
+### Настройка ресурсов
+
+- **resources**: Определяет запросы и лимиты CPU и памяти для пода процессора
+  - Если не указано, используются значения по умолчанию: `100m` CPU / `128Mi` памяти (requests), `500m` CPU / `512Mi` памяти (limits)
+  - Используйте это для обеспечения достаточных ресурсов для высоконагруженной обработки
+
+### Выбор нод
+
+- **nodeSelector**: Простые пары ключ-значение для выбора конкретных нод
+  - Пример: `node-type: compute` гарантирует, что поды будут запускаться только на нодах с меткой `node-type=compute`
+
+### Правила Affinity
+
+- **affinity**: Продвинутые правила размещения с использованием Kubernetes affinity
+  - **nodeAffinity**: Контроль того, на каких нодах могут запускаться поды
+  - **podAffinity**: Предпочтение запуска подов рядом с другими подами (например, другими процессорами dataflow)
+  - **podAntiAffinity**: Избегание запуска подов рядом с другими подами (например, распределение по нодам)
+
+### Tolerations
+
+- **tolerations**: Позволяют подам запускаться на tainted нодах
+  - Полезно для выделенных compute нод или специализированного оборудования
+  - Пример: Запуск процессоров dataflow на нодах, выделенных для batch workloads
+
+### Поведение по умолчанию
+
+Если ресурсы, nodeSelector, affinity или tolerations не указаны:
+- Применяются ресурсы по умолчанию (100m CPU / 128Mi памяти requests, 500m CPU / 512Mi памяти limits)
+- Поды могут запускаться на любой ноде (нет nodeSelector)
+- Не применяются правила affinity
+- Поды не могут запускаться на tainted нодах (нет tolerations)
+
+### Проверка статуса подов
+
+После создания DataFlow с кастомными ресурсами проверьте под:
+
+```bash
+# Список подов, созданных DataFlow
+kubectl get pods -l app=dataflow-processor
+
+# Описание конкретного пода
+kubectl describe pod dataflow-<name>-<hash>
+
+# Проверка использования ресурсов
+kubectl top pod dataflow-<name>-<hash>
+```
+
 ## Дополнительные примеры
 
 Больше примеров можно найти в директории `config/samples/`:
 
 - `kafka-to-postgres.yaml` - базовый Kafka → PostgreSQL
+- `kafka-to-postgres-with-resources.yaml` - пример с настройкой ресурсов и размещения
 - `flatten-example.yaml` - пример с Flatten трансформацией
 - `router-example.yaml` - пример с Router трансформацией

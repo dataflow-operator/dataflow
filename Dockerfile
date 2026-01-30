@@ -10,17 +10,20 @@ RUN apk add --no-cache git make
 COPY go.mod go.mod
 COPY go.sum go.sum
 
-# Copy nessie-client directory (required for replace directive)
-COPY pkg/nessie-client/go.mod pkg/nessie-client/go.mod
-
 # Download dependencies
 RUN go mod download
 
 # Copy source code
 COPY . .
 
-# Build
+# Build manager (operator)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager main.go
+
+# Build processor
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o processor cmd/processor/main.go
+
+# Build GUI server
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o gui-server cmd/gui-server/main.go
 
 # Final stage
 FROM alpine:latest
@@ -30,6 +33,8 @@ WORKDIR /
 RUN apk --no-cache add ca-certificates
 
 COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/processor .
+COPY --from=builder /workspace/gui-server .
 
 ENTRYPOINT ["/manager"]
 
