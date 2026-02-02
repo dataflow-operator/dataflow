@@ -426,7 +426,7 @@
                 </div>
                 <div class="form-group">
                     <label>Namespace:</label>
-                    <select id="logs-namespace">
+                    <select id="logs-namespace" onchange="loadDataFlowList('logs-dataflow')">
                         <option value="">Загрузка...</option>
                     </select>
                 </div>
@@ -454,7 +454,7 @@
                 </div>
                 <div class="form-group">
                     <label>Namespace:</label>
-                    <select id="metrics-namespace">
+                    <select id="metrics-namespace" onchange="loadDataFlowList('metrics-dataflow')">
                         <option value="">Загрузка...</option>
                     </select>
                 </div>
@@ -514,21 +514,21 @@
         // Загрузка списка DataFlow
         async function loadDataFlows() {
             const namespace = document.getElementById('namespace-select').value;
-            
+
             try {
                 const response = await fetch(`/api/dataflows?namespace=${namespace}`);
                 if (!response.ok) throw new Error('Failed to load DataFlows');
-                
+
                 const dataflows = await response.json();
                 const container = document.getElementById('dataflows-list');
-                
+
                 if (dataflows.length === 0) {
                     container.innerHTML = '<p class="loading">Нет DataFlow манифестов</p>';
                     return;
                 }
 
                 let html = '<table><thead><tr><th>Имя</th><th>Namespace</th><th>Статус</th><th>Обработано</th><th>Ошибок</th><th>Действия</th></tr></thead><tbody>';
-                
+
                 dataflows.forEach(df => {
                     const statusClass = getStatusClass(df.status?.phase || 'Unknown');
                     html += `
@@ -545,7 +545,7 @@
                         </tr>
                     `;
                 });
-                
+
                 html += '</tbody></table>';
                 container.innerHTML = html;
             } catch (error) {
@@ -572,11 +572,11 @@
             editingNamespace = namespace;
             editingName = name;
             isEditMode = false;
-            
+
             try {
                 const response = await fetch(`/api/dataflows/${name}?namespace=${namespace}`);
                 if (!response.ok) throw new Error('Failed to load DataFlow');
-                
+
                 const df = await response.json();
                 currentManifest = df;
                 showManifestModal(df);
@@ -592,13 +592,13 @@
             const editContainer = document.getElementById('edit-container');
             const saveBtn = document.getElementById('save-btn');
             const createBtn = document.getElementById('create-btn');
-            
+
             modalTitle.textContent = `Редактирование манифеста: ${df.metadata.name} (${df.metadata.namespace})`;
-            
+
             // Сохраняем манифест для использования в редакторе
             currentManifest = df;
             isEditMode = true;
-            
+
             // Конвертируем в YAML
             let yamlText;
             try {
@@ -613,11 +613,11 @@
                 // Fallback to JSON if YAML conversion fails
                 yamlText = JSON.stringify(df, null, 2);
             }
-            
+
             // Показываем кнопку сохранения
             saveBtn.style.display = 'block';
             createBtn.style.display = 'none';
-            
+
             // Инициализируем CodeMirror если еще не инициализирован
             setTimeout(() => {
                 const editorWrapper = document.getElementById('yaml-editor-wrapper');
@@ -643,7 +643,7 @@
                     yamlEditor.refresh();
                 }
             }, 100);
-            
+
             modal.style.display = 'block';
         }
 
@@ -651,16 +651,16 @@
         // Сохранение манифеста
         async function saveManifest() {
             if (!isEditMode) return;
-            
+
             let yamlText;
             if (yamlEditor) {
                 yamlText = yamlEditor.getValue();
             } else {
                 yamlText = document.getElementById('json-editor').value;
             }
-            
+
             let updatedManifest;
-            
+
             try {
                 // Пробуем парсить как YAML
                 updatedManifest = jsyaml.load(yamlText);
@@ -676,14 +676,14 @@
                     return;
                 }
             }
-            
+
             // Проверяем, что имя и namespace не изменились
-            if (updatedManifest.metadata.name !== editingName || 
+            if (updatedManifest.metadata.name !== editingName ||
                 updatedManifest.metadata.namespace !== editingNamespace) {
                 alert('Ошибка: Нельзя изменять имя или namespace манифеста');
                 return;
             }
-            
+
             try {
                 const response = await fetch(`/api/dataflows/${editingName}?namespace=${editingNamespace}`, {
                     method: 'PUT',
@@ -692,18 +692,18 @@
                     },
                     body: JSON.stringify(updatedManifest),
                 });
-                
+
                 if (!response.ok) {
                     const errorText = await response.text();
                     throw new Error(errorText || 'Failed to update DataFlow');
                 }
-                
+
                 const updated = await response.json();
                 currentManifest = updated;
-                
+
                 // Обновляем список
                 loadDataFlows();
-                
+
                 // Обновляем содержимое редактора
                 try {
                     const yamlText = jsyaml.dump(updated, {
@@ -720,7 +720,7 @@
                         yamlEditor.setValue(JSON.stringify(updated, null, 2));
                     }
                 }
-                
+
                 alert('Манифест успешно обновлен!');
             } catch (error) {
                 alert('Ошибка при сохранении: ' + error.message);
@@ -746,33 +746,32 @@
         // Удаление DataFlow
         async function deleteDataFlow(namespace, name) {
             if (!confirm(`Удалить DataFlow "${name}"?`)) return;
-            
+
             try {
                 const response = await fetch(`/api/dataflows/${name}?namespace=${namespace}`, {
                     method: 'DELETE'
                 });
-                
+
                 if (!response.ok) throw new Error('Failed to delete DataFlow');
-                
+
                 loadDataFlows();
             } catch (error) {
                 alert('Ошибка: ' + error.message);
             }
         }
 
-        // Загрузка списка DataFlow для выбора
+        // Загрузка списка DataFlow для выбора (selectId: 'logs-dataflow' или 'metrics-dataflow')
         async function loadDataFlowList(selectId) {
-            const namespace = document.getElementById('logs-namespace')?.value || 
-                             document.getElementById('metrics-namespace')?.value || 
-                             'default';
-            
+            const namespaceSelectId = selectId === 'logs-dataflow' ? 'logs-namespace' : 'metrics-namespace';
+            const namespace = document.getElementById(namespaceSelectId)?.value || 'default';
+
             try {
                 const response = await fetch(`/api/dataflows?namespace=${namespace}`);
                 if (!response.ok) throw new Error('Failed to load DataFlows');
-                
+
                 const dataflows = await response.json();
                 const select = document.getElementById(selectId);
-                
+
                 select.innerHTML = '<option value="">Выберите DataFlow</option>';
                 dataflows.forEach(df => {
                     const option = document.createElement('option');
@@ -782,6 +781,8 @@
                 });
             } catch (error) {
                 console.error('Error loading DataFlows:', error);
+                const select = document.getElementById(selectId);
+                if (select) select.innerHTML = '<option value="">Ошибка загрузки</option>';
             }
         }
 
@@ -790,7 +791,7 @@
             const namespace = document.getElementById('logs-namespace').value;
             const name = document.getElementById('logs-dataflow').value;
             const tail = document.getElementById('logs-tail').value;
-            
+
             if (!name) {
                 alert('Выберите DataFlow');
                 return;
@@ -807,7 +808,7 @@
             try {
                 const response = await fetch(`/api/logs?namespace=${namespace}&name=${name}&tailLines=${tail}&follow=false`);
                 if (!response.ok) throw new Error('Failed to load logs');
-                
+
                 const logs = await response.text();
                 container.textContent = logs || 'Логи пусты';
             } catch (error) {
@@ -827,7 +828,7 @@
         function startFollowLogs() {
             const namespace = document.getElementById('logs-namespace').value;
             const name = document.getElementById('logs-dataflow').value;
-            
+
             if (!name) {
                 alert('Выберите DataFlow');
                 return;
@@ -835,13 +836,13 @@
 
             followLogs = true;
             document.getElementById('follow-btn').textContent = 'Остановить слежение';
-            
+
             const container = document.getElementById('logs-container');
             container.style.display = 'block';
             container.textContent = 'Подключение...\n';
 
             eventSource = new EventSource(`/api/logs?namespace=${namespace}&name=${name}&tailLines=100&follow=true`);
-            
+
             eventSource.onmessage = function(event) {
                 container.textContent += event.data + '\n';
                 container.scrollTop = container.scrollHeight;
@@ -866,7 +867,7 @@
         async function loadMetrics() {
             const namespace = document.getElementById('metrics-namespace').value;
             const name = document.getElementById('metrics-dataflow').value;
-            
+
             if (!name) {
                 document.getElementById('metrics-container').innerHTML = '<p class="loading">Выберите DataFlow</p>';
                 return;
@@ -879,9 +880,9 @@
                 // Загружаем статус
                 const statusResponse = await fetch(`/api/status?namespace=${namespace}&name=${name}`);
                 if (!statusResponse.ok) throw new Error('Failed to load status');
-                
+
                 const status = await statusResponse.json();
-                
+
                 let html = `
                     <div class="metrics-grid">
                         <div class="metric-card">
@@ -906,7 +907,7 @@
                         <p>${status.message || 'Нет сообщения'}</p>
                     </div>
                 `;
-                
+
                 container.innerHTML = html;
             } catch (error) {
                 container.innerHTML = `<div class="error">Ошибка: ${error.message}</div>`;
@@ -940,22 +941,22 @@
                     transformations: []
                 }
             };
-            
+
             editingNamespace = newManifest.metadata.namespace;
             editingName = "";
             isEditMode = true;
-            
+
             const modal = document.getElementById('manifest-modal');
             const modalTitle = document.getElementById('modal-title');
             const viewContainer = document.getElementById('view-container');
             const editContainer = document.getElementById('edit-container');
             const jsonEditor = document.getElementById('json-editor');
-            
+
             modalTitle.textContent = 'Создание нового DataFlow';
-            
+
             // Показываем режим редактирования
             editContainer.style.display = 'block';
-            
+
             // Конвертируем в YAML
             let yamlText;
             try {
@@ -969,7 +970,7 @@
                 // Fallback to JSON
                 yamlText = JSON.stringify(newManifest, null, 2);
             }
-            
+
             // Инициализируем CodeMirror если еще не инициализирован
             setTimeout(() => {
                 if (!yamlEditor) {
@@ -988,7 +989,7 @@
                 yamlEditor.setValue(yamlText);
                 yamlEditor.refresh();
             }, 100);
-            
+
             modal.style.display = 'block';
         }
 
@@ -1000,9 +1001,9 @@
             } else {
                 yamlText = document.getElementById('json-editor').value;
             }
-            
+
             let newManifest;
-            
+
             try {
                 // Пробуем парсить как YAML
                 newManifest = jsyaml.load(yamlText);
@@ -1018,14 +1019,14 @@
                     return;
                 }
             }
-            
+
             if (!newManifest.metadata.name) {
                 alert('Ошибка: Необходимо указать имя манифеста');
                 return;
             }
-            
+
             const namespace = newManifest.metadata.namespace || document.getElementById('namespace-select').value || 'default';
-            
+
             try {
                 const response = await fetch(`/api/dataflows?namespace=${namespace}`, {
                     method: 'POST',
@@ -1034,20 +1035,20 @@
                     },
                     body: JSON.stringify(newManifest),
                 });
-                
+
                 if (!response.ok) {
                     const errorText = await response.text();
                     throw new Error(errorText || 'Failed to create DataFlow');
                 }
-                
+
                 const created = await response.json();
-                
+
                 // Обновляем список
                 loadDataFlows();
-                
+
                 // Закрываем модальное окно
                 closeModal();
-                
+
                 alert('Манифест успешно создан!');
             } catch (error) {
                 alert('Ошибка при создании: ' + error.message);
@@ -1059,9 +1060,9 @@
             try {
                 const response = await fetch('/api/namespaces');
                 if (!response.ok) throw new Error('Failed to load namespaces');
-                
+
                 const namespaces = await response.json();
-                
+
                 // Обновляем все селекторы namespaces
                 const selectors = ['namespace-select', 'logs-namespace', 'metrics-namespace'];
                 selectors.forEach(selectorId => {
@@ -1082,7 +1083,7 @@
                         }
                     }
                 });
-                
+
                 // Загружаем данные после обновления namespaces
                 loadDataFlows();
                 loadDataFlowList('logs-dataflow');
