@@ -41,10 +41,10 @@ func main() {
 
 	flag.StringVar(&bindAddr, "bind-address", ":8080", "The address the GUI server binds to.")
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
-	
+
 	// kubeconfig может быть зарегистрирован плагинами auth, используем переменную окружения или стандартный путь
 	flag.Parse()
-	
+
 	// Получаем kubeconfig из переменной окружения или используем стандартный путь
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
@@ -74,7 +74,9 @@ func main() {
 	config.EncoderConfig = zap.NewProductionEncoderConfig()
 	zapLogger, err := config.Build()
 	if err != nil {
-		panic(err)
+		// Не panic — пишем в stderr и выходим с кодом 2, чтобы сообщение было видно в логах пода
+		os.Stderr.WriteString("gui-server: failed to create logger: " + err.Error() + "\n")
+		os.Exit(2)
 	}
 	ctrl.SetLogger(zapr.NewLogger(zapLogger))
 
@@ -84,12 +86,14 @@ func main() {
 	server, err := gui.NewServer(bindAddr, kubeconfig)
 	if err != nil {
 		setupLog.Error(err, "unable to create GUI server")
+		_ = zapLogger.Sync() // сброс буфера, чтобы сообщение об ошибке попало в логи пода
 		os.Exit(1)
 	}
 
 	// Запускаем сервер
 	if err := server.Start(); err != nil {
 		setupLog.Error(err, "unable to start GUI server")
+		_ = zapLogger.Sync()
 		os.Exit(1)
 	}
 }

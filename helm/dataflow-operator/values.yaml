@@ -92,6 +92,10 @@ gui:
   replicaCount: 1
   # Bind address and port for the GUI server
   port: 8080
+  # Log level: debug, info, warn, error (при падении пода включите debug и перезадеплойте)
+  logLevel: ""
+  # Extra env vars (optional), e.g. for KUBECONFIG or debug
+  extraEnv: []
   # Resource limits and requests for the GUI server
   resources: {}
     # limits:

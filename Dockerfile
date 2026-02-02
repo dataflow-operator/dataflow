@@ -35,6 +35,8 @@ RUN apk --no-cache add ca-certificates
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/processor .
 COPY --from=builder /workspace/gui-server .
+# Статика для GUI (gui-server обслуживает ./web/static при WORKDIR /)
+COPY --from=builder /workspace/web /web
 
 ENTRYPOINT ["/manager"]
 

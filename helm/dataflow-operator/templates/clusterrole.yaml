@@ -40,6 +40,31 @@ rules:
   - get
   - list
   - watch
+# Operator создаёт и владеет Deployments и ConfigMaps для процессоров DataFlow
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
 {{- if .Values.gui.enabled }}
 # GUI needs read-only access to pods and pod logs
 - apiGroups:

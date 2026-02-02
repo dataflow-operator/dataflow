@@ -27,6 +27,8 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "dataflow-operator.gui.serviceAccountName" . }}
+      # Токен SA нужен для in-cluster доступа к API (списки Dataflows, логи подов)
+      automountServiceAccountToken: true
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.nodeSelector }}
@@ -51,6 +53,13 @@ spec:
         - /gui-server
         args:
         - --bind-address=:{{ .Values.gui.port }}
+        {{- if .Values.gui.logLevel }}
+        - --log-level={{ .Values.gui.logLevel }}
+        {{- end }}
+        {{- with .Values.gui.extraEnv }}
+        env:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         ports:
         - name: http
           containerPort: {{ .Values.gui.port }}

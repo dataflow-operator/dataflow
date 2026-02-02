@@ -57,8 +57,8 @@ func NewServer(bindAddr, kubeconfig string) (*Server, error) {
 	} else {
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			// Пробуем использовать kubeconfig из дефолтного места
-			config, err = clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
+			// В поде нет ~/.kube/config — возвращаем исходную ошибку in-cluster (RBAC, token и т.д.)
+			return nil, fmt.Errorf("in-cluster config failed (check service account, RBAC, automountServiceAccountToken): %w", err)
 		}
 	}
 	if err != nil {
