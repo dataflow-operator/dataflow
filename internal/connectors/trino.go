@@ -27,6 +27,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"golang.org/x/oauth2"
@@ -1220,14 +1221,18 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		case <-ctx.Done():
 			t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
 			if len(batch) > 0 {
-				return t.executeBatch(ctx, batch)
+				return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+					return t.executeBatch(ctx, batch)
+				})
 			}
 			return ctx.Err()
 		case msg, ok := <-messages:
 			if !ok {
 				t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
 				if len(batch) > 0 {
-					return t.executeBatch(ctx, batch)
+					return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+						return t.executeBatch(ctx, batch)
+					})
 				}
 				return nil
 			}
@@ -1239,7 +1244,9 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 
 			if len(batch) >= batchSize {
 				t.logger.Info("Batch size reached, executing batch", "batchSize", len(batch))
-				if err := t.executeBatch(ctx, batch); err != nil {
+				if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+					return t.executeBatch(ctx, batch)
+				}); err != nil {
 					t.logger.Error(err, "Failed to execute batch", "batchSize", len(batch))
 					return err
 				}

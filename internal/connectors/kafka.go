@@ -37,6 +37,7 @@ import (
 	"github.com/IBM/sarama"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
+	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"github.com/hamba/avro/v2"
@@ -954,7 +955,16 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 				kafkaMsg.Key = sarama.StringEncoder(key)
 			}
 
-			partition, offset, err := k.producer.SendMessage(kafkaMsg)
+			var partition int32
+			var offset int64
+			err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+				p, o, sendErr := k.producer.SendMessage(kafkaMsg)
+				if sendErr != nil {
+					return sendErr
+				}
+				partition, offset = p, o
+				return nil
+			})
 			if err != nil {
 				// Record error metric
 				if k.namespace != "" && k.name != "" {

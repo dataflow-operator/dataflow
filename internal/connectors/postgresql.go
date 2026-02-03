@@ -24,6 +24,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/jackc/pgx/v5"
 )
@@ -308,14 +309,18 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		case <-ctx.Done():
 			if batch.Len() > 0 {
 				fmt.Printf("DEBUG: Executing final batch on context done, size: %d\n", batch.Len())
-				return p.executeBatch(ctx, batch)
+				return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+					return p.executeBatch(ctx, batch)
+				})
 			}
 			return ctx.Err()
 		case msg, ok := <-messages:
 			if !ok {
 				if batch.Len() > 0 {
 					fmt.Printf("DEBUG: Executing final batch on channel close, size: %d\n", batch.Len())
-					return p.executeBatch(ctx, batch)
+					return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+						return p.executeBatch(ctx, batch)
+					})
 				}
 				fmt.Printf("DEBUG: Channel closed, no batch to execute\n")
 				return nil
@@ -432,7 +437,9 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 
 			if count >= batchSize {
 				fmt.Printf("DEBUG: Batch size reached, executing batch\n")
-				if err := p.executeBatch(ctx, batch); err != nil {
+				if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+					return p.executeBatch(ctx, batch)
+				}); err != nil {
 					fmt.Printf("ERROR: Batch execution failed: %v\n", err)
 					return err
 				}
