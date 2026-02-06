@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +49,7 @@ import (
 type DataFlowReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
+	Recorder       record.EventRecorder
 	secretResolver *SecretResolver
 	processorImage string
 	// operatorDeploymentName/Namespace — для наблюдения за Deployment оператора; при его обновлении реконсилируем все DataFlow.
@@ -55,7 +57,7 @@ type DataFlowReconciler struct {
 	operatorDeploymentNamespace string
 }
 
-func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme) *DataFlowReconciler {
+func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder) *DataFlowReconciler {
 	// Образ процессора: из env или тот же образ и версия, что и оператор (задаётся при сборке через ldflags).
 	processorImage := version.DefaultProcessorImage()
 	if img := os.Getenv("PROCESSOR_IMAGE"); img != "" {
@@ -65,6 +67,7 @@ func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme) *DataFl
 	return &DataFlowReconciler{
 		Client:                      client,
 		Scheme:                      scheme,
+		Recorder:                    recorder,
 		secretResolver:              NewSecretResolver(client),
 		processorImage:              processorImage,
 		operatorDeploymentName:      os.Getenv("OPERATOR_DEPLOYMENT_NAME"),
@@ -128,6 +131,7 @@ func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/finalizers,verbs=update
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -140,6 +144,14 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var dataflow dataflowv1.DataFlow
 	if err := r.Get(ctx, req.NamespacedName, &dataflow); err != nil {
 		log.Error(err, "unable to fetch DataFlow")
+		if r.Recorder != nil && !apierrors.IsNotFound(err) {
+			ref := &dataflowv1.DataFlow{}
+			ref.APIVersion = dataflowv1.GroupVersion.String()
+			ref.Kind = "DataFlow"
+			ref.Namespace = req.Namespace
+			ref.Name = req.Name
+			r.Recorder.Event(ref, corev1.EventTypeWarning, "FailedGet", "Unable to fetch DataFlow")
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -150,7 +162,13 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// Удаляем Deployment и ConfigMap при удалении DataFlow
 		if err := r.cleanupResources(ctx, req); err != nil {
 			log.Error(err, "failed to cleanup resources")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "CleanupFailed", "Failed to cleanup resources: %v", err)
+			}
 			return ctrl.Result{}, err
+		}
+		if r.Recorder != nil {
+			r.Recorder.Event(&dataflow, corev1.EventTypeNormal, "ResourcesDeleted", "Deleted Deployment and ConfigMap")
 		}
 
 		if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
@@ -166,6 +184,9 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, req.Namespace, &dataflow.Spec)
 	if err != nil {
 		log.Error(err, "failed to resolve secrets")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "SecretResolutionFailed", "Failed to resolve secrets: %v", err)
+		}
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
 			df.Status.Message = fmt.Sprintf("Failed to resolve secrets: %v", err)
@@ -179,6 +200,9 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Создаем или обновляем ConfigMap со spec
 	if err := r.createOrUpdateConfigMap(ctx, req, resolvedSpec); err != nil {
 		log.Error(err, "failed to create or update ConfigMap")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "ConfigMapFailed", "Failed to create or update ConfigMap: %v", err)
+		}
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
 			df.Status.Message = fmt.Sprintf("Failed to create ConfigMap: %v", err)
@@ -192,6 +216,9 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Создаем или обновляем Deployment
 	if err := r.createOrUpdateDeployment(ctx, req, &dataflow); err != nil {
 		log.Error(err, "failed to create or update Deployment")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "DeploymentFailed", "Failed to create or update Deployment: %v", err)
+		}
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
 			df.Status.Message = fmt.Sprintf("Failed to create Deployment: %v", err)
@@ -250,6 +277,9 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		df.Status.LastProcessedTime = statusLastProcessedTime
 	}); err != nil {
 		log.Error(err, "unable to update DataFlow status")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "StatusUpdateFailed", "Unable to update DataFlow status: %v", err)
+		}
 		// Don't return error if context was canceled, just log it
 		if err == context.Canceled || err == context.DeadlineExceeded {
 			return ctrl.Result{Requeue: true}, nil
@@ -305,6 +335,9 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 			return fmt.Errorf("failed to create ConfigMap: %w", err)
 		}
 		log.Info("Created ConfigMap", "name", configMapName)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&df, corev1.EventTypeNormal, "ConfigMapCreated", "Created ConfigMap %s", configMapName)
+		}
 	} else if err != nil {
 		return fmt.Errorf("failed to get ConfigMap: %w", err)
 	} else {
@@ -314,6 +347,9 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 			return fmt.Errorf("failed to update ConfigMap: %w", err)
 		}
 		log.Info("Updated ConfigMap", "name", configMapName)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&df, corev1.EventTypeNormal, "ConfigMapUpdated", "Updated ConfigMap %s", configMapName)
+		}
 	}
 
 	return nil
@@ -401,6 +437,9 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 			return fmt.Errorf("failed to create Deployment: %w", err)
 		}
 		log.Info("Created Deployment", "name", deploymentName)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "DeploymentCreated", "Created Deployment %s", deploymentName)
+		}
 	} else if err != nil {
 		return fmt.Errorf("failed to get Deployment: %w", err)
 	} else {
@@ -410,6 +449,9 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 			return fmt.Errorf("failed to update Deployment: %w", err)
 		}
 		log.Info("Updated Deployment", "name", deploymentName)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "DeploymentUpdated", "Updated Deployment %s", deploymentName)
+		}
 	}
 
 	return nil

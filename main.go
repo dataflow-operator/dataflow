@@ -136,7 +136,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = controller.NewDataFlowReconciler(mgr.GetClient(), mgr.GetScheme()).SetupWithManager(mgr); err != nil {
+	if err = controller.NewDataFlowReconciler(mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("dataflow-controller")).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DataFlow")
 		os.Exit(1)
 	}

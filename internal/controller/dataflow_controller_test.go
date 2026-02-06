@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -45,7 +47,7 @@ func TestNewDataFlowReconciler(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	assert.NotNil(t, reconciler)
 	assert.Equal(t, fakeClient, reconciler.Client)
@@ -64,7 +66,7 @@ func TestNewDataFlowReconciler_ProcessorImageFromEnv(t *testing.T) {
 	require.NoError(t, dataflowv1.AddToScheme(scheme))
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	assert.Equal(t, customImage, reconciler.processorImage)
 }
@@ -86,7 +88,7 @@ func TestEnqueueAllDataFlowsForOperatorUpdate(t *testing.T) {
 	df1 := &dataflowv1.DataFlow{ObjectMeta: metav1.ObjectMeta{Name: "df1", Namespace: "default"}}
 	df2 := &dataflowv1.DataFlow{ObjectMeta: metav1.ObjectMeta{Name: "df2", Namespace: "other"}}
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(df1, df2).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	operatorDeployment := &appsv1.Deployment{}
 	operatorDeployment.SetName(opName)
@@ -117,7 +119,7 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	ctx := context.Background()
 
@@ -199,7 +201,7 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	ctx := context.Background()
 
@@ -265,7 +267,7 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	ctx := context.Background()
 
@@ -397,7 +399,7 @@ func TestDataFlowReconciler_Reconcile_InvalidSpec(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	ctx := context.Background()
 
@@ -464,7 +466,7 @@ func TestDataFlowReconciler_Reconcile_UpdateStats(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	ctx := context.Background()
 
@@ -534,7 +536,7 @@ func TestDataFlowReconciler_Reconcile_NotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
 
 	ctx := context.Background()
 
@@ -548,4 +550,75 @@ func TestDataFlowReconciler_Reconcile_NotFound(t *testing.T) {
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestReconcileEmitsEvents(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	fakeRecorder := record.NewFakeRecorder(10)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, fakeRecorder)
+
+	ctx := context.Background()
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "output-topic",
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
+	}
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Drain events (FakeRecorder uses buffered channel; events were sent during Reconcile)
+	var events []string
+	for {
+		select {
+		case e := <-fakeRecorder.Events:
+			events = append(events, e)
+		default:
+			goto done
+		}
+	}
+done:
+	// On success we expect ConfigMapCreated and DeploymentCreated
+	var hasConfigMapCreated, hasDeploymentCreated bool
+	for _, e := range events {
+		if strings.Contains(e, "ConfigMapCreated") {
+			hasConfigMapCreated = true
+		}
+		if strings.Contains(e, "DeploymentCreated") {
+			hasDeploymentCreated = true
+		}
+	}
+	assert.True(t, hasConfigMapCreated, "expected event containing ConfigMapCreated, got events: %v", events)
+	assert.True(t, hasDeploymentCreated, "expected event containing DeploymentCreated, got events: %v", events)
 }
