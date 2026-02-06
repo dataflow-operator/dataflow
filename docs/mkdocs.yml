@@ -4,7 +4,6 @@ site_author: DataFlow Team
 
 theme:
   name: material
-  language: en
   palette:
     - scheme: default
       primary: blue
