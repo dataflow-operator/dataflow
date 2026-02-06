@@ -16,8 +16,12 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Версия оператора для дефолтного образа процессора (тот же тег при сборке из релиза).
+ARG VERSION=dev
 # Build manager (operator)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager \
+  -ldflags "-X github.com/dataflow-operator/dataflow/internal/version.Version=${VERSION}" \
+  main.go
 
 # Build processor
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o processor cmd/processor/main.go

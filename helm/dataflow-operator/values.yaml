@@ -10,6 +10,9 @@ image:
   # Overrides the image tag whose default is the chart appVersion.
   tag: "latest"
 
+# Image for processor pods (отдельный под под каждый DataFlow). If not set, uses the same image and tag as the operator.
+processorImage: ""
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

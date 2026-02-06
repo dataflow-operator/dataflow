@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +50,63 @@ func TestNewDataFlowReconciler(t *testing.T) {
 	assert.NotNil(t, reconciler)
 	assert.Equal(t, fakeClient, reconciler.Client)
 	assert.Equal(t, scheme, reconciler.Scheme)
-	assert.NotEmpty(t, reconciler.processorImage)
+	// Без PROCESSOR_IMAGE используется версия оператора (при сборке без ldflags — "dev").
+	assert.Equal(t, version.DefaultProcessorImage(), reconciler.processorImage)
+}
+
+func TestNewDataFlowReconciler_ProcessorImageFromEnv(t *testing.T) {
+	const customImage = "my.registry/dataflow-processor:v1.2.3"
+	prev := os.Getenv("PROCESSOR_IMAGE")
+	defer func() { _ = os.Setenv("PROCESSOR_IMAGE", prev) }()
+	require.NoError(t, os.Setenv("PROCESSOR_IMAGE", customImage))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+
+	assert.Equal(t, customImage, reconciler.processorImage)
+}
+
+func TestEnqueueAllDataFlowsForOperatorUpdate(t *testing.T) {
+	const opName, opNs = "dataflow-operator", "dataflow-system"
+	prevName, prevNs := os.Getenv("OPERATOR_DEPLOYMENT_NAME"), os.Getenv("OPERATOR_NAMESPACE")
+	defer func() {
+		_ = os.Setenv("OPERATOR_DEPLOYMENT_NAME", prevName)
+		_ = os.Setenv("OPERATOR_NAMESPACE", prevNs)
+	}()
+	require.NoError(t, os.Setenv("OPERATOR_DEPLOYMENT_NAME", opName))
+	require.NoError(t, os.Setenv("OPERATOR_NAMESPACE", opNs))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	df1 := &dataflowv1.DataFlow{ObjectMeta: metav1.ObjectMeta{Name: "df1", Namespace: "default"}}
+	df2 := &dataflowv1.DataFlow{ObjectMeta: metav1.ObjectMeta{Name: "df2", Namespace: "other"}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(df1, df2).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme)
+
+	operatorDeployment := &appsv1.Deployment{}
+	operatorDeployment.SetName(opName)
+	operatorDeployment.SetNamespace(opNs)
+
+	ctx := context.Background()
+	reqs := reconciler.enqueueAllDataFlowsForOperatorUpdate(ctx, operatorDeployment)
+	assert.Len(t, reqs, 2)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		names[r.Namespace+"/"+r.Name] = true
+	}
+	assert.True(t, names["default/df1"])
+	assert.True(t, names["other/df2"])
+
+	otherDeployment := &appsv1.Deployment{}
+	otherDeployment.SetName("other-deploy")
+	otherDeployment.SetNamespace(opNs)
+	reqs2 := reconciler.enqueueAllDataFlowsForOperatorUpdate(ctx, otherDeployment)
+	assert.Nil(t, reqs2)
 }
 
 func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {

@@ -43,6 +43,13 @@ spec:
           {{- toYaml .Values.securityContext | nindent 12 }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: PROCESSOR_IMAGE
+          value: {{ .Values.processorImage | default (printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion)) | quote }}
+        - name: OPERATOR_DEPLOYMENT_NAME
+          value: {{ include "dataflow-operator.fullname" . | quote }}
+        - name: OPERATOR_NAMESPACE
+          value: {{ .Release.Namespace | quote }}
         args:
         - --metrics-bind-address=:{{ .Values.metrics.port }}
         - --health-probe-bind-address=:{{ .Values.health.probePort }}

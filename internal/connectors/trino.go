@@ -1221,7 +1221,7 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		case <-ctx.Done():
 			t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
 			if len(batch) > 0 {
-				return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+				return retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 					return t.executeBatch(ctx, batch)
 				})
 			}
@@ -1230,7 +1230,7 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 			if !ok {
 				t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
 				if len(batch) > 0 {
-					return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+					return retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 						return t.executeBatch(ctx, batch)
 					})
 				}
@@ -1244,7 +1244,7 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 
 			if len(batch) >= batchSize {
 				t.logger.Info("Batch size reached, executing batch", "batchSize", len(batch))
-				if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+				if err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 					return t.executeBatch(ctx, batch)
 				}); err != nil {
 					t.logger.Error(err, "Failed to execute batch", "batchSize", len(batch))

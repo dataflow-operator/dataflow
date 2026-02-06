@@ -32,11 +32,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
+	"github.com/dataflow-operator/dataflow/internal/version"
 )
 
 // DataFlowReconciler reconciles a DataFlow object
@@ -45,20 +50,25 @@ type DataFlowReconciler struct {
 	Scheme         *runtime.Scheme
 	secretResolver *SecretResolver
 	processorImage string
+	// operatorDeploymentName/Namespace — для наблюдения за Deployment оператора; при его обновлении реконсилируем все DataFlow.
+	operatorDeploymentName      string
+	operatorDeploymentNamespace string
 }
 
 func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme) *DataFlowReconciler {
-	// Получаем образ процессора из переменной окружения или используем дефолтный
-	processorImage := "ghcr.io/ilyario/dataflow:latest"
+	// Образ процессора: из env или тот же образ и версия, что и оператор (задаётся при сборке через ldflags).
+	processorImage := version.DefaultProcessorImage()
 	if img := os.Getenv("PROCESSOR_IMAGE"); img != "" {
 		processorImage = img
 	}
 
 	return &DataFlowReconciler{
-		Client:         client,
-		Scheme:         scheme,
-		secretResolver: NewSecretResolver(client),
-		processorImage: processorImage,
+		Client:                      client,
+		Scheme:                      scheme,
+		secretResolver:              NewSecretResolver(client),
+		processorImage:              processorImage,
+		operatorDeploymentName:      os.Getenv("OPERATOR_DEPLOYMENT_NAME"),
+		operatorDeploymentNamespace: os.Getenv("OPERATOR_NAMESPACE"),
 	}
 }
 
@@ -461,11 +471,47 @@ func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Requ
 	return nil
 }
 
+// isOperatorDeployment возвращает true, если obj — это Deployment оператора (по имени и namespace).
+func (r *DataFlowReconciler) isOperatorDeployment(obj client.Object) bool {
+	if r.operatorDeploymentName == "" || r.operatorDeploymentNamespace == "" {
+		return false
+	}
+	return obj.GetNamespace() == r.operatorDeploymentNamespace && obj.GetName() == r.operatorDeploymentName
+}
+
+// enqueueAllDataFlowsForOperatorUpdate возвращает запросы на реконсиляцию всех DataFlow (вызывается при обновлении Deployment оператора).
+func (r *DataFlowReconciler) enqueueAllDataFlowsForOperatorUpdate(ctx context.Context, o client.Object) []reconcile.Request {
+	if !r.isOperatorDeployment(o) {
+		return nil
+	}
+	list := &dataflowv1.DataFlowList{}
+	if err := r.List(ctx, list); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name: list.Items[i].Name, Namespace: list.Items[i].Namespace,
+		}})
+	}
+	return reqs
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DataFlowReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&dataflowv1.DataFlow{}).
 		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.ConfigMap{}).
-		Complete(r)
+		Owns(&corev1.ConfigMap{})
+
+	// При обновлении Deployment оператора реконсилируем все DataFlow, чтобы поды процессора получили новый образ.
+	if r.operatorDeploymentName != "" && r.operatorDeploymentNamespace != "" {
+		b = b.Watches(
+			&appsv1.Deployment{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueAllDataFlowsForOperatorUpdate),
+			builder.WithPredicates(predicate.NewPredicateFuncs(r.isOperatorDeployment)),
+		)
+	}
+
+	return b.Complete(r)
 }
