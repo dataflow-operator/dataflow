@@ -31,6 +31,9 @@ import (
 
 // TestTransformersIntegration тестирует все трансформеры с реальными данными
 func TestTransformersIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	ctx := context.Background()
 
 	t.Run("Timestamp Transformer", func(t *testing.T) {
@@ -309,6 +312,9 @@ func TestTransformersIntegration(t *testing.T) {
 
 // TestTransformersChainIntegration тестирует цепочку трансформеров
 func TestTransformersChainIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	ctx := context.Background()
 
 	// Создаем цепочку трансформеров: Select -> Mask -> Timestamp

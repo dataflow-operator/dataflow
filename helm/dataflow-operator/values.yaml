@@ -69,6 +69,9 @@ metrics:
   # The address the metric endpoint binds to
   port: 9090
 
+# Log level for the operator (sets env LOG_LEVEL: debug, info, warn, error)
+logLevel: "info"
+
 # Health probe configuration
 health:
   # The address the probe endpoint binds to

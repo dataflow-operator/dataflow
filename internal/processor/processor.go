@@ -25,6 +25,7 @@ import (
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/connectors"
+	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/transformers"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -68,7 +69,8 @@ func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger
 
 	// Set logger and metadata if connector supports it
 	if loggerConnector, ok := source.(interface{ SetLogger(logr.Logger) }); ok {
-		loggerConnector.SetLogger(logger)
+		sourceLogger := logger.WithValues(logkeys.ConnectorType, spec.Source.Type+"-source")
+		loggerConnector.SetLogger(sourceLogger)
 	}
 	if metadataConnector, ok := source.(interface{ SetMetadata(string, string) }); ok {
 		metadataConnector.SetMetadata(namespace, name)
@@ -82,7 +84,8 @@ func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger
 
 	// Set logger and metadata if connector supports it
 	if loggerConnector, ok := sink.(interface{ SetLogger(logr.Logger) }); ok {
-		loggerConnector.SetLogger(logger)
+		sinkLogger := logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink")
+		loggerConnector.SetLogger(sinkLogger)
 	}
 	if metadataConnector, ok := sink.(interface{ SetMetadata(string, string) }); ok {
 		metadataConnector.SetMetadata(namespace, name)
@@ -98,7 +101,8 @@ func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger
 
 		// Set logger and metadata if connector supports it
 		if loggerConnector, ok := errorSink.(interface{ SetLogger(logr.Logger) }); ok {
-			loggerConnector.SetLogger(logger)
+			errorSinkLogger := logger.WithValues(logkeys.ConnectorType, spec.Errors.Type+"-sink")
+			loggerConnector.SetLogger(errorSinkLogger)
 		}
 		if metadataConnector, ok := errorSink.(interface{ SetMetadata(string, string) }); ok {
 			metadataConnector.SetMetadata(namespace, name)
@@ -265,6 +269,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 
 					if err != nil {
 						p.logger.Error(err, "Transformation failed",
+							logkeys.MessageID, types.MessageID(m),
 							"transformerIndex", i,
 							"message", string(m.Data))
 						metrics.RecordTransformerError(p.namespace, p.name, transformerType, i, getErrorType(err))
@@ -296,6 +301,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 						// Log routing metadata after router transformation
 						if routedCond, ok := tmsg.Metadata["routed_condition"].(string); ok {
 							p.logger.Info("Router set routed_condition",
+								logkeys.MessageID, types.MessageID(tmsg),
 								"condition", routedCond,
 								"message", string(tmsg.Data))
 						}
@@ -314,6 +320,15 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 
 				messages = newMessages
 				metrics.RecordTransformerMessagesOut(p.namespace, p.name, transformerType, i, len(newMessages))
+			}
+
+			// Propagate source Ack to transformed messages: commit offset only after all derived messages are written
+			if msg.Ack != nil {
+				var once sync.Once
+				parentAck := msg.Ack
+				for _, out := range messages {
+					out.Ack = func() { once.Do(parentAck) }
+				}
 			}
 
 			// Записываем время этапа трансформации
@@ -486,7 +501,8 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 
 					// Set logger and metadata if connector supports it
 					if loggerConnector, ok := routeSink.(interface{ SetLogger(logr.Logger) }); ok {
-						loggerConnector.SetLogger(p.logger)
+						routeLogger := p.logger.WithValues(logkeys.ConnectorType, spec.Type+"-sink")
+						loggerConnector.SetLogger(routeLogger)
 					}
 					if metadataConnector, ok := routeSink.(interface{ SetMetadata(string, string) }); ok {
 						metadataConnector.SetMetadata(p.namespace, p.name)
@@ -626,6 +642,8 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 
 						// Send to error sink
 						errorSinkStart := time.Now()
+						// Propagate Ack so offset is committed only after error sink has written
+						errorMsg.Ack = msg.Ack
 						select {
 						case errorChan <- errorMsg:
 							errorSinkDuration := time.Since(errorSinkStart).Seconds()

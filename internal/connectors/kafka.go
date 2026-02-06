@@ -36,6 +36,7 @@ import (
 
 	"github.com/IBM/sarama"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -237,6 +238,7 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 			}(), err)
 	}
 	k.consumer = consumer
+	k.logger.Info("Successfully connected to Kafka", "brokers", k.config.Brokers, "topic", k.config.Topic, "group", consumerGroup)
 
 	// Record connection status
 	if k.namespace != "" && k.name != "" {
@@ -607,6 +609,7 @@ func (k *KafkaSourceConnector) Close() error {
 		return nil
 	}
 
+	k.logger.Info("Closing Kafka source connection", "brokers", k.config.Brokers, "topic", k.config.Topic)
 	k.closed = true
 	if k.consumer != nil {
 		// Record connection status
@@ -668,6 +671,7 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 				msgData, err = h.connector.deserializeAvro(session.Context(), message.Value)
 				if err != nil {
 					h.connector.logger.Error(err, "Failed to deserialize Avro message",
+						logkeys.MessageID, fmt.Sprintf("%d/%d", message.Partition, message.Offset),
 						"topic", message.Topic,
 						"partition", message.Partition,
 						"offset", message.Offset)
@@ -685,11 +689,12 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 			msg.Metadata["partition"] = message.Partition
 			msg.Metadata["offset"] = message.Offset
 			msg.Metadata["key"] = string(message.Key)
+			// Commit offset only after the message is successfully written to the sink (called by sink connectors)
+			msg.Ack = func() { session.MarkMessage(message, "") }
 
 			select {
 			case h.msgChan <- msg:
-				session.MarkMessage(message, "")
-				// Record metrics
+				// Record metrics (offset will be committed by sink after successful write)
 				if h.connector.namespace != "" && h.connector.name != "" {
 					metrics.RecordConnectorMessageRead(h.connector.namespace, h.connector.name, "kafka", "source")
 				}
@@ -887,6 +892,7 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 			}(), err)
 	}
 	k.producer = producer
+	k.logger.Info("Successfully connected to Kafka", "brokers", k.config.Brokers, "topic", k.config.Topic)
 
 	// Record connection status
 	if k.namespace != "" && k.name != "" {
@@ -981,6 +987,10 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 
 			msg.Metadata["partition"] = partition
 			msg.Metadata["offset"] = offset
+
+			if msg.Ack != nil {
+				msg.Ack()
+			}
 		}
 	}
 }
@@ -994,6 +1004,7 @@ func (k *KafkaSinkConnector) Close() error {
 		return nil
 	}
 
+	k.logger.Info("Closing Kafka sink connection", "brokers", k.config.Brokers, "topic", k.config.Topic)
 	k.closed = true
 	if k.producer != nil {
 		// Record connection status

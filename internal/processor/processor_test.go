@@ -76,6 +76,9 @@ func (m *mockSinkConnector) Write(ctx context.Context, messages <-chan *types.Me
 
 	for msg := range messages {
 		m.messages = append(m.messages, msg)
+		if msg.Ack != nil {
+			msg.Ack()
+		}
 	}
 	return nil
 }

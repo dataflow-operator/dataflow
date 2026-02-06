@@ -27,6 +27,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
@@ -616,6 +617,7 @@ func (t *TrinoSourceConnector) Close() error {
 		return nil
 	}
 
+	t.logger.Info("Closing Trino source connection", "catalog", t.config.Catalog, "schema", t.config.Schema)
 	t.closed = true
 	return nil
 }
@@ -1221,24 +1223,41 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		case <-ctx.Done():
 			t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
 			if len(batch) > 0 {
-				return retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
+				err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 					return t.executeBatch(ctx, batch)
 				})
+				if err != nil {
+					return err
+				}
+				for _, m := range batch {
+					if m.Ack != nil {
+						m.Ack()
+					}
+				}
+				return ctx.Err()
 			}
 			return ctx.Err()
 		case msg, ok := <-messages:
 			if !ok {
 				t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
 				if len(batch) > 0 {
-					return retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
+					err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 						return t.executeBatch(ctx, batch)
 					})
+					if err != nil {
+						return err
+					}
+					for _, m := range batch {
+						if m.Ack != nil {
+							m.Ack()
+						}
+					}
 				}
 				return nil
 			}
 
 			messageCount++
-			t.logger.Info("Received message for Trino", "messageNumber", messageCount, "messageSize", len(msg.Data), "batchSize", len(batch)+1)
+			t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data), "batchSize", len(batch)+1)
 
 			batch = append(batch, msg)
 
@@ -1247,8 +1266,17 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 				if err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 					return t.executeBatch(ctx, batch)
 				}); err != nil {
-					t.logger.Error(err, "Failed to execute batch", "batchSize", len(batch))
+					firstMsgID := ""
+					if len(batch) > 0 {
+						firstMsgID = types.MessageID(batch[0])
+					}
+					t.logger.Error(err, "Failed to execute batch", logkeys.MessageID, firstMsgID, "batchSize", len(batch))
 					return err
+				}
+				for _, m := range batch {
+					if m.Ack != nil {
+						m.Ack()
+					}
 				}
 				batch = make([]*types.Message, 0, batchSize)
 			}
@@ -1292,7 +1320,7 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 	for i, msg := range batch {
 		var msgData map[string]interface{}
 		if err := json.Unmarshal(msg.Data, &msgData); err != nil {
-			t.logger.Error(err, "Failed to parse message JSON", "messageIndex", i, "message", string(msg.Data))
+			t.logger.Error(err, "Failed to parse message JSON", logkeys.MessageID, types.MessageID(msg), "messageIndex", i, "message", string(msg.Data))
 			return fmt.Errorf("failed to parse message JSON at index %d: %w", i, err)
 		}
 
@@ -1390,7 +1418,7 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 		// Parse JSON message
 		var data map[string]interface{}
 		if err := json.Unmarshal(msg.Data, &data); err != nil {
-			t.logger.Error(err, "Failed to parse message JSON", "messageIndex", i, "message", string(msg.Data))
+			t.logger.Error(err, "Failed to parse message JSON", logkeys.MessageID, types.MessageID(msg), "messageIndex", i, "message", string(msg.Data))
 			return fmt.Errorf("failed to parse message JSON: %w", err)
 		}
 
@@ -1638,6 +1666,7 @@ func (t *TrinoSinkConnector) Close() error {
 		return nil
 	}
 
+	t.logger.Info("Closing Trino sink connection", "catalog", t.config.Catalog, "schema", t.config.Schema, "table", t.config.Table)
 	t.closed = true
 	return nil
 }

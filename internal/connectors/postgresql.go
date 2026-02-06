@@ -24,8 +24,10 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/go-logr/logr"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -35,6 +37,7 @@ type PostgreSQLSourceConnector struct {
 	conn         *pgx.Conn
 	closed       bool
 	mu           sync.Mutex
+	logger       logr.Logger
 	lastReadID   int64      // Track last read ID to avoid duplicates
 	lastReadTime *time.Time // Track last read time to avoid duplicates
 }
@@ -43,7 +46,13 @@ type PostgreSQLSourceConnector struct {
 func NewPostgreSQLSourceConnector(config *v1.PostgreSQLSourceSpec) *PostgreSQLSourceConnector {
 	return &PostgreSQLSourceConnector{
 		config: config,
+		logger: logr.Discard(),
 	}
+}
+
+// SetLogger sets the logger for the connector
+func (p *PostgreSQLSourceConnector) SetLogger(logger logr.Logger) {
+	p.logger = logger
 }
 
 // Connect establishes connection to PostgreSQL
@@ -55,12 +64,15 @@ func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
 		return fmt.Errorf("connector is closed")
 	}
 
+	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
 	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
 	if err != nil {
+		p.logger.Error(err, "Failed to connect to PostgreSQL", "table", p.config.Table)
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
 	p.conn = conn
+	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
 	return nil
 }
 
@@ -70,6 +82,7 @@ func (p *PostgreSQLSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
 
+	p.logger.Info("Starting to read from PostgreSQL", "table", p.config.Table)
 	msgChan := make(chan *types.Message, 100)
 
 	go func() {
@@ -120,8 +133,10 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		}
 	}
 
+	p.logger.V(1).Info("Executing PostgreSQL query", "query", query, "table", p.config.Table)
 	rows, err := p.conn.Query(ctx, query)
 	if err != nil {
+		p.logger.Error(err, "Failed to execute PostgreSQL query", "query", query, "table", p.config.Table)
 		return
 	}
 	defer rows.Close()
@@ -141,6 +156,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
+			p.logger.Error(err, "Failed to read row values", "table", p.config.Table)
 			continue
 		}
 
@@ -175,11 +191,15 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 
 		jsonData, err := json.Marshal(rowMap)
 		if err != nil {
+			p.logger.Error(err, "Failed to marshal row to JSON", "table", p.config.Table)
 			continue
 		}
 
 		msg := types.NewMessage(jsonData)
 		msg.Metadata["table"] = p.config.Table
+		if idIndex >= 0 && len(values) > idIndex {
+			msg.Metadata["id"] = values[idIndex]
+		}
 
 		select {
 		case msgChan <- msg:
@@ -198,6 +218,7 @@ func (p *PostgreSQLSourceConnector) Close() error {
 		return nil
 	}
 
+	p.logger.Info("Closing PostgreSQL source connection", "table", p.config.Table)
 	p.closed = true
 	if p.conn != nil {
 		return p.conn.Close(context.Background())
@@ -211,13 +232,20 @@ type PostgreSQLSinkConnector struct {
 	conn   *pgx.Conn
 	closed bool
 	mu     sync.Mutex
+	logger logr.Logger
 }
 
 // NewPostgreSQLSinkConnector creates a new PostgreSQL sink connector
 func NewPostgreSQLSinkConnector(config *v1.PostgreSQLSinkSpec) *PostgreSQLSinkConnector {
 	return &PostgreSQLSinkConnector{
 		config: config,
+		logger: logr.Discard(),
 	}
+}
+
+// SetLogger sets the logger for the connector
+func (p *PostgreSQLSinkConnector) SetLogger(logger logr.Logger) {
+	p.logger = logger
 }
 
 // Connect establishes connection to PostgreSQL
@@ -229,16 +257,20 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 		return fmt.Errorf("connector is closed")
 	}
 
+	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
 	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
 	if err != nil {
+		p.logger.Error(err, "Failed to connect to PostgreSQL", "table", p.config.Table)
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
 	p.conn = conn
+	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
 
 	// Auto-create table if enabled
 	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable {
 		if err := p.ensureTable(ctx); err != nil {
+			p.logger.Error(err, "Failed to ensure table exists", "table", p.config.Table)
 			return fmt.Errorf("failed to ensure table exists: %w", err)
 		}
 	}
@@ -261,9 +293,11 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	}
 
 	if exists {
+		p.logger.V(1).Info("Table already exists", "table", p.config.Table)
 		return nil
 	}
 
+	p.logger.Info("Creating table", "table", p.config.Table)
 	// Create table with flexible schema for JSON-like data
 	// Using JSONB to handle dynamic fields
 	createQuery := fmt.Sprintf(`
@@ -278,13 +312,13 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
+	p.logger.Info("Table created successfully", "table", p.config.Table)
 
 	// Create index on data for better query performance
 	indexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_%s_data ON %s USING GIN (data)`, p.config.Table, p.config.Table)
 	_, err = p.conn.Exec(ctx, indexQuery)
 	if err != nil {
-		// Index creation failure is not critical
-		fmt.Printf("WARNING: Failed to create index: %v\n", err)
+		p.logger.Info("Failed to create index (non-critical)", "table", p.config.Table, "error", err)
 	}
 
 	return nil
@@ -301,38 +335,59 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		batchSize = int(*p.config.BatchSize)
 	}
 
+	p.logger.Info("Starting to write messages to PostgreSQL", "table", p.config.Table, "batchSize", batchSize)
 	batch := &pgx.Batch{}
+	batchMessages := make([]*types.Message, 0, batchSize)
 	count := 0
+	messageCount := 0
 
 	for {
 		select {
 		case <-ctx.Done():
 			if batch.Len() > 0 {
-				fmt.Printf("DEBUG: Executing final batch on context done, size: %d\n", batch.Len())
-				return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+				p.logger.Info("Context cancelled, flushing batch", "batchSize", batch.Len(), "table", p.config.Table)
+				err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
 					return p.executeBatch(ctx, batch)
 				})
+				if err != nil {
+					return err
+				}
+				for _, m := range batchMessages {
+					if m.Ack != nil {
+						m.Ack()
+					}
+				}
+				return ctx.Err()
 			}
 			return ctx.Err()
 		case msg, ok := <-messages:
 			if !ok {
 				if batch.Len() > 0 {
-					fmt.Printf("DEBUG: Executing final batch on channel close, size: %d\n", batch.Len())
-					return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+					p.logger.Info("Message channel closed, flushing batch", "batchSize", batch.Len(), "totalMessages", messageCount, "table", p.config.Table)
+					err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
 						return p.executeBatch(ctx, batch)
 					})
+					if err != nil {
+						return err
+					}
+					for _, m := range batchMessages {
+						if m.Ack != nil {
+							m.Ack()
+						}
+					}
 				}
-				fmt.Printf("DEBUG: Channel closed, no batch to execute\n")
+				p.logger.Info("Message channel closed", "totalMessages", messageCount, "table", p.config.Table)
 				return nil
 			}
 
+			messageCount++
 			var data map[string]interface{}
 			if err := json.Unmarshal(msg.Data, &data); err != nil {
-				fmt.Printf("ERROR: Failed to unmarshal message: %v\n", err)
+				p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
 				continue
 			}
 
-			fmt.Printf("DEBUG: Received message, fields: %v\n", getKeys(data))
+			p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
 
 			// Use JSONB storage if auto-created table, otherwise use column-based
 			var query string
@@ -432,18 +487,24 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			}
 
 			batch.Queue(query, values...)
+			batchMessages = append(batchMessages, msg)
 			count++
-			fmt.Printf("DEBUG: Queued message %d/%d in batch\n", count, batchSize)
 
 			if count >= batchSize {
-				fmt.Printf("DEBUG: Batch size reached, executing batch\n")
+				p.logger.V(1).Info("Batch size reached, executing batch", "batchSize", count, "table", p.config.Table)
 				if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
 					return p.executeBatch(ctx, batch)
 				}); err != nil {
-					fmt.Printf("ERROR: Batch execution failed: %v\n", err)
+					p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
 					return err
 				}
+				for _, m := range batchMessages {
+					if m.Ack != nil {
+						m.Ack()
+					}
+				}
 				batch = &pgx.Batch{}
+				batchMessages = make([]*types.Message, 0, batchSize)
 				count = 0
 			}
 		}
@@ -459,18 +520,18 @@ func getKeys(m map[string]interface{}) []string {
 }
 
 func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.Batch) error {
-	fmt.Printf("DEBUG: Executing batch with %d statements\n", batch.Len())
+	p.logger.V(1).Info("Executing batch", "batchSize", batch.Len(), "table", p.config.Table)
 	br := p.conn.SendBatch(ctx, batch)
 	defer br.Close()
 
 	for i := 0; i < batch.Len(); i++ {
 		_, err := br.Exec()
 		if err != nil {
-			fmt.Printf("ERROR: Batch statement %d failed: %v\n", i, err)
+			p.logger.Error(err, "Batch statement failed", "statementIndex", i, "batchSize", batch.Len(), "table", p.config.Table)
 			return fmt.Errorf("batch execution error: %w", err)
 		}
 	}
-	fmt.Printf("DEBUG: Batch executed successfully, %d statements\n", batch.Len())
+	p.logger.V(1).Info("Batch executed successfully", "count", batch.Len(), "table", p.config.Table)
 	return nil
 }
 
@@ -483,6 +544,7 @@ func (p *PostgreSQLSinkConnector) Close() error {
 		return nil
 	}
 
+	p.logger.Info("Closing PostgreSQL sink connection", "table", p.config.Table)
 	p.closed = true
 	if p.conn != nil {
 		return p.conn.Close(context.Background())

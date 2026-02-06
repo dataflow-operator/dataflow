@@ -50,6 +50,8 @@ spec:
           value: {{ include "dataflow-operator.fullname" . | quote }}
         - name: OPERATOR_NAMESPACE
           value: {{ .Release.Namespace | quote }}
+        - name: LOG_LEVEL
+          value: {{ .Values.logLevel | default "info" | quote }}
         args:
         - --metrics-bind-address=:{{ .Values.metrics.port }}
         - --health-probe-bind-address=:{{ .Values.health.probePort }}

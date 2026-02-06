@@ -40,6 +40,9 @@ import (
 
 // TestKafkaConnectorIntegration тестирует Kafka source и sink коннекторы
 func TestKafkaConnectorIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	ctx := context.Background()
 
 	// Запускаем Kafka контейнер с более надежной стратегией ожидания
@@ -249,6 +252,9 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 
 // TestPostgreSQLConnectorIntegration тестирует PostgreSQL source и sink коннекторы
 func TestPostgreSQLConnectorIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	ctx := context.Background()
 
 	// Запускаем PostgreSQL контейнер

@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
 	"time"
+
+	crand "crypto/rand"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/version"
 )
@@ -128,6 +132,23 @@ func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl
 	return fmt.Errorf("failed to update status after %d attempts", maxRetries)
 }
 
+// processorLogLevel returns LOG_LEVEL for processor pods (from env PROCESSOR_LOG_LEVEL or default "info").
+func processorLogLevel() string {
+	if v := os.Getenv("PROCESSOR_LOG_LEVEL"); v != "" {
+		return v
+	}
+	return "info"
+}
+
+// genReconcileID returns a short hex string for correlating logs within one reconcile.
+func genReconcileID() string {
+	b := make([]byte, 4)
+	if _, err := crand.Read(b); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())[:8]
+	}
+	return hex.EncodeToString(b)
+}
+
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/finalizers,verbs=update
@@ -139,6 +160,13 @@ func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	reconcileID := genReconcileID()
+	reconcileLogger := log.FromContext(ctx).WithValues(
+		logkeys.DataflowName, req.Name,
+		logkeys.DataflowNamespace, req.Namespace,
+		logkeys.ReconcileID, reconcileID,
+	)
+	ctx = log.IntoContext(ctx, reconcileLogger)
 	log := log.FromContext(ctx)
 
 	var dataflow dataflowv1.DataFlow
@@ -155,7 +183,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	log.Info("Reconciling DataFlow", "name", dataflow.Name, "namespace", dataflow.Namespace)
+	log.Info("Reconciling DataFlow")
 
 	// Check if DataFlow is being deleted
 	if !dataflow.DeletionTimestamp.IsZero() {
@@ -258,10 +286,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	metrics.SetDataFlowStatus(req.Namespace, req.Name, dataflow.Status.Phase)
 
 	// Update status with retry logic to handle optimistic locking conflicts
-	// Используем отдельный контекст, чтобы избежать проблем с отменой
-	updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
+	// Используем контекст реконсиляции, чтобы fake client и реальный API находили объект по одному контексту
 	// Сохраняем значения статуса перед обновлением
 	statusPhase := dataflow.Status.Phase
 	statusMessage := dataflow.Status.Message
@@ -269,7 +294,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	statusErrorCount := dataflow.Status.ErrorCount
 	statusLastProcessedTime := dataflow.Status.LastProcessedTime
 
-	if err := r.updateStatusWithRetry(updateCtx, req, func(df *dataflowv1.DataFlow) {
+	if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 		df.Status.Phase = statusPhase
 		df.Status.Message = statusMessage
 		df.Status.ProcessedCount = statusProcessedCount
@@ -283,6 +308,10 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// Don't return error if context was canceled, just log it
 		if err == context.Canceled || err == context.DeadlineExceeded {
 			return ctrl.Result{Requeue: true}, nil
+		}
+		// Объект мог быть удалён между началом реконсиляции и обновлением статуса — не возвращаем ошибку
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
 		}
 		// Если это конфликт, запланируем повторную попытку
 		if apierrors.IsConflict(err) {
@@ -392,6 +421,9 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 								"--spec-path=/etc/dataflow/spec.json",
 								"--namespace=" + req.Namespace,
 								"--name=" + dataflow.Name,
+							},
+							Env: []corev1.EnvVar{
+								{Name: "LOG_LEVEL", Value: processorLogLevel()},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{

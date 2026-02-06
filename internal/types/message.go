@@ -18,6 +18,7 @@ package types
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -31,6 +32,10 @@ type Message struct {
 
 	// Timestamp when the message was created
 	Timestamp time.Time
+
+	// Ack is an optional callback to be invoked after the message has been successfully written to the sink.
+	// Used by sources (e.g. Kafka) to commit offset only after sink write, ensuring at-least-once delivery.
+	Ack func()
 }
 
 // NewMessage creates a new message from data
@@ -58,4 +63,28 @@ func FromJSON(data map[string]interface{}) (*Message, error) {
 		return nil, err
 	}
 	return NewMessage(jsonData), nil
+}
+
+// MessageID returns a short string identifier for the message for use in logs.
+// It checks Metadata for "message_id", "id", or Kafka-style "kafka_partition"/"kafka_offset".
+// Returns empty string if no identifier is available.
+func MessageID(msg *Message) string {
+	if msg == nil || msg.Metadata == nil {
+		return ""
+	}
+	if v, ok := msg.Metadata["message_id"]; ok {
+		return fmt.Sprint(v)
+	}
+	if v, ok := msg.Metadata["id"]; ok {
+		return fmt.Sprint(v)
+	}
+	part, hasPart := msg.Metadata["kafka_partition"]
+	off, hasOff := msg.Metadata["kafka_offset"]
+	if hasPart && hasOff {
+		return fmt.Sprintf("%v/%v", part, off)
+	}
+	if hasOff {
+		return fmt.Sprint(off)
+	}
+	return ""
 }

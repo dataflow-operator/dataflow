@@ -22,12 +22,16 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	ctrl "sigs.k8s.io/controller-runtime"
 	zaprctrl "sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/processor"
 )
 
@@ -44,9 +48,14 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	// Настройка логгера
-	ctrl.SetLogger(zaprctrl.New(zaprctrl.UseFlagOptions(&opts)))
-	logger := ctrl.Log.WithName("processor").WithValues("namespace", namespace, "name", name)
+	// Уровень логирования: переменная окружения LOG_LEVEL (debug, info, warn, error) или флаги
+	levelEnabler := processorLevelFromEnv(os.Getenv("LOG_LEVEL"), opts.Level)
+	zapOpts := []zaprctrl.Opts{zaprctrl.UseFlagOptions(&opts)}
+	if levelEnabler != nil {
+		zapOpts = append(zapOpts, zaprctrl.Level(levelEnabler))
+	}
+	ctrl.SetLogger(zaprctrl.New(zapOpts...))
+	logger := ctrl.Log.WithName("processor").WithValues(logkeys.DataflowNamespace, namespace, logkeys.DataflowName, name)
 
 	// Читаем spec из файла
 	specData, err := os.ReadFile(specPath)
@@ -101,4 +110,17 @@ func main() {
 	}
 
 	logger.Info("Processor stopped successfully")
+}
+
+// processorLevelFromEnv returns zap LevelEnabler from LOG_LEVEL env if set, otherwise optsLevel.
+func processorLevelFromEnv(envLevel string, optsLevel zapcore.LevelEnabler) zapcore.LevelEnabler {
+	s := strings.TrimSpace(strings.ToLower(envLevel))
+	if s == "" {
+		return optsLevel
+	}
+	var l zapcore.Level
+	if err := l.UnmarshalText([]byte(s)); err != nil {
+		return optsLevel
+	}
+	return zap.NewAtomicLevelAt(l)
 }

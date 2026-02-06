@@ -19,6 +19,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -54,6 +55,20 @@ func init() {
 	//+kubebuilder:scaffold:scheme
 }
 
+// levelFromEnvOrOptions returns zap LevelEnabler from LOG_LEVEL env (debug, info, warn, error) if set,
+// otherwise returns optsLevel (e.g. from --zap-log-level).
+func levelFromEnvOrOptions(envLevel string, optsLevel zapcore.LevelEnabler) zapcore.LevelEnabler {
+	s := strings.TrimSpace(strings.ToLower(envLevel))
+	if s == "" {
+		return optsLevel
+	}
+	var l zapcore.Level
+	if err := l.UnmarshalText([]byte(s)); err != nil {
+		return optsLevel
+	}
+	return zap.NewAtomicLevelAt(l)
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
@@ -70,6 +85,9 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// Уровень логирования: приоритет у переменной окружения LOG_LEVEL (debug, info, warn, error)
+	levelEnabler := levelFromEnvOrOptions(os.Getenv("LOG_LEVEL"), opts.Level)
 
 	// Настройка логгера с возможностью записи в файл
 	if logFile != "" {
@@ -92,13 +110,6 @@ func main() {
 		}
 		config.EncoderConfig = zap.NewDevelopmentEncoderConfig()
 
-		// Определяем уровень логирования из опций
-		// Используем LevelEnabler из опций, если он доступен
-		var levelEnabler zapcore.LevelEnabler = zapcore.InfoLevel
-		if opts.Level != nil {
-			levelEnabler = opts.Level
-		}
-
 		// Создаем core, который пишет в файл
 		core := zapcore.NewCore(
 			zapcore.NewConsoleEncoder(config.EncoderConfig),
@@ -115,8 +126,12 @@ func main() {
 		// Обертываем zap logger в logr.Logger через zapr
 		ctrl.SetLogger(zapr.NewLogger(zapLogger))
 	} else {
-		// Используем стандартную настройку через флаги
-		ctrl.SetLogger(zaprctrl.New(zaprctrl.UseFlagOptions(&opts)))
+		// Используем стандартную настройку: LOG_LEVEL или флаги
+		zapOpts := []zaprctrl.Opts{zaprctrl.UseFlagOptions(&opts)}
+		if levelEnabler != nil {
+			zapOpts = append(zapOpts, zaprctrl.Level(levelEnabler))
+		}
+		ctrl.SetLogger(zaprctrl.New(zapOpts...))
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
