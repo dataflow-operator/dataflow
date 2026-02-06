@@ -18,31 +18,39 @@ package transformers
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/go-logr/logr"
 	"github.com/tidwall/gjson"
 )
 
 // RouterTransformer routes messages to different sinks based on conditions
 type RouterTransformer struct {
 	config *v1.RouterTransformation
+	logger logr.Logger
 }
 
 // NewRouterTransformer creates a new router transformer
 func NewRouterTransformer(config *v1.RouterTransformation) *RouterTransformer {
 	return &RouterTransformer{
 		config: config,
+		logger: logr.Discard(),
 	}
+}
+
+// SetLogger sets the logger for the transformer (used by processor to inject logr)
+func (r *RouterTransformer) SetLogger(logger logr.Logger) {
+	r.logger = logger
 }
 
 // Transform routes messages based on conditions
 // Returns messages with routing metadata
 func (r *RouterTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	fmt.Printf("DEBUG Router: Processing message, routes count: %d\n", len(r.config.Routes))
-	fmt.Printf("DEBUG Router: Message data: %s\n", string(message.Data))
+	r.logger.V(1).Info("Router processing message",
+		"routesCount", len(r.config.Routes),
+		"dataSize", len(message.Data))
 
 	for i, route := range r.config.Routes {
 		// Check if condition contains comparison operator (==)
@@ -51,7 +59,9 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 		var expectedValue string
 		var isComparison bool
 
-		fmt.Printf("DEBUG Router: Checking route %d, condition: '%s'\n", i, condition)
+		r.logger.V(1).Info("Router checking route",
+			"routeIndex", i,
+			"condition", condition)
 
 		// Parse condition like "$.type == 'order'" or "$.type"
 		if idx := findComparisonOperator(condition); idx >= 0 {
@@ -59,11 +69,14 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 			fieldPath = strings.TrimSpace(condition[:idx])
 			expectedValue = extractStringValue(condition[idx:])
 			isComparison = true
-			fmt.Printf("DEBUG Router: Parsed comparison - fieldPath: '%s', expectedValue: '%s'\n", fieldPath, expectedValue)
+			r.logger.V(1).Info("Router parsed comparison",
+				"fieldPath", fieldPath,
+				"expectedValue", expectedValue)
 		} else {
 			fieldPath = condition
 			isComparison = false
-			fmt.Printf("DEBUG Router: No comparison operator found, using fieldPath: '%s'\n", fieldPath)
+			r.logger.V(1).Info("Router using field path (no comparison)",
+				"fieldPath", fieldPath)
 		}
 
 		// Remove $. prefix if present (gjson doesn't need it for root fields)
@@ -77,11 +90,14 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 		result := gjson.GetBytes(message.Data, fieldPath)
 
 		if !result.Exists() {
-			fmt.Printf("DEBUG Router: Field '%s' does not exist in message\n", fieldPath)
+			r.logger.V(1).Info("Router field does not exist",
+				"fieldPath", fieldPath)
 			continue
 		}
 
-		fmt.Printf("DEBUG Router: Field '%s' exists, value: '%s' (raw: %v)\n", fieldPath, result.String(), result.Value())
+		r.logger.V(1).Info("Router field exists",
+			"fieldPath", fieldPath,
+			"value", result.String())
 
 		// Check if condition is true
 		var isTrue bool
@@ -89,7 +105,10 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 			// For comparison, check if value matches expected
 			value := result.String()
 			isTrue = value == expectedValue
-			fmt.Printf("DEBUG Router: Comparison result: value='%s' == expected='%s' = %v\n", value, expectedValue, isTrue)
+			r.logger.V(1).Info("Router comparison result",
+				"value", value,
+				"expectedValue", expectedValue,
+				"match", isTrue)
 		} else {
 			// For simple existence check, use truthiness
 			value := result.Value()
@@ -116,14 +135,16 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 			}
 			newMsg.Metadata["routed_condition"] = route.Condition
 			newMsg.Timestamp = message.Timestamp
-			// Debug: log routing decision
-			fmt.Printf("DEBUG Router: Message routed to condition '%s', value='%s', expected='%s'\n",
-				route.Condition, result.String(), expectedValue)
+			r.logger.V(1).Info("Router message routed",
+				"condition", route.Condition,
+				"value", result.String(),
+				"expectedValue", expectedValue)
 			return []*types.Message{newMsg}, nil
 		} else if isComparison {
-			// Debug: log why condition didn't match
-			fmt.Printf("DEBUG Router: Condition '%s' didn't match: value='%s', expected='%s'\n",
-				route.Condition, result.String(), expectedValue)
+			r.logger.V(1).Info("Router condition did not match",
+				"condition", route.Condition,
+				"value", result.String(),
+				"expectedValue", expectedValue)
 		}
 	}
 

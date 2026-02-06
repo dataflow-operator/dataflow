@@ -71,14 +71,10 @@ func levelFromEnvOrOptions(envLevel string, optsLevel zapcore.LevelEnabler) zapc
 
 func main() {
 	var metricsAddr string
-	var enableLeaderElection bool
 	var probeAddr string
 	var logFile string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":9090", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":9091", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&logFile, "log-file", "", "Path to log file. If empty, logs will be written to stdout.")
 	opts := zaprctrl.Options{
 		Development: true,
@@ -143,7 +139,7 @@ func main() {
 			Port: 9443,
 		}),
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		LeaderElection:         true, // Always HA-ready: only one active controller across replicas
 		LeaderElectionID:       "dataflow-operator.dataflow.io",
 	})
 	if err != nil {

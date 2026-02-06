@@ -55,9 +55,6 @@ spec:
         args:
         - --metrics-bind-address=:{{ .Values.metrics.port }}
         - --health-probe-bind-address=:{{ .Values.health.probePort }}
-        {{- if .Values.leaderElection.enabled }}
-        - --leader-elect
-        {{- end }}
         ports:
         - name: metrics
           containerPort: {{ .Values.metrics.port }}
