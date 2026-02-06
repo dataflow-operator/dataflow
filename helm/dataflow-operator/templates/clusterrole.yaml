@@ -6,6 +6,14 @@ metadata:
   labels:
     {{- include "dataflow-operator.labels" . | nindent 4 }}
 rules:
+# EventRecorder: создание событий для DataFlow (kubectl describe dataflow, UI событий)
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
 - apiGroups:
   - dataflow.dataflow.io
   resources:
