@@ -20,31 +20,14 @@ theme:
         name: Switch to light mode
   features:
     - navigation.tabs
-    - navigation.sections
     - toc.integrate
 
 nav:
-  - Home: en/index.md
-  - Getting Started: en/getting-started.md
-  - Connectors: en/connectors.md
-  - Transformations: en/transformations.md
-  - Examples: en/examples.md
-  - Metrics: en/metrics.md
-  - Development: en/development.md
-  - "---"
-  - "Русский":
-    - "Главная": ru/index.md
-    - "Начало работы": ru/getting-started.md
-    - "Коннекторы": ru/connectors.md
-    - "Трансформации": ru/transformations.md
-    - "Примеры": ru/examples.md
-    - "Метрики": ru/metrics.md
-    - "Разработка": ru/development.md
+  - Home: index.md
+  - Documentation moved: error.md
 
 markdown_extensions:
   - pymdownx.highlight
   - pymdownx.superfences
-  - pymdownx.tabbed
   - admonition
   - tables
-
