@@ -21,7 +21,7 @@ package version
 var Version = "dev"
 
 // DefaultProcessorImageRepository — репозиторий образа процессора по умолчанию (тот же, что и оператор).
-const DefaultProcessorImageRepository = "ghcr.io/ilyario/dataflow"
+const DefaultProcessorImageRepository = "ghcr.io/dataflow-operator/dataflow"
 
 // DefaultProcessorImage возвращает образ процессора по умолчанию: репозиторий + версия оператора.
 func DefaultProcessorImage() string {

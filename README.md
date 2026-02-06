@@ -37,7 +37,7 @@ Kubernetes operator for streaming data between different sources (Kafka, Postgre
 Before installing the operator, you need to install the Custom Resource Definition (CRD):
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/ilyario/dataflow/refs/heads/main/config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+kubectl apply -f https://raw.githubusercontent.com/dataflow-operator/dataflow/refs/heads/main/config/crd/bases/dataflow.dataflow.io_dataflows.yaml
 ```
 
 Or use a local file:
@@ -50,12 +50,12 @@ kubectl apply -f config/crd/bases/dataflow.dataflow.io_dataflows.yaml
 
 1. Install the operator from OCI registry:
 ```bash
-helm install dataflow-operator oci://ghcr.io/ilyario/helm-charts/dataflow-operator
+helm install dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator
 ```
 
 2. For installation with custom settings:
 ```bash
-helm install dataflow-operator oci://ghcr.io/ilyario/helm-charts/dataflow-operator \
+helm install dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator \
   --set image.repository=your-registry/controller \
   --set image.tag=v1.0.0 \
   --set replicaCount=2
@@ -63,7 +63,7 @@ helm install dataflow-operator oci://ghcr.io/ilyario/helm-charts/dataflow-operat
 
 3. For installation in a specific namespace:
 ```bash
-helm install dataflow-operator oci://ghcr.io/ilyario/helm-charts/dataflow-operator \
+helm install dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator \
   --namespace dataflow-system \
   --create-namespace
 ```
@@ -81,7 +81,7 @@ helm install dataflow-operator ./helm/dataflow-operator
 #### Updating
 
 ```bash
-helm upgrade dataflow-operator oci://ghcr.io/ilyario/helm-charts/dataflow-operator
+helm upgrade dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator
 ```
 
 #### Uninstallation
