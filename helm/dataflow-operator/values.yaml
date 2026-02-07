@@ -65,6 +65,9 @@ metrics:
 # Log level for the operator (sets env LOG_LEVEL: debug, info, warn, error)
 logLevel: "info"
 
+# Log level for processor pods (sets env PROCESSOR_LOG_LEVEL in the operator; operator passes it as LOG_LEVEL to each processor pod)
+processorLogLevel: "info"
+
 # Health probe configuration
 health:
   # The address the probe endpoint binds to

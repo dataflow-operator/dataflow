@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -475,7 +476,10 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 	} else if err != nil {
 		return fmt.Errorf("failed to get Deployment: %w", err)
 	} else {
-		// Обновляем существующий Deployment, если spec изменился
+		// Обновляем существующий Deployment только при реальном изменении spec
+		if equality.Semantic.DeepEqual(existing.Spec, deployment.Spec) {
+			return nil
+		}
 		existing.Spec = deployment.Spec
 		if err := r.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed to update Deployment: %w", err)

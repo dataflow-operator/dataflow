@@ -408,6 +408,151 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
+// TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged проверяет, что при второй реконсиляции
+// с неизменным spec DataFlow не вызывается Update Deployment (нет лишних PATCH и rolling update).
+func TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	fakeRecorder := record.NewFakeRecorder(10)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, fakeRecorder)
+
+	ctx := context.Background()
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "output-topic",
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
+	}
+
+	// Первая реконсиляция — создаётся Deployment (DeploymentCreated)
+	_, _ = reconciler.Reconcile(ctx, req)
+	drainRecorderEvents(fakeRecorder) // сбрасываем события создания
+
+	// Вторая реконсиляция без изменения spec — Update не должен вызываться (DeploymentUpdated не должно быть)
+	_, _ = reconciler.Reconcile(ctx, req)
+	var deploymentUpdatedCount int
+	for {
+		select {
+		case e := <-fakeRecorder.Events:
+			if strings.Contains(e, "DeploymentUpdated") {
+				deploymentUpdatedCount++
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	assert.Equal(t, 0, deploymentUpdatedCount,
+		"expected no DeploymentUpdated event on second reconcile when spec unchanged")
+}
+
+// TestCreateOrUpdateDeployment_UpdateWhenSpecChanged проверяет, что при изменении spec DataFlow
+// вызывается Update Deployment и желаемое состояние применяется.
+func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+
+	ctx := context.Background()
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "output-topic",
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
+	}
+
+	// Первая реконсиляция — создаётся Deployment
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
+	generationBefore := deployment.Generation
+
+	// Меняем spec DataFlow (NodeSelector попадает в spec Deployment)
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, dataflow))
+	dataflow.Spec.NodeSelector = map[string]string{"node-type": "compute"}
+	require.NoError(t, fakeClient.Update(ctx, dataflow))
+
+	// Вторая реконсиляция — должен вызваться Update
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
+	assert.Greater(t, deployment.Generation, generationBefore,
+		"Deployment Generation should increase after spec change")
+	assert.Equal(t, "compute", deployment.Spec.Template.Spec.NodeSelector["node-type"],
+		"Deployment NodeSelector should reflect updated DataFlow spec")
+}
+
+func drainRecorderEvents(r *record.FakeRecorder) {
+	for {
+		select {
+		case <-r.Events:
+			// продолжаем вычитывать
+		default:
+			return
+		}
+	}
+}
+
 func TestDataFlowReconciler_Reconcile_InvalidSpec(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)

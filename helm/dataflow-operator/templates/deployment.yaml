@@ -52,6 +52,8 @@ spec:
           value: {{ .Release.Namespace | quote }}
         - name: LOG_LEVEL
           value: {{ .Values.logLevel | default "info" | quote }}
+        - name: PROCESSOR_LOG_LEVEL
+          value: {{ .Values.processorLogLevel | default "info" | quote }}
         args:
         - --metrics-bind-address=:{{ .Values.metrics.port }}
         - --health-probe-bind-address=:{{ .Values.health.probePort }}
