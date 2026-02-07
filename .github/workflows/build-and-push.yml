@@ -60,11 +60,12 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image (multi-arch amd64, arm64)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           push: true
@@ -115,7 +116,7 @@ jobs:
 
             ## Docker Image
 
-            Docker image is available at:
+            Docker image is available at (multi-arch: amd64, arm64):
             ```
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.TAG_NAME }}
             ```

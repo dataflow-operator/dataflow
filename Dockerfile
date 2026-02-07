@@ -18,16 +18,18 @@ COPY . .
 
 # Версия оператора для дефолтного образа процессора (тот же тег при сборке из релиза).
 ARG VERSION=dev
+# Multi-arch: при docker buildx --platform передаётся TARGETARCH (amd64, arm64).
+ARG TARGETARCH=amd64
 # Build manager (operator)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o manager \
   -ldflags "-X github.com/dataflow-operator/dataflow/internal/version.Version=${VERSION}" \
   main.go
 
 # Build processor
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o processor cmd/processor/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o processor cmd/processor/main.go
 
 # Build GUI server
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o gui-server cmd/gui-server/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o gui-server cmd/gui-server/main.go
 
 # Final stage
 FROM alpine:latest
