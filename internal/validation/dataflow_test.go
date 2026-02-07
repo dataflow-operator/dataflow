@@ -59,7 +59,7 @@ func TestValidateDataFlowSpec_EmptySource(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{},
 		Sink: dataflowv1.SinkSpec{
-			Type: "kafka",
+			Type:  "kafka",
 			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 	}
@@ -83,7 +83,7 @@ func TestValidateDataFlowSpec_InvalidSourceType(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{Type: "invalid"},
 		Sink: dataflowv1.SinkSpec{
-			Type: "kafka",
+			Type:  "kafka",
 			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 	}
@@ -97,7 +97,7 @@ func TestValidateDataFlowSpec_SourceTypeWithoutConfig(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{Type: "kafka"}, // Kafka nil
 		Sink: dataflowv1.SinkSpec{
-			Type: "kafka",
+			Type:  "kafka",
 			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 	}
@@ -114,7 +114,7 @@ func TestValidateDataFlowSpec_KafkaSourceMissingBrokersAndTopic(t *testing.T) {
 			Kafka: &dataflowv1.KafkaSourceSpec{}, // no brokers, no topic
 		},
 		Sink: dataflowv1.SinkSpec{
-			Type: "kafka",
+			Type:  "kafka",
 			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 	}
@@ -127,8 +127,8 @@ func TestValidateDataFlowSpec_KafkaSourceMissingBrokersAndTopic(t *testing.T) {
 func TestValidateDataFlowSpec_InvalidTransformationType(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type:   "kafka",
-			Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:  "kafka",
+			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 		Sink: dataflowv1.SinkSpec{
 			Type:  "kafka",
@@ -147,8 +147,8 @@ func TestValidateDataFlowSpec_InvalidTransformationType(t *testing.T) {
 func TestValidateDataFlowSpec_TransformationTypeWithoutConfig(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type:   "kafka",
-			Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:  "kafka",
+			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 		Sink: dataflowv1.SinkSpec{
 			Type:  "kafka",
@@ -167,8 +167,8 @@ func TestValidateDataFlowSpec_TransformationTypeWithoutConfig(t *testing.T) {
 func TestValidateDataFlowSpec_ErrorsSinkInvalid(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type:   "kafka",
-			Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:  "kafka",
+			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 		Sink: dataflowv1.SinkSpec{
 			Type:  "kafka",
@@ -207,8 +207,8 @@ func TestValidateDataFlowSpec_ResourcesNegative(t *testing.T) {
 	negQty := resource.MustParse("-100m")
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type:   "kafka",
-			Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:  "kafka",
+			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 		Sink: dataflowv1.SinkSpec{
 			Type:  "kafka",
@@ -227,8 +227,8 @@ func TestValidateDataFlowSpec_ResourcesNegative(t *testing.T) {
 func TestValidateDataFlowSpec_ValidWithTransformations(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type:   "kafka",
-			Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:  "kafka",
+			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 		Sink: dataflowv1.SinkSpec{
 			Type:  "kafka",
@@ -249,8 +249,8 @@ func TestValidateDataFlowSpec_ValidWithTransformations(t *testing.T) {
 func TestValidateDataFlowSpec_RouterWithInvalidNestedSink(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type:   "kafka",
-			Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:  "kafka",
+			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 		Sink: dataflowv1.SinkSpec{
 			Type:  "kafka",
@@ -277,8 +277,8 @@ func TestValidateDataFlowSpec_RouterWithInvalidNestedSink(t *testing.T) {
 func TestValidateDataFlowSpec_FlattenEmptyField(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type:   "kafka",
-			Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:  "kafka",
+			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
 		},
 		Sink: dataflowv1.SinkSpec{
 			Type:  "kafka",
@@ -320,9 +320,9 @@ func TestValidateDataFlowSpec_TrinoSourceValid(t *testing.T) {
 			Type: "trino",
 			Trino: &dataflowv1.TrinoSourceSpec{
 				ServerURL: "http://trino:8080",
-				Catalog:  "c",
-				Schema:   "s",
-				Table:    "t",
+				Catalog:   "c",
+				Schema:    "s",
+				Table:     "t",
 			},
 		},
 		Sink: dataflowv1.SinkSpec{
