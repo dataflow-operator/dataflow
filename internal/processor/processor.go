@@ -734,6 +734,11 @@ func getErrorType(err error) string {
 // createErrorMessage creates an error message with error information embedded in the data.
 // If approximate is true, the failed message might not be originalMsg (e.g. when sink returns one error per Write call).
 func (p *Processor) createErrorMessage(originalMsg *types.Message, err error, approximate bool) *types.Message {
+	originalSink := "unknown"
+	if p.spec != nil {
+		originalSink = p.spec.Sink.Type
+	}
+
 	// Try to parse original message as JSON
 	var originalData map[string]interface{}
 	if err := json.Unmarshal(originalMsg.Data, &originalData); err != nil {
@@ -748,7 +753,7 @@ func (p *Processor) createErrorMessage(originalMsg *types.Message, err error, ap
 		"error": map[string]interface{}{
 			"message":       err.Error(),
 			"timestamp":     time.Now().Format(time.RFC3339),
-			"original_sink": p.spec.Sink.Type,
+			"original_sink": originalSink,
 		},
 		"original_message": originalData,
 	}
@@ -770,7 +775,7 @@ func (p *Processor) createErrorMessage(originalMsg *types.Message, err error, ap
 		fallbackData := map[string]interface{}{
 			"error":           err.Error(),
 			"error_timestamp": time.Now().Format(time.RFC3339),
-			"original_sink":   p.spec.Sink.Type,
+			"original_sink":   originalSink,
 			"original_data":   string(originalMsg.Data),
 		}
 		errorDataBytes, _ = json.Marshal(fallbackData)
@@ -793,7 +798,7 @@ func (p *Processor) createErrorMessage(originalMsg *types.Message, err error, ap
 	// Add error metadata
 	errorMsg.Metadata["error"] = err.Error()
 	errorMsg.Metadata["error_timestamp"] = time.Now().Format(time.RFC3339)
-	errorMsg.Metadata["original_sink"] = p.spec.Sink.Type
+	errorMsg.Metadata["original_sink"] = originalSink
 	errorMsg.Metadata["is_error_message"] = true
 	if approximate {
 		errorMsg.Metadata["error_message_approximate"] = true

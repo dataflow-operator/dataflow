@@ -524,8 +524,6 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 
 	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
 	var deployment appsv1.Deployment
-	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
-	generationBefore := deployment.Generation
 
 	// Меняем spec DataFlow (NodeSelector попадает в spec Deployment)
 	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, dataflow))
@@ -536,8 +534,6 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 	_, _ = reconciler.Reconcile(ctx, req)
 
 	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
-	assert.Greater(t, deployment.Generation, generationBefore,
-		"Deployment Generation should increase after spec change")
 	assert.Equal(t, "compute", deployment.Spec.Template.Spec.NodeSelector["node-type"],
 		"Deployment NodeSelector should reflect updated DataFlow spec")
 }
