@@ -35,17 +35,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set VERSION for ldflags (operator and default processor image tag)
-        id: version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          else
-            # На коммитах — branch-shortSha, совпадает с тегом образа (type=sha,prefix={{branch}}-)
-            VERSION="${{ github.ref_name }}-$(git rev-parse --short HEAD)"
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-          fi
-
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -60,14 +49,11 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image (multi-arch amd64, arm64)
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -116,7 +102,7 @@ jobs:
 
             ## Docker Image
 
-            Docker image is available at (multi-arch: amd64, arm64):
+            Docker image is available at:
             ```
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.TAG_NAME }}
             ```
