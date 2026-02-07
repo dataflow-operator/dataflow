@@ -6,6 +6,18 @@ metadata:
   labels:
     {{- include "dataflow-operator.labels" . | nindent 4 }}
 rules:
+# Leader election: оператор использует Lease для выбора лидера (coordination.k8s.io)
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - patch
+  - watch
 # EventRecorder: создание событий для DataFlow (kubectl describe dataflow, UI событий)
 - apiGroups:
   - ""
