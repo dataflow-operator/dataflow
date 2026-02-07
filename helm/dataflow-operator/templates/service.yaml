@@ -11,5 +11,11 @@ spec:
       targetPort: metrics
       protocol: TCP
       name: metrics
+    {{- if .Values.webhook.enabled }}
+    - port: 9443
+      targetPort: webhook
+      protocol: TCP
+      name: webhook
+    {{- end }}
   selector:
     {{- include "dataflow-operator.selectorLabels" . | nindent 4 }}

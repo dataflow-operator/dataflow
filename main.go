@@ -36,6 +36,7 @@ import (
 	zaprctrl "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/controller"
@@ -130,14 +131,16 @@ func main() {
 		ctrl.SetLogger(zaprctrl.New(zapOpts...))
 	}
 
+	webhookOpts := webhook.Options{Port: 9443}
+	if certDir := os.Getenv("WEBHOOK_CERT_DIR"); certDir != "" {
+		webhookOpts.CertDir = certDir
+	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Port: 9443,
-		}),
+		WebhookServer:          webhook.NewServer(webhookOpts),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         true, // Always HA-ready: only one active controller across replicas
 		LeaderElectionID:       "dataflow-operator.dataflow.io",
@@ -151,6 +154,8 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "DataFlow")
 		os.Exit(1)
 	}
+	validator := admission.WithCustomValidator(mgr.GetScheme(), &dataflowv1.DataFlow{}, &dataflowv1.DataFlow{})
+	mgr.GetWebhookServer().Register("/validate-dataflow-dataflow-io-v1-dataflow", validator)
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

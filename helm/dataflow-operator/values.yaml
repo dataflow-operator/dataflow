@@ -73,6 +73,19 @@ health:
   # The address the probe endpoint binds to
   probePort: 9091
 
+# Validating webhook for DataFlow (optional). When enabled, invalid DataFlow specs are rejected at create/update.
+webhook:
+  # Enable admission webhook. ValidatingWebhookConfiguration is only created when both enabled and caBundle are set.
+  enabled: false
+  # PEM-encoded CA bundle (base64) for the webhook TLS certificate. Required for ValidatingWebhookConfiguration to be created when enabled is true.
+  # Can be filled by cert-manager (e.g. inject-ca-from annotation) or set manually.
+  caBundle: ""
+  # Directory in the operator container where TLS certs are mounted (e.g. /tmp/k8s-webhook-server/serving-certs).
+  # When set, WEBHOOK_CERT_DIR is set and the secret below is mounted. Required for TLS when webhook is enabled.
+  certDir: ""
+  # Name of the Secret containing tls.crt and tls.key for the webhook server. Required when webhook.enabled and certDir are set.
+  secretName: ""
+
 # Service configuration
 service:
   type: ClusterIP

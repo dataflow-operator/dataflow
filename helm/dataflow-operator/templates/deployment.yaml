@@ -54,6 +54,10 @@ spec:
           value: {{ .Values.logLevel | default "info" | quote }}
         - name: PROCESSOR_LOG_LEVEL
           value: {{ .Values.processorLogLevel | default "info" | quote }}
+        {{- if and .Values.webhook.enabled .Values.webhook.certDir }}
+        - name: WEBHOOK_CERT_DIR
+          value: {{ .Values.webhook.certDir | quote }}
+        {{- end }}
         args:
         - --metrics-bind-address=:{{ .Values.metrics.port }}
         - --health-probe-bind-address=:{{ .Values.health.probePort }}
@@ -64,6 +68,11 @@ spec:
         - name: health
           containerPort: {{ .Values.health.probePort }}
           protocol: TCP
+        {{- if .Values.webhook.enabled }}
+        - name: webhook
+          containerPort: 9443
+          protocol: TCP
+        {{- end }}
         livenessProbe:
           httpGet:
             path: /healthz
@@ -82,3 +91,15 @@ spec:
           failureThreshold: 3
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
+        {{- if and .Values.webhook.enabled .Values.webhook.certDir .Values.webhook.secretName }}
+        volumeMounts:
+        - name: webhook-certs
+          mountPath: {{ .Values.webhook.certDir }}
+          readOnly: true
+        {{- end }}
+      {{- if and .Values.webhook.enabled .Values.webhook.certDir .Values.webhook.secretName }}
+      volumes:
+      - name: webhook-certs
+        secret:
+          secretName: {{ .Values.webhook.secretName | quote }}
+      {{- end }}
