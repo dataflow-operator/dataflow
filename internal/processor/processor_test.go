@@ -18,6 +18,7 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -432,4 +433,46 @@ func TestProcessor_ErrorSinkConfiguration(t *testing.T) {
 	// Verify that processor was created with error sink configuration
 	// The actual error sink connector will be created during Start()
 	assert.NotNil(t, processor)
+}
+
+func TestProcessor_createErrorMessage_approximateMetadata(t *testing.T) {
+	spec := &v1.DataFlowSpec{
+		Source: v1.SourceSpec{
+			Type: "kafka",
+			Kafka: &v1.KafkaSourceSpec{
+				Brokers:       []string{"localhost:9092"},
+				Topic:         "test-topic",
+				ConsumerGroup: "test-group",
+			},
+		},
+		Sink: v1.SinkSpec{
+			Type: "kafka",
+			Kafka: &v1.KafkaSinkSpec{
+				Brokers: []string{"localhost:9092"},
+				Topic:   "output-topic",
+			},
+		},
+	}
+	p, err := NewProcessor(spec)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+
+	msg := &types.Message{Data: []byte(`{"id":1}`), Metadata: map[string]interface{}{"k": "v"}}
+	errTest := errors.New("test error")
+
+	t.Run("approximate true sets error_message_approximate in metadata", func(t *testing.T) {
+		em := p.createErrorMessage(msg, errTest, true)
+		require.NotNil(t, em)
+		require.True(t, em.Metadata["is_error_message"].(bool))
+		v, ok := em.Metadata["error_message_approximate"]
+		require.True(t, ok, "error_message_approximate must be present")
+		assert.True(t, v.(bool))
+	})
+
+	t.Run("approximate false does not set error_message_approximate", func(t *testing.T) {
+		em := p.createErrorMessage(msg, errTest, false)
+		require.NotNil(t, em)
+		_, ok := em.Metadata["error_message_approximate"]
+		assert.False(t, ok, "error_message_approximate must not be set when approximate is false")
+	})
 }

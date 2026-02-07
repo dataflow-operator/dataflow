@@ -542,7 +542,16 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 	return p.writeMessagesWithErrorHandling(ctx, messages, p.sink)
 }
 
-// writeMessagesWithErrorHandling writes messages to sink and handles errors by sending failed messages to error sink
+// writeMessagesWithErrorHandling writes messages to sink and handles errors by sending failed messages to error sink.
+//
+// Limitations (due to SinkConnector.Write returning a single error per call, not per message):
+//   - When the main sink returns an error, it is received asynchronously. The message sent to the error sink
+//     is the one we were attempting to write at the time the error was observed; the actual failed message
+//     may be an earlier one. Thus the error sink may receive an approximate message (see metadata
+//     "error_message_approximate").
+//   - Only one error is guaranteed to be reported per Write call. If multiple messages fail in one session,
+//     only one error is sent to writeErrChan; the rest are lost. At most one message is forwarded to the
+//     error sink per Write invocation in case of failure.
 func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages <-chan *types.Message, sink connectors.SinkConnector) error {
 	// If error sink is not configured, use standard write
 	if p.errorSink == nil {
@@ -637,8 +646,9 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 						p.errorCount++
 						p.mu.Unlock()
 
-						// Create error message with error information embedded in the data
-						errorMsg := p.createErrorMessage(msg, err)
+						// Create error message with error information embedded in the data.
+						// Message is approximate: sink returns one error per Write, so the real failed message may be earlier.
+						errorMsg := p.createErrorMessage(msg, err, true)
 
 						// Send to error sink
 						errorSinkStart := time.Now()
@@ -721,8 +731,9 @@ func getErrorType(err error) string {
 	return "transformation_error"
 }
 
-// createErrorMessage creates an error message with error information embedded in the data
-func (p *Processor) createErrorMessage(originalMsg *types.Message, err error) *types.Message {
+// createErrorMessage creates an error message with error information embedded in the data.
+// If approximate is true, the failed message might not be originalMsg (e.g. when sink returns one error per Write call).
+func (p *Processor) createErrorMessage(originalMsg *types.Message, err error, approximate bool) *types.Message {
 	// Try to parse original message as JSON
 	var originalData map[string]interface{}
 	if err := json.Unmarshal(originalMsg.Data, &originalData); err != nil {
@@ -784,6 +795,9 @@ func (p *Processor) createErrorMessage(originalMsg *types.Message, err error) *t
 	errorMsg.Metadata["error_timestamp"] = time.Now().Format(time.RFC3339)
 	errorMsg.Metadata["original_sink"] = p.spec.Sink.Type
 	errorMsg.Metadata["is_error_message"] = true
+	if approximate {
+		errorMsg.Metadata["error_message_approximate"] = true
+	}
 
 	return errorMsg
 }

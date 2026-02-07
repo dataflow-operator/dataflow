@@ -39,7 +39,10 @@ type SinkConnector interface {
 	// Connect establishes connection to the sink
 	Connect(ctx context.Context) error
 
-	// Write writes messages to the sink
+	// Write writes messages from the channel to the sink. The method returns when the channel is closed
+	// or on the first fatal error. At most one error is returned per call; per-message errors are not
+	// reported. Callers that need to correlate errors with specific messages must account for this
+	// (e.g. treat the failed message as approximate).
 	Write(ctx context.Context, messages <-chan *types.Message) error
 
 	// Close closes the connection
