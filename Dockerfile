@@ -32,7 +32,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o processor cmd/pro
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o gui-server cmd/gui-server/main.go
 
 # Final stage
-FROM alpine:latest
+FROM alpine:3.19
 
 WORKDIR /
 
