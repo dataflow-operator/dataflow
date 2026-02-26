@@ -22,10 +22,10 @@ import (
 )
 
 // Valid source types (must match connectors/factory.go).
-var validSourceTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true}
+var validSourceTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true, "nessie": true}
 
 // Valid sink types (must match connectors/factory.go).
-var validSinkTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true}
+var validSinkTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true, "nessie": true}
 
 // Valid transformation types (must match transformers/factory.go).
 var validTransformationTypes = map[string]bool{
@@ -61,7 +61,7 @@ func validateSource(s *SourceSpec, f *field.Path) field.ErrorList {
 		return all
 	}
 	if !validSourceTypes[s.Type] {
-		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse"}))
+		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse", "nessie"}))
 		return all
 	}
 	switch s.Type {
@@ -88,6 +88,12 @@ func validateSource(s *SourceSpec, f *field.Path) field.ErrorList {
 			all = append(all, field.Required(f.Child("clickhouse"), "clickhouse source configuration is required"))
 		} else {
 			all = append(all, validateClickHouseSource(s.ClickHouse, f.Child("clickhouse"))...)
+		}
+	case "nessie":
+		if s.Nessie == nil {
+			all = append(all, field.Required(f.Child("nessie"), "nessie source configuration is required"))
+		} else {
+			all = append(all, validateNessieSource(s.Nessie, f.Child("nessie"))...)
 		}
 	}
 	return all
@@ -175,7 +181,7 @@ func validateSink(s *SinkSpec, f *field.Path) field.ErrorList {
 		return all
 	}
 	if !validSinkTypes[s.Type] {
-		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse"}))
+		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse", "nessie"}))
 		return all
 	}
 	switch s.Type {
@@ -203,6 +209,70 @@ func validateSink(s *SinkSpec, f *field.Path) field.ErrorList {
 		} else {
 			all = append(all, validateClickHouseSink(s.ClickHouse, f.Child("clickhouse"))...)
 		}
+	case "nessie":
+		if s.Nessie == nil {
+			all = append(all, field.Required(f.Child("nessie"), "nessie sink configuration is required"))
+		} else {
+			all = append(all, validateNessieSink(s.Nessie, f.Child("nessie"))...)
+		}
+	}
+	return all
+}
+
+func validateNessieSource(n *NessieSourceSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	hasBaseURL := n.BaseURL != "" || n.BaseURLSecretRef != nil
+	if !hasBaseURL {
+		all = append(all, field.Required(f.Child("baseURL"), "baseURL or baseURLSecretRef is required"))
+	}
+	hasNamespace := n.Namespace != "" || n.NamespaceSecretRef != nil
+	if !hasNamespace {
+		all = append(all, field.Required(f.Child("namespace"), "namespace or namespaceSecretRef is required"))
+	}
+	hasTable := n.Table != "" || n.TableSecretRef != nil
+	if !hasTable {
+		all = append(all, field.Required(f.Child("table"), "table or tableSecretRef is required"))
+	}
+	if n.BaseURLSecretRef != nil {
+		all = append(all, validateSecretRef(n.BaseURLSecretRef, f.Child("baseURLSecretRef"))...)
+	}
+	if n.NamespaceSecretRef != nil {
+		all = append(all, validateSecretRef(n.NamespaceSecretRef, f.Child("namespaceSecretRef"))...)
+	}
+	if n.TableSecretRef != nil {
+		all = append(all, validateSecretRef(n.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	if n.TokenSecretRef != nil {
+		all = append(all, validateSecretRef(n.TokenSecretRef, f.Child("tokenSecretRef"))...)
+	}
+	return all
+}
+
+func validateNessieSink(n *NessieSinkSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	hasBaseURL := n.BaseURL != "" || n.BaseURLSecretRef != nil
+	if !hasBaseURL {
+		all = append(all, field.Required(f.Child("baseURL"), "baseURL or baseURLSecretRef is required"))
+	}
+	hasNamespace := n.Namespace != "" || n.NamespaceSecretRef != nil
+	if !hasNamespace {
+		all = append(all, field.Required(f.Child("namespace"), "namespace or namespaceSecretRef is required"))
+	}
+	hasTable := n.Table != "" || n.TableSecretRef != nil
+	if !hasTable {
+		all = append(all, field.Required(f.Child("table"), "table or tableSecretRef is required"))
+	}
+	if n.BaseURLSecretRef != nil {
+		all = append(all, validateSecretRef(n.BaseURLSecretRef, f.Child("baseURLSecretRef"))...)
+	}
+	if n.NamespaceSecretRef != nil {
+		all = append(all, validateSecretRef(n.NamespaceSecretRef, f.Child("namespaceSecretRef"))...)
+	}
+	if n.TableSecretRef != nil {
+		all = append(all, validateSecretRef(n.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	if n.TokenSecretRef != nil {
+		all = append(all, validateSecretRef(n.TokenSecretRef, f.Child("tokenSecretRef"))...)
 	}
 	return all
 }

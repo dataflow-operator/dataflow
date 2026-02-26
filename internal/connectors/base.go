@@ -24,7 +24,7 @@ import (
 // buildRawModeJSON wraps value and metadata into JSON: {"value": ..., "_metadata": {...}}
 func buildRawModeJSON(value interface{}, metadata map[string]interface{}) ([]byte, error) {
 	raw := map[string]interface{}{
-		"value":      value,
+		"value":     value,
 		"_metadata": metadata,
 	}
 	return json.Marshal(raw)

@@ -1193,6 +1193,164 @@ spec:
                     - brokers
                     - topic
                     type: object
+                  nessie:
+                    description: Nessie sink configuration (Iceberg tables via Nessie
+                      catalog)
+                    properties:
+                      autoCreateTable:
+                        description: AutoCreateTable creates the table if it does
+                          not exist.
+                        type: boolean
+                      baseURL:
+                        description: BaseURL is the Nessie server base URL (e.g. https://nessie:19120).
+                        type: string
+                      baseURLSecretRef:
+                        description: BaseURLSecretRef references a Kubernetes secret
+                          for base URL.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      basicAuth:
+                        description: BasicAuth for Nessie/Iceberg REST.
+                        properties:
+                          password:
+                            description: Password for basic authentication (optional
+                              if PasswordSecretRef is provided)
+                            type: string
+                          passwordSecretRef:
+                            description: PasswordSecretRef references a Kubernetes
+                              secret for password
+                            properties:
+                              key:
+                                description: Key in the secret to read the value from
+                                type: string
+                              name:
+                                description: Name of the secret
+                                type: string
+                              namespace:
+                                description: Namespace of the secret (optional, defaults
+                                  to the same namespace as DataFlow)
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          username:
+                            description: Username for basic authentication (optional
+                              if UsernameSecretRef is provided)
+                            type: string
+                          usernameSecretRef:
+                            description: UsernameSecretRef references a Kubernetes
+                              secret for username
+                            properties:
+                              key:
+                                description: Key in the secret to read the value from
+                                type: string
+                              name:
+                                description: Name of the secret
+                                type: string
+                              namespace:
+                                description: Namespace of the secret (optional, defaults
+                                  to the same namespace as DataFlow)
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        type: object
+                      batchSize:
+                        description: BatchSize for batch appends.
+                        format: int32
+                        type: integer
+                      bearerToken:
+                        description: BearerToken for Nessie (optional if TokenSecretRef
+                          is set).
+                        type: string
+                      branch:
+                        description: 'Branch is the Nessie branch to write to (default:
+                          main).'
+                        type: string
+                      namespace:
+                        description: Namespace is the schema/namespace of the Iceberg
+                          table.
+                        type: string
+                      namespaceSecretRef:
+                        description: NamespaceSecretRef references a Kubernetes secret
+                          for namespace.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      table:
+                        description: Table is the Iceberg table name.
+                        type: string
+                      tableSecretRef:
+                        description: TableSecretRef references a Kubernetes secret
+                          for table name.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      tokenSecretRef:
+                        description: TokenSecretRef references a Kubernetes secret
+                          for bearer token.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      warehouse:
+                        description: Warehouse is the optional warehouse name.
+                        type: string
+                    required:
+                    - baseURL
+                    - namespace
+                    - table
+                    type: object
                   postgresql:
                     description: PostgreSQL sink configuration
                     properties:
@@ -1835,6 +1993,164 @@ spec:
                     required:
                     - brokers
                     - topic
+                    type: object
+                  nessie:
+                    description: Nessie sink configuration (Iceberg tables via Nessie
+                      catalog)
+                    properties:
+                      autoCreateTable:
+                        description: AutoCreateTable creates the table if it does
+                          not exist.
+                        type: boolean
+                      baseURL:
+                        description: BaseURL is the Nessie server base URL (e.g. https://nessie:19120).
+                        type: string
+                      baseURLSecretRef:
+                        description: BaseURLSecretRef references a Kubernetes secret
+                          for base URL.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      basicAuth:
+                        description: BasicAuth for Nessie/Iceberg REST.
+                        properties:
+                          password:
+                            description: Password for basic authentication (optional
+                              if PasswordSecretRef is provided)
+                            type: string
+                          passwordSecretRef:
+                            description: PasswordSecretRef references a Kubernetes
+                              secret for password
+                            properties:
+                              key:
+                                description: Key in the secret to read the value from
+                                type: string
+                              name:
+                                description: Name of the secret
+                                type: string
+                              namespace:
+                                description: Namespace of the secret (optional, defaults
+                                  to the same namespace as DataFlow)
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          username:
+                            description: Username for basic authentication (optional
+                              if UsernameSecretRef is provided)
+                            type: string
+                          usernameSecretRef:
+                            description: UsernameSecretRef references a Kubernetes
+                              secret for username
+                            properties:
+                              key:
+                                description: Key in the secret to read the value from
+                                type: string
+                              name:
+                                description: Name of the secret
+                                type: string
+                              namespace:
+                                description: Namespace of the secret (optional, defaults
+                                  to the same namespace as DataFlow)
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        type: object
+                      batchSize:
+                        description: BatchSize for batch appends.
+                        format: int32
+                        type: integer
+                      bearerToken:
+                        description: BearerToken for Nessie (optional if TokenSecretRef
+                          is set).
+                        type: string
+                      branch:
+                        description: 'Branch is the Nessie branch to write to (default:
+                          main).'
+                        type: string
+                      namespace:
+                        description: Namespace is the schema/namespace of the Iceberg
+                          table.
+                        type: string
+                      namespaceSecretRef:
+                        description: NamespaceSecretRef references a Kubernetes secret
+                          for namespace.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      table:
+                        description: Table is the Iceberg table name.
+                        type: string
+                      tableSecretRef:
+                        description: TableSecretRef references a Kubernetes secret
+                          for table name.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      tokenSecretRef:
+                        description: TokenSecretRef references a Kubernetes secret
+                          for bearer token.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      warehouse:
+                        description: Warehouse is the optional warehouse name.
+                        type: string
+                    required:
+                    - baseURL
+                    - namespace
+                    - table
                     type: object
                   postgresql:
                     description: PostgreSQL sink configuration
@@ -2620,6 +2936,169 @@ spec:
                     - brokers
                     - topic
                     type: object
+                  nessie:
+                    description: Nessie source configuration (Iceberg tables via Nessie
+                      catalog)
+                    properties:
+                      baseURL:
+                        description: BaseURL is the Nessie server base URL (e.g. https://nessie:19120).
+                        type: string
+                      baseURLSecretRef:
+                        description: BaseURLSecretRef references a Kubernetes secret
+                          for base URL.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      basicAuth:
+                        description: BasicAuth for Nessie/Iceberg REST.
+                        properties:
+                          password:
+                            description: Password for basic authentication (optional
+                              if PasswordSecretRef is provided)
+                            type: string
+                          passwordSecretRef:
+                            description: PasswordSecretRef references a Kubernetes
+                              secret for password
+                            properties:
+                              key:
+                                description: Key in the secret to read the value from
+                                type: string
+                              name:
+                                description: Name of the secret
+                                type: string
+                              namespace:
+                                description: Namespace of the secret (optional, defaults
+                                  to the same namespace as DataFlow)
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          username:
+                            description: Username for basic authentication (optional
+                              if UsernameSecretRef is provided)
+                            type: string
+                          usernameSecretRef:
+                            description: UsernameSecretRef references a Kubernetes
+                              secret for username
+                            properties:
+                              key:
+                                description: Key in the secret to read the value from
+                                type: string
+                              name:
+                                description: Name of the secret
+                                type: string
+                              namespace:
+                                description: Namespace of the secret (optional, defaults
+                                  to the same namespace as DataFlow)
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        type: object
+                      bearerToken:
+                        description: BearerToken for Nessie (optional if TokenSecretRef
+                          is set).
+                        type: string
+                      branch:
+                        description: 'Branch is the Nessie branch to read from (default:
+                          main).'
+                        type: string
+                      namespace:
+                        description: Namespace is the schema/namespace of the Iceberg
+                          table.
+                        type: string
+                      namespaceSecretRef:
+                        description: NamespaceSecretRef references a Kubernetes secret
+                          for namespace.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      pollInterval:
+                        description: PollInterval in seconds for polling mode.
+                        format: int32
+                        type: integer
+                      query:
+                        description: Query for custom filter (optional). If empty,
+                          full table scan.
+                        type: string
+                      rawMode:
+                        description: 'RawMode when true, wraps each row as JSON: {"value":
+                          <row data>, "_metadata": {namespace, table}}'
+                        type: boolean
+                      table:
+                        description: Table is the Iceberg table name.
+                        type: string
+                      tableSecretRef:
+                        description: TableSecretRef references a Kubernetes secret
+                          for table name.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      tokenSecretRef:
+                        description: TokenSecretRef references a Kubernetes secret
+                          for bearer token.
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      warehouse:
+                        description: Warehouse is the optional warehouse name for
+                          storage location (e.g. for /iceberg/|warehouse).
+                        type: string
+                    required:
+                    - baseURL
+                    - namespace
+                    - table
+                    type: object
                   postgresql:
                     description: PostgreSQL source configuration
                     properties:
@@ -3333,6 +3812,175 @@ spec:
                                     required:
                                     - brokers
                                     - topic
+                                    type: object
+                                  nessie:
+                                    description: Nessie sink configuration (Iceberg
+                                      tables via Nessie catalog)
+                                    properties:
+                                      autoCreateTable:
+                                        description: AutoCreateTable creates the table
+                                          if it does not exist.
+                                        type: boolean
+                                      baseURL:
+                                        description: BaseURL is the Nessie server
+                                          base URL (e.g. https://nessie:19120).
+                                        type: string
+                                      baseURLSecretRef:
+                                        description: BaseURLSecretRef references a
+                                          Kubernetes secret for base URL.
+                                        properties:
+                                          key:
+                                            description: Key in the secret to read
+                                              the value from
+                                            type: string
+                                          name:
+                                            description: Name of the secret
+                                            type: string
+                                          namespace:
+                                            description: Namespace of the secret (optional,
+                                              defaults to the same namespace as DataFlow)
+                                            type: string
+                                        required:
+                                        - key
+                                        - name
+                                        type: object
+                                      basicAuth:
+                                        description: BasicAuth for Nessie/Iceberg
+                                          REST.
+                                        properties:
+                                          password:
+                                            description: Password for basic authentication
+                                              (optional if PasswordSecretRef is provided)
+                                            type: string
+                                          passwordSecretRef:
+                                            description: PasswordSecretRef references
+                                              a Kubernetes secret for password
+                                            properties:
+                                              key:
+                                                description: Key in the secret to
+                                                  read the value from
+                                                type: string
+                                              name:
+                                                description: Name of the secret
+                                                type: string
+                                              namespace:
+                                                description: Namespace of the secret
+                                                  (optional, defaults to the same
+                                                  namespace as DataFlow)
+                                                type: string
+                                            required:
+                                            - key
+                                            - name
+                                            type: object
+                                          username:
+                                            description: Username for basic authentication
+                                              (optional if UsernameSecretRef is provided)
+                                            type: string
+                                          usernameSecretRef:
+                                            description: UsernameSecretRef references
+                                              a Kubernetes secret for username
+                                            properties:
+                                              key:
+                                                description: Key in the secret to
+                                                  read the value from
+                                                type: string
+                                              name:
+                                                description: Name of the secret
+                                                type: string
+                                              namespace:
+                                                description: Namespace of the secret
+                                                  (optional, defaults to the same
+                                                  namespace as DataFlow)
+                                                type: string
+                                            required:
+                                            - key
+                                            - name
+                                            type: object
+                                        type: object
+                                      batchSize:
+                                        description: BatchSize for batch appends.
+                                        format: int32
+                                        type: integer
+                                      bearerToken:
+                                        description: BearerToken for Nessie (optional
+                                          if TokenSecretRef is set).
+                                        type: string
+                                      branch:
+                                        description: 'Branch is the Nessie branch
+                                          to write to (default: main).'
+                                        type: string
+                                      namespace:
+                                        description: Namespace is the schema/namespace
+                                          of the Iceberg table.
+                                        type: string
+                                      namespaceSecretRef:
+                                        description: NamespaceSecretRef references
+                                          a Kubernetes secret for namespace.
+                                        properties:
+                                          key:
+                                            description: Key in the secret to read
+                                              the value from
+                                            type: string
+                                          name:
+                                            description: Name of the secret
+                                            type: string
+                                          namespace:
+                                            description: Namespace of the secret (optional,
+                                              defaults to the same namespace as DataFlow)
+                                            type: string
+                                        required:
+                                        - key
+                                        - name
+                                        type: object
+                                      table:
+                                        description: Table is the Iceberg table name.
+                                        type: string
+                                      tableSecretRef:
+                                        description: TableSecretRef references a Kubernetes
+                                          secret for table name.
+                                        properties:
+                                          key:
+                                            description: Key in the secret to read
+                                              the value from
+                                            type: string
+                                          name:
+                                            description: Name of the secret
+                                            type: string
+                                          namespace:
+                                            description: Namespace of the secret (optional,
+                                              defaults to the same namespace as DataFlow)
+                                            type: string
+                                        required:
+                                        - key
+                                        - name
+                                        type: object
+                                      tokenSecretRef:
+                                        description: TokenSecretRef references a Kubernetes
+                                          secret for bearer token.
+                                        properties:
+                                          key:
+                                            description: Key in the secret to read
+                                              the value from
+                                            type: string
+                                          name:
+                                            description: Name of the secret
+                                            type: string
+                                          namespace:
+                                            description: Namespace of the secret (optional,
+                                              defaults to the same namespace as DataFlow)
+                                            type: string
+                                        required:
+                                        - key
+                                        - name
+                                        type: object
+                                      warehouse:
+                                        description: Warehouse is the optional warehouse
+                                          name.
+                                        type: string
+                                    required:
+                                    - baseURL
+                                    - namespace
+                                    - table
                                     type: object
                                   postgresql:
                                     description: PostgreSQL sink configuration

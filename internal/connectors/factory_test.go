@@ -182,6 +182,52 @@ func TestCreateSourceConnector_Iceberg(t *testing.T) {
 	}
 }
 
+func TestCreateSourceConnector_Nessie(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      *v1.SourceSpec
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid nessie source",
+			source: &v1.SourceSpec{
+				Type: "nessie",
+				Nessie: &v1.NessieSourceSpec{
+					BaseURL:   "http://nessie:19120",
+					Branch:    "main",
+					Namespace: "ns",
+					Table:     "t1",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "nessie source without config",
+			source: &v1.SourceSpec{
+				Type: "nessie",
+			},
+			wantErr:     true,
+			errContains: "nessie source configuration is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connector, err := CreateSourceConnector(tt.source)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				assert.Nil(t, connector)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, connector)
+			}
+		})
+	}
+}
+
 func TestCreateSourceConnector_UnsupportedType(t *testing.T) {
 	source := &v1.SourceSpec{
 		Type: "unsupported",
@@ -283,7 +329,52 @@ func TestCreateSinkConnector_PostgreSQL(t *testing.T) {
 	}
 }
 
-// TODO: Iceberg sink is not yet implemented, testing Trino sink instead
+func TestCreateSinkConnector_Nessie(t *testing.T) {
+	tests := []struct {
+		name        string
+		sink        *v1.SinkSpec
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid nessie sink",
+			sink: &v1.SinkSpec{
+				Type: "nessie",
+				Nessie: &v1.NessieSinkSpec{
+					BaseURL:   "http://nessie:19120",
+					Branch:    "main",
+					Namespace: "ns",
+					Table:     "t1",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "nessie sink without config",
+			sink: &v1.SinkSpec{
+				Type: "nessie",
+			},
+			wantErr:     true,
+			errContains: "nessie sink configuration is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connector, err := CreateSinkConnector(tt.sink)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				assert.Nil(t, connector)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, connector)
+			}
+		})
+	}
+}
+
 func TestCreateSinkConnector_Trino(t *testing.T) {
 	tests := []struct {
 		name        string

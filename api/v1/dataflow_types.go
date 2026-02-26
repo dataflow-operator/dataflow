@@ -74,6 +74,10 @@ type SourceSpec struct {
 	// ClickHouse source configuration
 	// +optional
 	ClickHouse *ClickHouseSourceSpec `json:"clickhouse,omitempty"`
+
+	// Nessie source configuration (Iceberg tables via Nessie catalog)
+	// +optional
+	Nessie *NessieSourceSpec `json:"nessie,omitempty"`
 }
 
 // KafkaSourceSpec defines Kafka source configuration
@@ -275,6 +279,64 @@ type ClickHouseSourceSpec struct {
 	RawMode *bool `json:"rawMode,omitempty"`
 }
 
+// NessieSourceSpec defines Nessie (Iceberg REST catalog) source configuration.
+// All catalog operations (load table, read) are performed in the context of the given branch.
+// URI for Nessie Iceberg REST: {baseURL}/iceberg[/{branch}][|{warehouse}].
+type NessieSourceSpec struct {
+	// BaseURL is the Nessie server base URL (e.g. https://nessie:19120).
+	BaseURL string `json:"baseURL"`
+
+	// Branch is the Nessie branch to read from (default: main).
+	// +optional
+	Branch string `json:"branch,omitempty"`
+
+	// Warehouse is the optional warehouse name for storage location (e.g. for /iceberg/|warehouse).
+	// +optional
+	Warehouse string `json:"warehouse,omitempty"`
+
+	// Namespace is the schema/namespace of the Iceberg table.
+	Namespace string `json:"namespace"`
+
+	// Table is the Iceberg table name.
+	Table string `json:"table"`
+
+	// Query for custom filter (optional). If empty, full table scan.
+	// +optional
+	Query string `json:"query,omitempty"`
+
+	// PollInterval in seconds for polling mode.
+	// +optional
+	PollInterval *int32 `json:"pollInterval,omitempty"`
+
+	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {namespace, table}}
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
+
+	// BasicAuth for Nessie/Iceberg REST.
+	// +optional
+	BasicAuth *BasicAuthConfig `json:"basicAuth,omitempty"`
+
+	// BearerToken for Nessie (optional if TokenSecretRef is set).
+	// +optional
+	BearerToken string `json:"bearerToken,omitempty"`
+
+	// BaseURLSecretRef references a Kubernetes secret for base URL.
+	// +optional
+	BaseURLSecretRef *SecretRef `json:"baseURLSecretRef,omitempty"`
+
+	// TokenSecretRef references a Kubernetes secret for bearer token.
+	// +optional
+	TokenSecretRef *SecretRef `json:"tokenSecretRef,omitempty"`
+
+	// NamespaceSecretRef references a Kubernetes secret for namespace.
+	// +optional
+	NamespaceSecretRef *SecretRef `json:"namespaceSecretRef,omitempty"`
+
+	// TableSecretRef references a Kubernetes secret for table name.
+	// +optional
+	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+}
+
 // KeycloakConfig defines Keycloak OAuth2/OIDC authentication configuration
 type KeycloakConfig struct {
 	// ServerURL is the Keycloak server URL (e.g., https://keycloak.example.com/auth)
@@ -353,6 +415,63 @@ type SinkSpec struct {
 	// ClickHouse sink configuration
 	// +optional
 	ClickHouse *ClickHouseSinkSpec `json:"clickhouse,omitempty"`
+
+	// Nessie sink configuration (Iceberg tables via Nessie catalog)
+	// +optional
+	Nessie *NessieSinkSpec `json:"nessie,omitempty"`
+}
+
+// NessieSinkSpec defines Nessie (Iceberg REST catalog) sink configuration.
+// Writes are committed to the given branch via the catalog.
+type NessieSinkSpec struct {
+	// BaseURL is the Nessie server base URL (e.g. https://nessie:19120).
+	BaseURL string `json:"baseURL"`
+
+	// Branch is the Nessie branch to write to (default: main).
+	// +optional
+	Branch string `json:"branch,omitempty"`
+
+	// Warehouse is the optional warehouse name.
+	// +optional
+	Warehouse string `json:"warehouse,omitempty"`
+
+	// Namespace is the schema/namespace of the Iceberg table.
+	Namespace string `json:"namespace"`
+
+	// Table is the Iceberg table name.
+	Table string `json:"table"`
+
+	// BatchSize for batch appends.
+	// +optional
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// AutoCreateTable creates the table if it does not exist.
+	// +optional
+	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
+
+	// BasicAuth for Nessie/Iceberg REST.
+	// +optional
+	BasicAuth *BasicAuthConfig `json:"basicAuth,omitempty"`
+
+	// BearerToken for Nessie (optional if TokenSecretRef is set).
+	// +optional
+	BearerToken string `json:"bearerToken,omitempty"`
+
+	// BaseURLSecretRef references a Kubernetes secret for base URL.
+	// +optional
+	BaseURLSecretRef *SecretRef `json:"baseURLSecretRef,omitempty"`
+
+	// TokenSecretRef references a Kubernetes secret for bearer token.
+	// +optional
+	TokenSecretRef *SecretRef `json:"tokenSecretRef,omitempty"`
+
+	// NamespaceSecretRef references a Kubernetes secret for namespace.
+	// +optional
+	NamespaceSecretRef *SecretRef `json:"namespaceSecretRef,omitempty"`
+
+	// TableSecretRef references a Kubernetes secret for table name.
+	// +optional
+	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
 }
 
 // KafkaSinkSpec defines Kafka sink configuration

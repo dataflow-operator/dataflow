@@ -45,6 +45,11 @@ func CreateSourceConnector(source *v1.SourceSpec) (SourceConnector, error) {
 			return nil, fmt.Errorf("clickhouse source configuration is required")
 		}
 		return NewClickHouseSourceConnector(source.ClickHouse), nil
+	case "nessie":
+		if source.Nessie == nil {
+			return nil, fmt.Errorf("nessie source configuration is required")
+		}
+		return NewNessieSourceConnector(source.Nessie), nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", source.Type)
 	}
@@ -73,6 +78,11 @@ func CreateSinkConnector(sink *v1.SinkSpec) (SinkConnector, error) {
 			return nil, fmt.Errorf("clickhouse sink configuration is required")
 		}
 		return NewClickHouseSinkConnector(sink.ClickHouse), nil
+	case "nessie":
+		if sink.Nessie == nil {
+			return nil, fmt.Errorf("nessie sink configuration is required")
+		}
+		return NewNessieSinkConnector(sink.Nessie), nil
 	default:
 		return nil, fmt.Errorf("unsupported sink type: %s", sink.Type)
 	}
