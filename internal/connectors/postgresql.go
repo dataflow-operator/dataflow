@@ -34,10 +34,9 @@ import (
 
 // PostgreSQLSourceConnector implements SourceConnector for PostgreSQL
 type PostgreSQLSourceConnector struct {
+	baseConnector
 	config       *v1.PostgreSQLSourceSpec
 	conn         *pgx.Conn
-	closed       bool
-	mu           sync.Mutex
 	logger       logr.Logger
 	lastReadID   int64      // Track last read ID to avoid duplicates
 	lastReadTime *time.Time // Track last read time to avoid duplicates
@@ -58,12 +57,10 @@ func (p *PostgreSQLSourceConnector) SetLogger(logger logr.Logger) {
 
 // Connect establishes connection to PostgreSQL
 func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.closed {
+	if !p.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer p.Unlock()
 
 	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
 	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
@@ -114,8 +111,8 @@ func (p *PostgreSQLSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 }
 
 func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	var query string
 	if p.config.Query != "" {
@@ -212,15 +209,12 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 
 // Close closes the PostgreSQL connection
 func (p *PostgreSQLSourceConnector) Close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.closed {
+	if p.guardClose() {
 		return nil
 	}
+	defer p.Unlock()
 
 	p.logger.Info("Closing PostgreSQL source connection", "table", p.config.Table)
-	p.closed = true
 	if p.conn != nil {
 		return p.conn.Close(context.Background())
 	}
@@ -229,10 +223,9 @@ func (p *PostgreSQLSourceConnector) Close() error {
 
 // PostgreSQLSinkConnector implements SinkConnector for PostgreSQL
 type PostgreSQLSinkConnector struct {
+	baseConnector
 	config         *v1.PostgreSQLSinkSpec
 	conn           *pgx.Conn
-	closed         bool
-	mu             sync.Mutex
 	logger         logr.Logger
 	firstWriteOnce sync.Once
 }
@@ -252,12 +245,10 @@ func (p *PostgreSQLSinkConnector) SetLogger(logger logr.Logger) {
 
 // Connect establishes connection to PostgreSQL
 func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.closed {
+	if !p.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer p.Unlock()
 
 	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
 	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
@@ -542,15 +533,12 @@ func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.B
 
 // Close closes the PostgreSQL connection
 func (p *PostgreSQLSinkConnector) Close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.closed {
+	if p.guardClose() {
 		return nil
 	}
+	defer p.Unlock()
 
 	p.logger.Info("Closing PostgreSQL sink connection", "table", p.config.Table)
-	p.closed = true
 	if p.conn != nil {
 		return p.conn.Close(context.Background())
 	}

@@ -48,10 +48,9 @@ import (
 
 // KafkaSourceConnector implements SourceConnector for Kafka
 type KafkaSourceConnector struct {
+	baseConnector
 	config       *v1.KafkaSourceSpec
 	consumer     sarama.ConsumerGroup
-	closed       bool
-	mu           sync.Mutex
 	logger       logr.Logger
 	avroSchema   avro.Schema           // Avro schema for deserialization (when not using Schema Registry)
 	schemaCache  *schemaCache          // Cache for schemas from Schema Registry
@@ -95,12 +94,10 @@ func (k *KafkaSourceConnector) SetMetadata(namespace, name string) {
 
 // Connect establishes connection to Kafka
 func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
-	if k.closed {
+	if !k.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer k.Unlock()
 
 	// Log connection attempt
 	k.logger.Info("Connecting to Kafka",
@@ -607,15 +604,12 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 
 // Close closes the Kafka connection
 func (k *KafkaSourceConnector) Close() error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
-	if k.closed {
+	if k.guardClose() {
 		return nil
 	}
+	defer k.Unlock()
 
 	k.logger.Info("Closing Kafka source connection", "brokers", k.config.Brokers, "topic", k.config.Topic)
-	k.closed = true
 	if k.consumer != nil {
 		// Record connection status
 		if k.namespace != "" && k.name != "" {
@@ -714,10 +708,9 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 
 // KafkaSinkConnector implements SinkConnector for Kafka
 type KafkaSinkConnector struct {
+	baseConnector
 	config    *v1.KafkaSinkSpec
 	producer  sarama.SyncProducer
-	closed    bool
-	mu        sync.Mutex
 	logger    logr.Logger
 	namespace string // Namespace for metrics
 	name      string // Name for metrics
@@ -744,12 +737,10 @@ func (k *KafkaSinkConnector) SetMetadata(namespace, name string) {
 
 // Connect establishes connection to Kafka
 func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
-	if k.closed {
+	if !k.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer k.Unlock()
 
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Version = sarama.V2_8_0_0
@@ -1002,15 +993,12 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 
 // Close closes the Kafka connection
 func (k *KafkaSinkConnector) Close() error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
-	if k.closed {
+	if k.guardClose() {
 		return nil
 	}
+	defer k.Unlock()
 
 	k.logger.Info("Closing Kafka sink connection", "brokers", k.config.Brokers, "topic", k.config.Topic)
-	k.closed = true
 	if k.producer != nil {
 		// Record connection status
 		if k.namespace != "" && k.name != "" {

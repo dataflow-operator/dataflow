@@ -36,10 +36,9 @@ import (
 
 // ClickHouseSourceConnector implements SourceConnector for ClickHouse
 type ClickHouseSourceConnector struct {
+	baseConnectorRWMutex
 	config       *v1.ClickHouseSourceSpec
 	conn         *sql.DB
-	closed       bool
-	mu           sync.RWMutex // protects conn, closed; readRows uses RLock for conn access
 	logger       logr.Logger
 	lastReadID   int64      // Track last read ID to avoid duplicates
 	lastReadTime *time.Time // Track last read time to avoid duplicates
@@ -61,12 +60,10 @@ func (c *ClickHouseSourceConnector) SetLogger(logger logr.Logger) {
 
 // Connect establishes connection to ClickHouse
 func (c *ClickHouseSourceConnector) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
+	if !c.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer c.Unlock()
 
 	c.logger.Info("Connecting to ClickHouse", "table", c.config.Table)
 	conn, err := sql.Open("clickhouse", c.config.ConnectionString)
@@ -123,13 +120,13 @@ func (c *ClickHouseSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 
 func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {
 	// Read conn and state under RLock; release before long-running query so Connect/Close are not blocked
-	c.mu.RLock()
-	if c.closed {
-		c.mu.RUnlock()
+	c.RLock()
+	if c.Closed() {
+		c.RUnlock()
 		return
 	}
 	conn := c.conn
-	c.mu.RUnlock()
+	c.RUnlock()
 
 	if conn == nil {
 		return
@@ -270,15 +267,12 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 
 // Close closes the ClickHouse connection
 func (c *ClickHouseSourceConnector) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
+	if c.guardClose() {
 		return nil
 	}
+	defer c.Unlock()
 
 	c.logger.Info("Closing ClickHouse source connection", "table", c.config.Table)
-	c.closed = true
 	if c.conn != nil {
 		return c.conn.Close()
 	}
@@ -287,10 +281,9 @@ func (c *ClickHouseSourceConnector) Close() error {
 
 // ClickHouseSinkConnector implements SinkConnector for ClickHouse
 type ClickHouseSinkConnector struct {
+	baseConnector
 	config         *v1.ClickHouseSinkSpec
 	conn           *sql.DB
-	closed         bool
-	mu             sync.Mutex
 	logger         logr.Logger
 	firstWriteOnce sync.Once
 }
@@ -310,12 +303,10 @@ func (c *ClickHouseSinkConnector) SetLogger(logger logr.Logger) {
 
 // Connect establishes connection to ClickHouse
 func (c *ClickHouseSinkConnector) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
+	if !c.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer c.Unlock()
 
 	c.logger.Info("Connecting to ClickHouse", "table", c.config.Table)
 	conn, err := sql.Open("clickhouse", c.config.ConnectionString)
@@ -473,15 +464,12 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 
 // Close closes the ClickHouse connection
 func (c *ClickHouseSinkConnector) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
+	if c.guardClose() {
 		return nil
 	}
+	defer c.Unlock()
 
 	c.logger.Info("Closing ClickHouse sink connection", "table", c.config.Table)
-	c.closed = true
 	if c.conn != nil {
 		return c.conn.Close()
 	}

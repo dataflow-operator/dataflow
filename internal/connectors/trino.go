@@ -38,12 +38,11 @@ import (
 
 // TrinoSourceConnector implements SourceConnector for Trino
 type TrinoSourceConnector struct {
+	baseConnector
 	config      *v1.TrinoSourceSpec
 	httpClient  *http.Client
 	token       string
 	tokenMu     sync.RWMutex
-	closed      bool
-	mu          sync.Mutex
 	logger      logr.Logger
 	oauthConfig *oauth2.Config
 	tokenSource oauth2.TokenSource
@@ -64,12 +63,10 @@ func (t *TrinoSourceConnector) SetLogger(logger logr.Logger) {
 
 // Connect establishes connection to Trino
 func (t *TrinoSourceConnector) Connect(ctx context.Context) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
+	if !t.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer t.Unlock()
 
 	t.logger.Info("Connecting to Trino",
 		"serverURL", t.config.ServerURL,
@@ -611,26 +608,22 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 
 // Close closes the Trino connection
 func (t *TrinoSourceConnector) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
+	if t.guardClose() {
 		return nil
 	}
+	defer t.Unlock()
 
 	t.logger.Info("Closing Trino source connection", "catalog", t.config.Catalog, "schema", t.config.Schema)
-	t.closed = true
 	return nil
 }
 
 // TrinoSinkConnector implements SinkConnector for Trino
 type TrinoSinkConnector struct {
+	baseConnector
 	config       *v1.TrinoSinkSpec
 	httpClient   *http.Client
 	token        string
 	tokenMu      sync.RWMutex
-	closed       bool
-	mu           sync.Mutex
 	logger       logr.Logger
 	oauthConfig  *oauth2.Config
 	tokenSource  oauth2.TokenSource
@@ -653,12 +646,10 @@ func (t *TrinoSinkConnector) SetLogger(logger logr.Logger) {
 
 // Connect establishes connection to Trino
 func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
+	if !t.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
+	defer t.Unlock()
 
 	t.logger.Info("Connecting to Trino",
 		"serverURL", t.config.ServerURL,
@@ -1660,15 +1651,12 @@ func (t *TrinoSinkConnector) formatValueForType(val interface{}, columnType stri
 
 // Close closes the Trino connection
 func (t *TrinoSinkConnector) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
+	if t.guardClose() {
 		return nil
 	}
+	defer t.Unlock()
 
 	t.logger.Info("Closing Trino sink connection", "catalog", t.config.Catalog, "schema", t.config.Schema, "table", t.config.Table)
-	t.closed = true
 	return nil
 }
 
