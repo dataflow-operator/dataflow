@@ -35,7 +35,7 @@ import (
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 )
 
-// Server представляет веб-сервер для GUI
+// Server represents the web server for the GUI.
 type Server struct {
 	bindAddr   string
 	httpServer *http.Server
@@ -44,11 +44,11 @@ type Server struct {
 	logger     logr.Logger
 }
 
-// NewServer создает новый GUI сервер
+// NewServer creates a new GUI server.
 func NewServer(bindAddr, kubeconfig string) (*Server, error) {
 	logger := log.Log.WithName("gui-server")
 
-	// Настройка Kubernetes клиента
+	// Configure Kubernetes client
 	var config *rest.Config
 	var err error
 
@@ -57,7 +57,7 @@ func NewServer(bindAddr, kubeconfig string) (*Server, error) {
 	} else {
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			// В поде нет ~/.kube/config — возвращаем исходную ошибку in-cluster (RBAC, token и т.д.)
+			// In pod there is no ~/.kube/config — return original in-cluster error (RBAC, token, etc.)
 			return nil, fmt.Errorf("in-cluster config failed (check service account, RBAC, automountServiceAccountToken): %w", err)
 		}
 	}
@@ -65,7 +65,7 @@ func NewServer(bindAddr, kubeconfig string) (*Server, error) {
 		return nil, fmt.Errorf("failed to get kubernetes config: %w", err)
 	}
 
-	// Создаем controller-runtime клиент
+	// Create controller-runtime client
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(dataflowv1.AddToScheme(scheme))
@@ -75,7 +75,7 @@ func NewServer(bindAddr, kubeconfig string) (*Server, error) {
 		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
 
-	// Создаем стандартный Kubernetes клиент для работы с логами
+	// Create standard Kubernetes client for log access
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
@@ -88,14 +88,14 @@ func NewServer(bindAddr, kubeconfig string) (*Server, error) {
 		logger:    logger,
 	}
 
-	// Настройка маршрутов
+	// Configure routes
 	mux := http.NewServeMux()
 
 	// API endpoints
 	apiHandler := NewAPIHandler(server)
 	mux.Handle("/api/", http.StripPrefix("/api", apiHandler))
 
-	// Статические файлы (frontend)
+	// Static files (frontend)
 	mux.Handle("/", http.FileServer(http.Dir("./web/static")))
 
 	server.httpServer = &http.Server{
@@ -109,13 +109,13 @@ func NewServer(bindAddr, kubeconfig string) (*Server, error) {
 	return server, nil
 }
 
-// Start запускает HTTP сервер
+// Start starts the HTTP server.
 func (s *Server) Start() error {
 	s.logger.Info("Starting GUI server", "address", s.bindAddr)
 	return s.httpServer.ListenAndServe()
 }
 
-// Stop останавливает HTTP сервер
+// Stop stops the HTTP server.
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.Info("Stopping GUI server")
 	return s.httpServer.Shutdown(ctx)

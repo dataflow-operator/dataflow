@@ -14,23 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package version
+package constants
 
-import (
-	"strings"
-	"testing"
+import "testing"
 
-	"github.com/stretchr/testify/assert"
-)
-
-func TestDefaultProcessorImage(t *testing.T) {
-	img := DefaultProcessorImage()
-	assert.True(t, strings.HasPrefix(img, DefaultProcessorImageRepository+":"), "image should be repo:tag")
-	assert.NotEmpty(t, Version, "Version should be set (dev when not built with ldflags)")
-	assert.Equal(t, DefaultProcessorImageRepository+":"+Version, img)
+func TestDefaultChannelBufferSize(t *testing.T) {
+	if DefaultChannelBufferSize <= 0 {
+		t.Errorf("DefaultChannelBufferSize must be positive, got %d", DefaultChannelBufferSize)
+	}
 }
 
-func TestVersionNonEmpty(t *testing.T) {
-	// When built without ldflags Version = "dev"
-	assert.NotEmpty(t, Version)
+func TestDefaultSingleValueChannelBufferSize(t *testing.T) {
+	if DefaultSingleValueChannelBufferSize != 1 {
+		t.Errorf("DefaultSingleValueChannelBufferSize must be 1, got %d", DefaultSingleValueChannelBufferSize)
+	}
 }

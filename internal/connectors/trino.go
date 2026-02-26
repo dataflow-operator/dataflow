@@ -27,6 +27,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -522,7 +523,7 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
 
-	msgChan := make(chan *types.Message, 100)
+	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
 
 	go func() {
 		defer close(msgChan)

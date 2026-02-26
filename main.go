@@ -40,7 +40,7 @@ import (
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/controller"
-	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Импортируем для регистрации метрик
+	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Import for metrics registration
 	"github.com/dataflow-operator/dataflow/internal/webhookenv"
 	//+kubebuilder:scaffold:imports
 )
@@ -84,15 +84,15 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	// Уровень логирования: приоритет у переменной окружения LOG_LEVEL (debug, info, warn, error)
+	// Log level: LOG_LEVEL env var takes priority (debug, info, warn, error)
 	levelEnabler := levelFromEnvOrOptions(os.Getenv("LOG_LEVEL"), opts.Level)
 
-	// Настройка логгера с возможностью записи в файл
+	// Configure logger with optional file output
 	if logFile != "" {
-		// Создаем файл для записи логов
+		// Create log file
 		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
-			// Используем временный логгер для вывода ошибки
+			// Use temporary logger to output error
 			tempLogger := zaprctrl.New(zaprctrl.UseFlagOptions(&opts))
 			ctrl.SetLogger(tempLogger)
 			setupLog := ctrl.Log.WithName("setup")
@@ -101,30 +101,25 @@ func main() {
 		}
 		defer file.Close()
 
-		// Настраиваем zap для записи в файл
+		// Configure zap for file output
 		config := zap.NewDevelopmentConfig()
-		if opts.Development {
-			config.Development = true
-		}
 		config.EncoderConfig = zap.NewDevelopmentEncoderConfig()
 
-		// Создаем core, который пишет в файл
+		// Create core that writes to file
 		core := zapcore.NewCore(
 			zapcore.NewConsoleEncoder(config.EncoderConfig),
 			zapcore.AddSync(file),
 			levelEnabler,
 		)
 
-		// Создаем logger с этим core
+		// Create logger with this core
 		zapLogger := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
-		if opts.Development {
-			zapLogger = zapLogger.WithOptions(zap.Development())
-		}
+		zapLogger = zapLogger.WithOptions(zap.Development())
 
-		// Обертываем zap logger в logr.Logger через zapr
+		// Wrap zap logger in logr.Logger via zapr
 		ctrl.SetLogger(zapr.NewLogger(zapLogger))
 	} else {
-		// Используем стандартную настройку: LOG_LEVEL или флаги
+		// Use standard setup: LOG_LEVEL or flags
 		zapOpts := []zaprctrl.Opts{zaprctrl.UseFlagOptions(&opts)}
 		if levelEnabler != nil {
 			zapOpts = append(zapOpts, zaprctrl.Level(levelEnabler))
@@ -132,7 +127,7 @@ func main() {
 		ctrl.SetLogger(zaprctrl.New(zapOpts...))
 	}
 
-	// Webhook server включается только при заданном WEBHOOK_CERT_DIR (в e2e и при отключённом webhook в Helm сертификаты не монтируются).
+	// Webhook server is enabled only when WEBHOOK_CERT_DIR is set (in e2e and when webhook is disabled in Helm, certs are not mounted).
 	certDir := webhookenv.GetWebhookCertDir()
 	mgrOpts := ctrl.Options{
 		Scheme: scheme,

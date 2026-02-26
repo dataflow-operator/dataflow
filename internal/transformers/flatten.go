@@ -109,8 +109,8 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 	// Parse the original message
 	var originalData map[string]interface{}
 	if err := json.Unmarshal(message.Data, &originalData); err != nil {
-		// Если данные не являются валидным JSON, возвращаем исходное сообщение без изменений
-		// Это позволяет обрабатывать бинарные данные или другие форматы
+		// If data is not valid JSON, return original message unchanged
+		// This allows handling binary data or other formats
 		return []*types.Message{message}, nil
 	}
 

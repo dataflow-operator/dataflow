@@ -34,19 +34,19 @@ import (
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 )
 
-// APIHandler обрабатывает API запросы
+// APIHandler handles API requests.
 type APIHandler struct {
 	server *Server
 }
 
-// NewAPIHandler создает новый API handler
+// NewAPIHandler creates a new API handler.
 func NewAPIHandler(server *Server) *APIHandler {
 	return &APIHandler{server: server}
 }
 
-// ServeHTTP обрабатывает HTTP запросы
+// ServeHTTP handles HTTP requests.
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Устанавливаем CORS заголовки
+	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -56,13 +56,13 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Устанавливаем Content-Type
+	// Set Content-Type
 	w.Header().Set("Content-Type", "application/json")
 
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.Split(path, "/")
 
-	// Фильтруем пустые части
+	// Filter empty parts
 	filteredParts := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part != "" {
@@ -91,7 +91,7 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDataFlows обрабатывает запросы к DataFlow ресурсам
+// handleDataFlows handles requests to DataFlow resources.
 func (h *APIHandler) handleDataFlows(w http.ResponseWriter, r *http.Request, parts []string) {
 	namespace := r.URL.Query().Get("namespace")
 	if namespace == "" {
@@ -101,25 +101,25 @@ func (h *APIHandler) handleDataFlows(w http.ResponseWriter, r *http.Request, par
 	switch r.Method {
 	case "GET":
 		if len(parts) == 0 {
-			// Список всех DataFlow
+			// List all DataFlows
 			h.listDataFlows(w, r, namespace)
 		} else {
-			// Получить конкретный DataFlow
+			// Get specific DataFlow
 			h.getDataFlow(w, r, namespace, parts[0])
 		}
 	case "POST":
-		// Создать новый DataFlow
+		// Create new DataFlow
 		h.createDataFlow(w, r, namespace)
 	case "PUT":
 		if len(parts) > 0 {
-			// Обновить DataFlow
+			// Update DataFlow
 			h.updateDataFlow(w, r, namespace, parts[0])
 		} else {
 			http.Error(w, "Name required", http.StatusBadRequest)
 		}
 	case "DELETE":
 		if len(parts) > 0 {
-			// Удалить DataFlow
+			// Delete DataFlow
 			h.deleteDataFlow(w, r, namespace, parts[0])
 		} else {
 			http.Error(w, "Name required", http.StatusBadRequest)
@@ -129,7 +129,7 @@ func (h *APIHandler) handleDataFlows(w http.ResponseWriter, r *http.Request, par
 	}
 }
 
-// listDataFlows возвращает список всех DataFlow
+// listDataFlows returns list of all DataFlows.
 func (h *APIHandler) listDataFlows(w http.ResponseWriter, r *http.Request, namespace string) {
 	var list dataflowv1.DataFlowList
 	opts := []client.ListOption{}
@@ -146,7 +146,7 @@ func (h *APIHandler) listDataFlows(w http.ResponseWriter, r *http.Request, names
 	json.NewEncoder(w).Encode(list.Items)
 }
 
-// getDataFlow возвращает конкретный DataFlow
+// getDataFlow returns specific DataFlow.
 func (h *APIHandler) getDataFlow(w http.ResponseWriter, r *http.Request, namespace, name string) {
 	var df dataflowv1.DataFlow
 	key := types.NamespacedName{Namespace: namespace, Name: name}
@@ -164,7 +164,7 @@ func (h *APIHandler) getDataFlow(w http.ResponseWriter, r *http.Request, namespa
 	json.NewEncoder(w).Encode(df)
 }
 
-// createDataFlow создает новый DataFlow
+// createDataFlow creates new DataFlow.
 func (h *APIHandler) createDataFlow(w http.ResponseWriter, r *http.Request, namespace string) {
 	var df dataflowv1.DataFlow
 	if err := json.NewDecoder(r.Body).Decode(&df); err != nil {
@@ -186,12 +186,12 @@ func (h *APIHandler) createDataFlow(w http.ResponseWriter, r *http.Request, name
 	json.NewEncoder(w).Encode(df)
 }
 
-// updateDataFlow обновляет существующий DataFlow
+// updateDataFlow updates existing DataFlow.
 func (h *APIHandler) updateDataFlow(w http.ResponseWriter, r *http.Request, namespace, name string) {
 	var df dataflowv1.DataFlow
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 
-	// Получаем текущий ресурс
+	// Get current resource
 	if err := h.server.client.Get(r.Context(), key, &df); err != nil {
 		if apierrors.IsNotFound(err) {
 			http.Error(w, "Not found", http.StatusNotFound)
@@ -202,14 +202,14 @@ func (h *APIHandler) updateDataFlow(w http.ResponseWriter, r *http.Request, name
 		return
 	}
 
-	// Декодируем обновления
+	// Decode updates
 	var updates dataflowv1.DataFlow
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Обновляем spec
+	// Update spec
 	df.Spec = updates.Spec
 
 	if err := h.server.client.Update(r.Context(), &df); err != nil {
@@ -221,7 +221,7 @@ func (h *APIHandler) updateDataFlow(w http.ResponseWriter, r *http.Request, name
 	json.NewEncoder(w).Encode(df)
 }
 
-// deleteDataFlow удаляет DataFlow
+// deleteDataFlow deletes DataFlow.
 func (h *APIHandler) deleteDataFlow(w http.ResponseWriter, r *http.Request, namespace, name string) {
 	var df dataflowv1.DataFlow
 	key := types.NamespacedName{Namespace: namespace, Name: name}
@@ -245,7 +245,7 @@ func (h *APIHandler) deleteDataFlow(w http.ResponseWriter, r *http.Request, name
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleLogs обрабатывает запросы к логам
+// handleLogs handles log requests.
 func (h *APIHandler) handleLogs(w http.ResponseWriter, r *http.Request, parts []string) {
 	namespace := r.URL.Query().Get("namespace")
 	name := r.URL.Query().Get("name")
@@ -257,7 +257,7 @@ func (h *APIHandler) handleLogs(w http.ResponseWriter, r *http.Request, parts []
 		return
 	}
 
-	// Получаем поды для DataFlow
+	// Get pods for DataFlow
 	pods, err := h.server.k8sClient.CoreV1().Pods(namespace).List(r.Context(), metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("dataflow.dataflow.io/name=%s", name),
 	})
@@ -268,11 +268,11 @@ func (h *APIHandler) handleLogs(w http.ResponseWriter, r *http.Request, parts []
 	}
 
 	if len(pods.Items) == 0 {
-		// Пробуем найти под по имени deployment
+		// Try to find pod by deployment name
 		podName := fmt.Sprintf("dataflow-%s", name)
 		pod, err := h.server.k8sClient.CoreV1().Pods(namespace).Get(r.Context(), podName, metav1.GetOptions{})
 		if err != nil {
-			// Пробуем найти поды по deployment
+			// Try to find pods by deployment
 			pods, err = h.server.k8sClient.CoreV1().Pods(namespace).List(r.Context(), metav1.ListOptions{
 				LabelSelector: fmt.Sprintf("app=dataflow-processor,dataflow.dataflow.io/name=%s", name),
 			})
@@ -290,7 +290,7 @@ func (h *APIHandler) handleLogs(w http.ResponseWriter, r *http.Request, parts []
 		return
 	}
 
-	// Получаем логи из первого пода
+	// Get logs from first pod
 	pod := pods.Items[0]
 	containerName := "processor"
 
@@ -317,7 +317,7 @@ func (h *APIHandler) handleLogs(w http.ResponseWriter, r *http.Request, parts []
 	}
 	defer logs.Close()
 
-	// Если follow=true, используем Server-Sent Events
+	// If follow=true, use Server-Sent Events
 	if follow {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -335,12 +335,12 @@ func (h *APIHandler) handleLogs(w http.ResponseWriter, r *http.Request, parts []
 			h.server.logger.Error(err, "Error reading logs")
 		}
 	} else {
-		// Просто копируем логи
+		// Just copy logs
 		io.Copy(w, logs)
 	}
 }
 
-// handleMetrics обрабатывает запросы к метрикам
+// handleMetrics handles metrics requests.
 func (h *APIHandler) handleMetrics(w http.ResponseWriter, r *http.Request, parts []string) {
 	namespace := r.URL.Query().Get("namespace")
 	name := r.URL.Query().Get("name")
@@ -350,8 +350,8 @@ func (h *APIHandler) handleMetrics(w http.ResponseWriter, r *http.Request, parts
 		return
 	}
 
-	// Получаем метрики из Prometheus endpoint оператора
-	// В реальной реализации нужно подключиться к Prometheus API
+	// Get metrics from operator Prometheus endpoint
+	// In real implementation need to connect to Prometheus API
 	metrics := map[string]interface{}{
 		"namespace": namespace,
 		"name":      name,
@@ -361,7 +361,7 @@ func (h *APIHandler) handleMetrics(w http.ResponseWriter, r *http.Request, parts
 	json.NewEncoder(w).Encode(metrics)
 }
 
-// handleStatus обрабатывает запросы к статусу
+// handleStatus handles status requests.
 func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request, parts []string) {
 	namespace := r.URL.Query().Get("namespace")
 	name := r.URL.Query().Get("name")
@@ -395,7 +395,7 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request, parts 
 	json.NewEncoder(w).Encode(status)
 }
 
-// handleNamespaces обрабатывает запросы к списку namespaces
+// handleNamespaces handles namespace list requests.
 func (h *APIHandler) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -409,7 +409,7 @@ func (h *APIHandler) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Извлекаем только имена namespaces
+	// Extract only namespace names
 	namespaceNames := make([]string, 0, len(namespaces.Items))
 	for _, ns := range namespaces.Items {
 		namespaceNames = append(namespaceNames, ns.Name)

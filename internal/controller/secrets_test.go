@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
@@ -34,7 +37,7 @@ func TestSecretResolver_ResolveSecretValue(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	secret := &corev1.Secret{
+	secretWithBoth := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-secret",
 			Namespace: "default",
@@ -45,50 +48,9 @@ func TestSecretResolver_ResolveSecretValue(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-	resolver := NewSecretResolver(fakeClient)
-
-	ctx := context.Background()
-
-	// Test successful resolution
-	ref := &dataflowv1.SecretRef{
-		Name:      "test-secret",
-		Namespace: "default",
-		Key:       "username",
-	}
-
-	value, err := resolver.ResolveSecretValue(ctx, "default", ref)
-	require.NoError(t, err)
-	assert.Equal(t, "test-user", value)
-}
-
-func TestSecretResolver_ResolveSecretValue_NotFound(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	resolver := NewSecretResolver(fakeClient)
-
-	ctx := context.Background()
-
-	ref := &dataflowv1.SecretRef{
-		Name:      "non-existent",
-		Namespace: "default",
-		Key:       "username",
-	}
-
-	_, err := resolver.ResolveSecretValue(ctx, "default", ref)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to get secret")
-}
-
-func TestSecretResolver_ResolveSecretValue_KeyNotFound(t *testing.T) {
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	secret := &corev1.Secret{
+	secretUsernameOnly := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-secret",
+			Name:      "partial-secret",
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
@@ -96,20 +58,63 @@ func TestSecretResolver_ResolveSecretValue_KeyNotFound(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-	resolver := NewSecretResolver(fakeClient)
-
-	ctx := context.Background()
-
-	ref := &dataflowv1.SecretRef{
-		Name:      "test-secret",
-		Namespace: "default",
-		Key:       "password",
+	tests := []struct {
+		name        string
+		objects     []client.Object
+		ref         *dataflowv1.SecretRef
+		namespace   string
+		wantValue   string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "successful resolution",
+			objects:   []client.Object{secretWithBoth},
+			ref:       &dataflowv1.SecretRef{Name: "test-secret", Namespace: "default", Key: "username"},
+			namespace: "default",
+			wantValue: "test-user",
+			wantErr:   false,
+		},
+		{
+			name:        "secret not found",
+			objects:     nil,
+			ref:         &dataflowv1.SecretRef{Name: "non-existent", Namespace: "default", Key: "username"},
+			namespace:   "default",
+			wantErr:     true,
+			errContains: "failed to get secret",
+		},
+		{
+			name:        "key not found in secret",
+			objects:     []client.Object{secretUsernameOnly},
+			ref:         &dataflowv1.SecretRef{Name: "partial-secret", Namespace: "default", Key: "password"},
+			namespace:   "default",
+			wantErr:     true,
+			errContains: "key password not found",
+		},
 	}
 
-	_, err := resolver.ResolveSecretValue(ctx, "default", ref)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "key password not found")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if len(tt.objects) > 0 {
+				builder = builder.WithObjects(tt.objects...)
+			}
+			fakeClient := builder.Build()
+			resolver := NewSecretResolver(fakeClient)
+			ctx := context.Background()
+
+			value, err := resolver.ResolveSecretValue(ctx, tt.namespace, tt.ref)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantValue, value)
+		})
+	}
 }
 
 func TestSecretResolver_ResolveSASLConfig_WithDirectValues(t *testing.T) {
@@ -311,4 +316,173 @@ func TestSecretResolver_ResolveSASLConfig_SecretRefOverridesDirectValue(t *testi
 	// SecretRef values should override direct values
 	assert.Equal(t, "secret-user", config.Username)
 	assert.Equal(t, "secret-password", config.Password)
+}
+
+func TestSecretResolver_ResolveTLSConfig_WithCertificateContent_CreatesTempFiles(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	certContent := `-----BEGIN CERTIFICATE-----
+MIIBkTCB+wIJAKs+RHX+O9sOMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnRl
+c3RjYTAeFw0yNDAxMDEwMDAwMDBaFw0yNTAxMDEwMDAwMDBaMBExDzANBgNVBAMM
+BnRlc3RjYTCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEA
+-----END CERTIFICATE-----`
+	keyContent := `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC
+-----END PRIVATE KEY-----`
+	caContent := `-----BEGIN CERTIFICATE-----
+MIIBkTCB+wIJAKs+RHX+O9sOMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnRl
+c3RjYTAeFw0yNDAxMDEwMDAwMDBaFw0yNTAxMDEwMDAwMDBaMBExDzANBgNVBAMM
+BnRlc3RjYTCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEA
+-----END CERTIFICATE-----`
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tls-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"cert": []byte(certContent),
+			"key":  []byte(keyContent),
+			"ca":   []byte(caContent),
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+	resolver := NewSecretResolver(fakeClient)
+	defer func() { _ = resolver.CleanupTempFiles() }()
+
+	ctx := context.Background()
+
+	config := &dataflowv1.TLSConfig{
+		CertSecretRef: &dataflowv1.SecretRef{
+			Name:      "tls-secret",
+			Namespace: "default",
+			Key:       "cert",
+		},
+		KeySecretRef: &dataflowv1.SecretRef{
+			Name:      "tls-secret",
+			Namespace: "default",
+			Key:       "key",
+		},
+		CASecretRef: &dataflowv1.SecretRef{
+			Name:      "tls-secret",
+			Namespace: "default",
+			Key:       "ca",
+		},
+	}
+
+	err := resolver.resolveTLSConfig(ctx, "default", config)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, config.CertFile, "CertFile should be set to temp file path")
+	assert.NotEmpty(t, config.KeyFile, "KeyFile should be set to temp file path")
+	assert.NotEmpty(t, config.CAFile, "CAFile should be set to temp file path")
+
+	// Verify temp files exist and contain correct content
+	certData, err := os.ReadFile(config.CertFile)
+	require.NoError(t, err)
+	assert.Equal(t, certContent, string(certData))
+
+	keyData, err := os.ReadFile(config.KeyFile)
+	require.NoError(t, err)
+	assert.Equal(t, keyContent, string(keyData))
+
+	caData, err := os.ReadFile(config.CAFile)
+	require.NoError(t, err)
+	assert.Equal(t, caContent, string(caData))
+
+	// Verify CA file is not empty (resolveTLSConfig checks this)
+	caStat, err := os.Stat(config.CAFile)
+	require.NoError(t, err)
+	assert.Greater(t, caStat.Size(), int64(0), "CA file should not be empty")
+}
+
+func TestSecretResolver_ResolveTLSConfig_WithFilePath_UsesExistingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	certPath := filepath.Join(tmpDir, "cert.pem")
+	keyPath := filepath.Join(tmpDir, "key.pem")
+	require.NoError(t, os.WriteFile(certPath, []byte("cert content"), 0600))
+	require.NoError(t, os.WriteFile(keyPath, []byte("key content"), 0600))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tls-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"cert": []byte(certPath),
+			"key":  []byte(keyPath),
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+	resolver := NewSecretResolver(fakeClient)
+	defer func() { _ = resolver.CleanupTempFiles() }()
+
+	ctx := context.Background()
+
+	config := &dataflowv1.TLSConfig{
+		CertSecretRef: &dataflowv1.SecretRef{
+			Name:      "tls-secret",
+			Namespace: "default",
+			Key:       "cert",
+		},
+		KeySecretRef: &dataflowv1.SecretRef{
+			Name:      "tls-secret",
+			Namespace: "default",
+			Key:       "key",
+		},
+	}
+
+	err := resolver.resolveTLSConfig(ctx, "default", config)
+	require.NoError(t, err)
+
+	assert.Equal(t, certPath, config.CertFile)
+	assert.Equal(t, keyPath, config.KeyFile)
+}
+
+func TestSecretResolver_ResolveTLSConfig_CleanupTempFiles(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tls-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"cert": []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"),
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+	resolver := NewSecretResolver(fakeClient)
+
+	ctx := context.Background()
+
+	config := &dataflowv1.TLSConfig{
+		CertSecretRef: &dataflowv1.SecretRef{
+			Name:      "tls-secret",
+			Namespace: "default",
+			Key:       "cert",
+		},
+	}
+
+	err := resolver.resolveTLSConfig(ctx, "default", config)
+	require.NoError(t, err)
+
+	tempFile := config.CertFile
+	_, err = os.Stat(tempFile)
+	require.NoError(t, err, "temp file should exist before cleanup")
+
+	err = resolver.CleanupTempFiles()
+	require.NoError(t, err)
+
+	_, err = os.Stat(tempFile)
+	require.Error(t, err, "temp file should be removed after cleanup")
+	assert.True(t, os.IsNotExist(err))
 }

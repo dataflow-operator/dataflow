@@ -22,10 +22,10 @@ import (
 )
 
 // Valid source types (must match connectors/factory.go).
-var validSourceTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true}
+var validSourceTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true}
 
 // Valid sink types (must match connectors/factory.go).
-var validSinkTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true}
+var validSinkTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true}
 
 // Valid transformation types (must match transformers/factory.go).
 var validTransformationTypes = map[string]bool{
@@ -61,7 +61,7 @@ func validateSource(s *SourceSpec, f *field.Path) field.ErrorList {
 		return all
 	}
 	if !validSourceTypes[s.Type] {
-		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino"}))
+		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse"}))
 		return all
 	}
 	switch s.Type {
@@ -82,6 +82,12 @@ func validateSource(s *SourceSpec, f *field.Path) field.ErrorList {
 			all = append(all, field.Required(f.Child("trino"), "trino source configuration is required"))
 		} else {
 			all = append(all, validateTrinoSource(s.Trino, f.Child("trino"))...)
+		}
+	case "clickhouse":
+		if s.ClickHouse == nil {
+			all = append(all, field.Required(f.Child("clickhouse"), "clickhouse source configuration is required"))
+		} else {
+			all = append(all, validateClickHouseSource(s.ClickHouse, f.Child("clickhouse"))...)
 		}
 	}
 	return all
@@ -169,7 +175,7 @@ func validateSink(s *SinkSpec, f *field.Path) field.ErrorList {
 		return all
 	}
 	if !validSinkTypes[s.Type] {
-		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino"}))
+		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse"}))
 		return all
 	}
 	switch s.Type {
@@ -190,6 +196,12 @@ func validateSink(s *SinkSpec, f *field.Path) field.ErrorList {
 			all = append(all, field.Required(f.Child("trino"), "trino sink configuration is required"))
 		} else {
 			all = append(all, validateTrinoSink(s.Trino, f.Child("trino"))...)
+		}
+	case "clickhouse":
+		if s.ClickHouse == nil {
+			all = append(all, field.Required(f.Child("clickhouse"), "clickhouse sink configuration is required"))
+		} else {
+			all = append(all, validateClickHouseSink(s.ClickHouse, f.Child("clickhouse"))...)
 		}
 	}
 	return all
@@ -262,6 +274,44 @@ func validateTrinoSink(t *TrinoSinkSpec, f *field.Path) field.ErrorList {
 	}
 	if t.TableSecretRef != nil {
 		all = append(all, validateSecretRef(t.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	return all
+}
+
+func validateClickHouseSource(c *ClickHouseSourceSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	hasConn := c.ConnectionString != "" || c.ConnectionStringSecretRef != nil
+	if !hasConn {
+		all = append(all, field.Required(f.Child("connectionString"), "connectionString or connectionStringSecretRef is required"))
+	}
+	hasTable := c.Table != "" || c.TableSecretRef != nil
+	if !hasTable {
+		all = append(all, field.Required(f.Child("table"), "table or tableSecretRef is required"))
+	}
+	if c.ConnectionStringSecretRef != nil {
+		all = append(all, validateSecretRef(c.ConnectionStringSecretRef, f.Child("connectionStringSecretRef"))...)
+	}
+	if c.TableSecretRef != nil {
+		all = append(all, validateSecretRef(c.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	return all
+}
+
+func validateClickHouseSink(c *ClickHouseSinkSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	hasConn := c.ConnectionString != "" || c.ConnectionStringSecretRef != nil
+	if !hasConn {
+		all = append(all, field.Required(f.Child("connectionString"), "connectionString or connectionStringSecretRef is required"))
+	}
+	hasTable := c.Table != "" || c.TableSecretRef != nil
+	if !hasTable {
+		all = append(all, field.Required(f.Child("table"), "table or tableSecretRef is required"))
+	}
+	if c.ConnectionStringSecretRef != nil {
+		all = append(all, validateSecretRef(c.ConnectionStringSecretRef, f.Child("connectionStringSecretRef"))...)
+	}
+	if c.TableSecretRef != nil {
+		all = append(all, validateSecretRef(c.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
 	return all
 }

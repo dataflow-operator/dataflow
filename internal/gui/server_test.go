@@ -22,9 +22,9 @@ import (
 	"testing"
 )
 
-// TestNewServer_InClusterConfigFailure проверяет, что при пустом kubeconfig
-// и недоступном in-cluster config ошибка содержит понятный текст (RBAC, token и т.д.).
-// Пропускается вне кластера (нет KUBERNETES_SERVICE_HOST), т.к. InClusterConfig() может блокироваться.
+// TestNewServer_InClusterConfigFailure verifies that with empty kubeconfig
+// and unavailable in-cluster config the error contains clear text (RBAC, token, etc.).
+// Skipped outside cluster (no KUBERNETES_SERVICE_HOST) because InClusterConfig() may block.
 func TestNewServer_InClusterConfigFailure(t *testing.T) {
 	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
 		t.Skip("running in cluster, skipping in-cluster config failure test")

@@ -955,6 +955,70 @@ spec:
                 description: Errors defines the error sink for messages that failed
                   to be written to the main sink
                 properties:
+                  clickhouse:
+                    description: ClickHouse sink configuration
+                    properties:
+                      autoCreateTable:
+                        description: AutoCreateTable automatically creates the table
+                          if it doesn't exist
+                        type: boolean
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10)'
+                        format: int32
+                        type: integer
+                      batchSize:
+                        description: BatchSize for batch inserts
+                        format: int32
+                        type: integer
+                      connectionString:
+                        description: ConnectionString for ClickHouse database (e.g.,
+                          clickhouse://host:9000?username=default&password=xxx&database=default)
+                        type: string
+                      connectionStringSecretRef:
+                        description: ConnectionStringSecretRef references a Kubernetes
+                          secret for connection string
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      table:
+                        description: Table to write to
+                        type: string
+                      tableSecretRef:
+                        description: TableSecretRef references a Kubernetes secret
+                          for table name
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - connectionString
+                    - table
+                    type: object
                   kafka:
                     description: Kafka sink configuration
                     properties:
@@ -1534,6 +1598,70 @@ spec:
               sink:
                 description: Sink defines the destination of data
                 properties:
+                  clickhouse:
+                    description: ClickHouse sink configuration
+                    properties:
+                      autoCreateTable:
+                        description: AutoCreateTable automatically creates the table
+                          if it doesn't exist
+                        type: boolean
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10)'
+                        format: int32
+                        type: integer
+                      batchSize:
+                        description: BatchSize for batch inserts
+                        format: int32
+                        type: integer
+                      connectionString:
+                        description: ConnectionString for ClickHouse database (e.g.,
+                          clickhouse://host:9000?username=default&password=xxx&database=default)
+                        type: string
+                      connectionStringSecretRef:
+                        description: ConnectionStringSecretRef references a Kubernetes
+                          secret for connection string
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      table:
+                        description: Table to write to
+                        type: string
+                      tableSecretRef:
+                        description: TableSecretRef references a Kubernetes secret
+                          for table name
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - connectionString
+                    - table
+                    type: object
                   kafka:
                     description: Kafka sink configuration
                     properties:
@@ -2047,6 +2175,64 @@ spec:
               source:
                 description: Source defines the source of data
                 properties:
+                  clickhouse:
+                    description: ClickHouse source configuration
+                    properties:
+                      connectionString:
+                        description: ConnectionString for ClickHouse database (e.g.,
+                          clickhouse://host:9000?username=default&password=xxx&database=default)
+                        type: string
+                      connectionStringSecretRef:
+                        description: ConnectionStringSecretRef references a Kubernetes
+                          secret for connection string
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      pollInterval:
+                        description: PollInterval in seconds for polling mode
+                        format: int32
+                        type: integer
+                      query:
+                        description: Query for custom SQL query (optional, if not
+                          provided, reads from table)
+                        type: string
+                      table:
+                        description: Table to read from
+                        type: string
+                      tableSecretRef:
+                        description: TableSecretRef references a Kubernetes secret
+                          for table name
+                        properties:
+                          key:
+                            description: Key in the secret to read the value from
+                            type: string
+                          name:
+                            description: Name of the secret
+                            type: string
+                          namespace:
+                            description: Namespace of the secret (optional, defaults
+                              to the same namespace as DataFlow)
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - connectionString
+                    - table
+                    type: object
                   kafka:
                     description: Kafka source configuration
                     properties:
@@ -2874,6 +3060,72 @@ spec:
                                 description: Sink is the sink configuration for this
                                   route
                                 properties:
+                                  clickhouse:
+                                    description: ClickHouse sink configuration
+                                    properties:
+                                      autoCreateTable:
+                                        description: AutoCreateTable automatically
+                                          creates the table if it doesn't exist
+                                        type: boolean
+                                      batchFlushIntervalSeconds:
+                                        description: 'BatchFlushIntervalSeconds flushes
+                                          the batch after this many seconds even if
+                                          BatchSize is not reached (default: 10)'
+                                        format: int32
+                                        type: integer
+                                      batchSize:
+                                        description: BatchSize for batch inserts
+                                        format: int32
+                                        type: integer
+                                      connectionString:
+                                        description: ConnectionString for ClickHouse
+                                          database (e.g., clickhouse://host:9000?username=default&password=xxx&database=default)
+                                        type: string
+                                      connectionStringSecretRef:
+                                        description: ConnectionStringSecretRef references
+                                          a Kubernetes secret for connection string
+                                        properties:
+                                          key:
+                                            description: Key in the secret to read
+                                              the value from
+                                            type: string
+                                          name:
+                                            description: Name of the secret
+                                            type: string
+                                          namespace:
+                                            description: Namespace of the secret (optional,
+                                              defaults to the same namespace as DataFlow)
+                                            type: string
+                                        required:
+                                        - key
+                                        - name
+                                        type: object
+                                      table:
+                                        description: Table to write to
+                                        type: string
+                                      tableSecretRef:
+                                        description: TableSecretRef references a Kubernetes
+                                          secret for table name
+                                        properties:
+                                          key:
+                                            description: Key in the secret to read
+                                              the value from
+                                            type: string
+                                          name:
+                                            description: Name of the secret
+                                            type: string
+                                          namespace:
+                                            description: Namespace of the secret (optional,
+                                              defaults to the same namespace as DataFlow)
+                                            type: string
+                                        required:
+                                        - key
+                                        - name
+                                        type: object
+                                    required:
+                                    - connectionString
+                                    - table
+                                    type: object
                                   kafka:
                                     description: Kafka sink configuration
                                     properties:

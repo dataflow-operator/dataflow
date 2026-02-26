@@ -88,8 +88,8 @@ func (r *RemoveTransformer) Transform(ctx context.Context, message *types.Messag
 				// Fallback to manual approach
 				var data map[string]interface{}
 				if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-					// Если данные не являются валидным JSON, возвращаем исходное сообщение без изменений
-					// Это позволяет обрабатывать бинарные данные или другие форматы
+					// If data is not valid JSON, return original message unchanged
+					// This allows handling binary data or other formats
 					r.logger.V(1).Info("Invalid JSON, returning original message",
 						"field", field)
 					return []*types.Message{message}, nil

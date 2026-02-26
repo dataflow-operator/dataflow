@@ -18,35 +18,39 @@ package integration
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	_ "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/IBM/sarama"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/clickhouse"
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/connectors"
+	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/types"
 )
 
-// TestKafkaConnectorIntegration тестирует Kafka source и sink коннекторы
+// TestKafkaConnectorIntegration tests Kafka source and sink connectors.
 func TestKafkaConnectorIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 	ctx := context.Background()
 
-	// Запускаем Kafka контейнер с более надежной стратегией ожидания
-	// Используем ожидание порта и затем проверяем готовность через подключение
+	// Start Kafka container with more reliable wait strategy
+	// Use port wait and then verify readiness via connection
 	kafkaContainer, err := kafka.RunContainer(ctx,
 		kafka.WithClusterID("test-cluster"),
 		testcontainers.WithWaitStrategy(
@@ -64,7 +68,7 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, brokers)
 
-	// Ждем полной готовности Kafka - проверяем доступность через подключение
+	// Wait for Kafka to be fully ready — verify availability via connection
 	maxRetries := 15
 	retryDelay := 2 * time.Second
 	var kafkaReady bool
@@ -75,7 +79,7 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 		adminConfig.Net.ReadTimeout = 5 * time.Second
 		admin, testErr := sarama.NewClusterAdmin(brokers, adminConfig)
 		if testErr == nil {
-			// Проверяем, что можем получить метаданные
+			// Verify we can get metadata
 			_, testErr = admin.DescribeTopics([]string{})
 			if testErr == nil {
 				admin.Close()
@@ -93,7 +97,7 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 	topic := "test-topic"
 	consumerGroup := "test-group"
 
-	// Создаем топик с retry логикой
+	// Create topic with retry logic
 	adminConfig2 := sarama.NewConfig()
 	adminConfig2.Version = sarama.V2_8_0_0
 	adminConfig2.Net.DialTimeout = 10 * time.Second
@@ -101,7 +105,7 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 	require.NoError(t, err)
 	defer admin2.Close()
 
-	// Пробуем создать топик несколько раз
+	// Try to create topic several times
 	for i := 0; i < 5; i++ {
 		err = admin2.CreateTopic(topic, &sarama.TopicDetail{
 			NumPartitions:     1,
@@ -110,11 +114,11 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 		if err == nil {
 			break
 		}
-		// Проверяем, если топик уже существует - это нормально
+		// Check if topic already exists — that's ok
 		if err != nil {
 			errStr := err.Error()
 			if strings.Contains(errStr, "already exists") || strings.Contains(errStr, "TopicExistsException") {
-				// Топик уже существует - это нормально
+				// Topic already exists — that's ok
 				err = nil
 				break
 			}
@@ -123,13 +127,13 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 			time.Sleep(2 * time.Second)
 		}
 	}
-	// Игнорируем ошибку, если топик уже существует
+	// Ignore error if topic already exists
 	if err != nil {
 		t.Logf("Note: topic creation returned error (may already exist): %v", err)
 	}
 
 	t.Run("Kafka Source Connector", func(t *testing.T) {
-		// Создаем source коннектор
+		// Create source connector
 		sourceSpec := &v1.KafkaSourceSpec{
 			Brokers:       brokers,
 			Topic:         topic,
@@ -137,12 +141,12 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 		}
 		sourceConnector := connectors.NewKafkaSourceConnector(sourceSpec)
 
-		// Подключаемся
+		// Connect
 		err := sourceConnector.Connect(ctx)
 		require.NoError(t, err)
 		defer sourceConnector.Close()
 
-		// Отправляем тестовое сообщение в Kafka
+		// Send test message to Kafka
 		producerConfig := sarama.NewConfig()
 		producerConfig.Producer.Return.Successes = true
 		producerConfig.Version = sarama.V2_8_0_0
@@ -164,11 +168,11 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		// Читаем сообщение через source коннектор
+		// Read message via source connector
 		msgChan, err := sourceConnector.Read(ctx)
 		require.NoError(t, err)
 
-		// Ждем сообщение с таймаутом
+		// Wait for message with timeout
 		select {
 		case msg := <-msgChan:
 			require.NotNil(t, msg)
@@ -188,7 +192,7 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 			NumPartitions:     1,
 			ReplicationFactor: 1,
 		}, false)
-		// Игнорируем ошибку, если топик уже существует
+		// Ignore error if topic already exists
 		if err != nil {
 			errStr := err.Error()
 			if !strings.Contains(errStr, "already exists") && !strings.Contains(errStr, "TopicExistsException") {
@@ -196,19 +200,19 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 			}
 		}
 
-		// Создаем sink коннектор
+		// Create sink connector
 		sinkSpec := &v1.KafkaSinkSpec{
 			Brokers: brokers,
 			Topic:   sinkTopic,
 		}
 		sinkConnector := connectors.NewKafkaSinkConnector(sinkSpec)
 
-		// Подключаемся
+		// Connect
 		err = sinkConnector.Connect(ctx)
 		require.NoError(t, err)
 		defer sinkConnector.Close()
 
-		// Создаем сообщение для записи
+		// Create message for write
 		testMessage := map[string]interface{}{
 			"id":   2,
 			"name": "sink test",
@@ -217,15 +221,15 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 		require.NoError(t, err)
 		msg := types.NewMessage(messageBytes)
 
-		// Записываем сообщение
-		msgChan := make(chan *types.Message, 1)
+		// Write message
+		msgChan := make(chan *types.Message, constants.DefaultSingleValueChannelBufferSize)
 		msgChan <- msg
 		close(msgChan)
 
 		err = sinkConnector.Write(ctx, msgChan)
 		require.NoError(t, err)
 
-		// Проверяем, что сообщение записалось
+		// Verify message was written
 		consumerConfig := sarama.NewConfig()
 		consumerConfig.Version = sarama.V2_8_0_0
 		consumerConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
@@ -250,14 +254,14 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 	})
 }
 
-// TestPostgreSQLConnectorIntegration тестирует PostgreSQL source и sink коннекторы
+// TestPostgreSQLConnectorIntegration tests PostgreSQL source and sink connectors.
 func TestPostgreSQLConnectorIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 	ctx := context.Background()
 
-	// Запускаем PostgreSQL контейнер
+	// Start PostgreSQL container
 	postgresContainer, err := postgres.RunContainer(ctx,
 		testcontainers.WithImage("postgres:15-alpine"),
 		postgres.WithDatabase("testdb"),
@@ -276,21 +280,21 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 		}
 	}()
 
-	// Получаем connection string
+	// Get connection string
 	connStr, err := postgresContainer.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
 	tableName := "test_table"
 
-	// Создаем таблицу и вставляем тестовые данные
-	// Пробуем подключиться несколько раз с retry, так как контейнер может быть еще не полностью готов
+	// Create table and insert test data
+	// Try to connect several times with retry, as container may not be fully ready yet
 	var conn *pgx.Conn
 	maxRetries := 10
 	retryDelay := 500 * time.Millisecond
 	for i := 0; i < maxRetries; i++ {
 		conn, err = pgx.Connect(ctx, connStr)
 		if err == nil {
-			// Проверяем подключение через ping
+			// Verify connection via ping
 			if pingErr := conn.Ping(ctx); pingErr == nil {
 				break
 			}
@@ -340,7 +344,7 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 		msgChan, err := sourceConnector.Read(ctx)
 		require.NoError(t, err)
 
-		// Читаем сообщения
+		// Read messages
 		messages := make([]*types.Message, 0)
 		timeout := time.After(5 * time.Second)
 		for {
@@ -355,9 +359,9 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 			}
 		}
 	done:
-		require.GreaterOrEqual(t, len(messages), 3, "должно быть прочитано минимум 3 сообщения")
+		require.GreaterOrEqual(t, len(messages), 3, "should read at least 3 messages")
 
-		// Проверяем содержимое первого сообщения
+		// Verify first message content
 		var data map[string]interface{}
 		err = json.Unmarshal(messages[0].Data, &data)
 		require.NoError(t, err)
@@ -386,7 +390,7 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 		require.NoError(t, err)
 		defer sinkConnector.Close()
 
-		// Создаем сообщения для записи
+		// Create messages for write
 		testMessages := []map[string]interface{}{
 			{"id": 1, "name": "sink1", "value": 10},
 			{"id": 2, "name": "sink2", "value": 20},
@@ -403,10 +407,187 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 		err = sinkConnector.Write(ctx, msgChan)
 		require.NoError(t, err)
 
-		// Проверяем, что данные записались
+		// Verify data was written
 		var count int
 		err = conn.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", sinkTable)).Scan(&count)
 		require.NoError(t, err)
 		assert.Equal(t, 2, count)
+	})
+}
+
+// TestClickHouseConnectorIntegration tests ClickHouse source and sink connectors.
+func TestClickHouseConnectorIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ctx := context.Background()
+
+	clickHouseContainer, err := clickhouse.Run(ctx, "clickhouse/clickhouse-server:23.3-alpine",
+		clickhouse.WithUsername("default"),
+		clickhouse.WithPassword(""),
+		clickhouse.WithDatabase("default"),
+		testcontainers.WithWaitStrategy(
+			wait.ForListeningPort("9000/tcp").WithStartupTimeout(60*time.Second),
+		),
+	)
+	require.NoError(t, err)
+	defer func() {
+		if err := clickHouseContainer.Terminate(ctx); err != nil {
+			t.Logf("failed to terminate clickhouse container: %v", err)
+		}
+	}()
+
+	connStr, err := clickHouseContainer.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	tableName := "test_table"
+
+	// Create table and insert test data via sql.Open
+	conn, err := sql.Open("clickhouse", connStr)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	_, err = conn.ExecContext(ctx, fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id UInt64,
+			name String,
+			value Int32,
+			created_at DateTime DEFAULT now()
+		) ENGINE = MergeTree()
+		ORDER BY id
+	`, tableName))
+	require.NoError(t, err)
+
+	_, err = conn.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO %s (id, name, value) VALUES
+		(1, 'test1', 100),
+		(2, 'test2', 200),
+		(3, 'test3', 300)
+	`, tableName))
+	require.NoError(t, err)
+
+	t.Run("ClickHouse Source Connector", func(t *testing.T) {
+		pollInterval := int32(1)
+		sourceSpec := &v1.ClickHouseSourceSpec{
+			ConnectionString: connStr,
+			Table:            tableName,
+			PollInterval:     &pollInterval,
+		}
+		sourceConnector := connectors.NewClickHouseSourceConnector(sourceSpec)
+
+		err := sourceConnector.Connect(ctx)
+		require.NoError(t, err)
+		defer sourceConnector.Close()
+
+		msgChan, err := sourceConnector.Read(ctx)
+		require.NoError(t, err)
+
+		messages := make([]*types.Message, 0)
+		timeout := time.After(5 * time.Second)
+		for {
+			select {
+			case msg, ok := <-msgChan:
+				if !ok {
+					goto done
+				}
+				messages = append(messages, msg)
+			case <-timeout:
+				goto done
+			}
+		}
+	done:
+		require.GreaterOrEqual(t, len(messages), 3, "should read at least 3 messages")
+
+		var data map[string]interface{}
+		err = json.Unmarshal(messages[0].Data, &data)
+		require.NoError(t, err)
+		assert.Contains(t, data, "name")
+		assert.Contains(t, data, "value")
+	})
+
+	t.Run("ClickHouse Source Connector - Close does not block on read", func(t *testing.T) {
+		// Verifies fix for mutex blocking: Close should complete quickly while readRows
+		// executes a long query (conn and readState use separate mutexes).
+		pollInterval := int32(1)
+		sourceSpec := &v1.ClickHouseSourceSpec{
+			ConnectionString: connStr,
+			Table:            "system.numbers",
+			Query:            "SELECT number FROM system.numbers LIMIT 100000000",
+			PollInterval:     &pollInterval,
+		}
+		sourceConnector := connectors.NewClickHouseSourceConnector(sourceSpec)
+
+		err := sourceConnector.Connect(ctx)
+		require.NoError(t, err)
+
+		readCtx, cancelRead := context.WithCancel(ctx)
+		msgChan, err := sourceConnector.Read(readCtx)
+		require.NoError(t, err)
+
+		time.Sleep(200 * time.Millisecond) // let readRows start and run QueryContext
+
+		closeDone := make(chan error, 1)
+		closeStart := time.Now()
+		go func() {
+			closeDone <- sourceConnector.Close()
+		}()
+
+		select {
+		case err := <-closeDone:
+			elapsed := time.Since(closeStart)
+			require.NoError(t, err)
+			assert.Less(t, elapsed.Milliseconds(), int64(2000),
+				"Close should not block on readRows; completed in %v", elapsed)
+		case <-time.After(3 * time.Second):
+			cancelRead()
+			t.Fatal("Close blocked for more than 3 seconds - mutex blocking issue")
+		}
+
+		cancelRead()
+		for range msgChan {
+		}
+	})
+
+	t.Run("ClickHouse Sink Connector", func(t *testing.T) {
+		sinkTable := "sink_table"
+		_, err = conn.ExecContext(ctx, fmt.Sprintf(`
+			CREATE TABLE IF NOT EXISTS %s (
+				data String,
+				created_at DateTime DEFAULT now()
+			) ENGINE = MergeTree()
+			ORDER BY created_at
+		`, sinkTable))
+		require.NoError(t, err)
+
+		sinkSpec := &v1.ClickHouseSinkSpec{
+			ConnectionString: connStr,
+			Table:            sinkTable,
+		}
+		sinkConnector := connectors.NewClickHouseSinkConnector(sinkSpec)
+
+		err = sinkConnector.Connect(ctx)
+		require.NoError(t, err)
+		defer sinkConnector.Close()
+
+		testMessages := []map[string]interface{}{
+			{"id": 1, "name": "sink1", "value": 10},
+			{"id": 2, "name": "sink2", "value": 20},
+		}
+
+		msgChan := make(chan *types.Message, len(testMessages))
+		for _, testMsg := range testMessages {
+			msgBytes, err := json.Marshal(testMsg)
+			require.NoError(t, err)
+			msgChan <- types.NewMessage(msgBytes)
+		}
+		close(msgChan)
+
+		err = sinkConnector.Write(ctx, msgChan)
+		require.NoError(t, err)
+
+		var count uint64
+		err = conn.QueryRowContext(ctx, fmt.Sprintf("SELECT count() FROM %s", sinkTable)).Scan(&count)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(2), count)
 	})
 }

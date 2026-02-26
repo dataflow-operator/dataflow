@@ -44,7 +44,7 @@ func setupTestServer() (*Server, error) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	// Создаем минимальный сервер для тестирования
+	// Create minimal server for testing
 	server := &Server{
 		client: fakeClient,
 		logger: ctrl.Log.WithName("test"),
@@ -61,7 +61,7 @@ func TestAPIHandler_ListDataFlows(t *testing.T) {
 
 	handler := NewAPIHandler(server)
 
-	// Создаем тестовый DataFlow
+	// Create test DataFlow
 	df := &dataflowv1.DataFlow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-dataflow",
@@ -81,7 +81,7 @@ func TestAPIHandler_ListDataFlows(t *testing.T) {
 		t.Fatalf("Failed to create test DataFlow: %v", err)
 	}
 
-	// Создаем запрос (путь уже без /api префикса, так как StripPrefix удаляет его)
+	// Create request (path already without /api prefix, as StripPrefix removes it)
 	req := httptest.NewRequest("GET", "/dataflows?namespace=default", nil)
 	w := httptest.NewRecorder()
 
@@ -113,7 +113,7 @@ func TestAPIHandler_GetDataFlow(t *testing.T) {
 
 	handler := NewAPIHandler(server)
 
-	// Создаем тестовый DataFlow
+	// Create test DataFlow
 	df := &dataflowv1.DataFlow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-dataflow",
@@ -133,7 +133,7 @@ func TestAPIHandler_GetDataFlow(t *testing.T) {
 		t.Fatalf("Failed to create test DataFlow: %v", err)
 	}
 
-	// Создаем запрос (путь уже без /api префикса)
+	// Create request (path already without /api prefix)
 	req := httptest.NewRequest("GET", "/dataflows/test-dataflow?namespace=default", nil)
 	w := httptest.NewRecorder()
 
@@ -161,7 +161,7 @@ func TestAPIHandler_CreateDataFlow(t *testing.T) {
 
 	handler := NewAPIHandler(server)
 
-	// Создаем тестовый DataFlow для отправки
+	// Create test DataFlow for sending
 	df := &dataflowv1.DataFlow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "new-dataflow",
@@ -187,7 +187,7 @@ func TestAPIHandler_CreateDataFlow(t *testing.T) {
 		t.Errorf("Expected status 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Проверяем, что DataFlow был создан
+	// Verify DataFlow was created
 	var result dataflowv1.DataFlow
 	if err := server.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "new-dataflow"}, &result); err != nil {
 		t.Fatalf("Failed to get created DataFlow: %v", err)
@@ -202,7 +202,7 @@ func TestAPIHandler_DeleteDataFlow(t *testing.T) {
 
 	handler := NewAPIHandler(server)
 
-	// Создаем тестовый DataFlow
+	// Create test DataFlow
 	df := &dataflowv1.DataFlow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-dataflow",
@@ -222,7 +222,7 @@ func TestAPIHandler_DeleteDataFlow(t *testing.T) {
 		t.Fatalf("Failed to create test DataFlow: %v", err)
 	}
 
-	// Создаем запрос на удаление (путь уже без /api префикса)
+	// Create delete request (path already without /api prefix)
 	req := httptest.NewRequest("DELETE", "/dataflows/test-dataflow?namespace=default", nil)
 	w := httptest.NewRecorder()
 
@@ -232,7 +232,7 @@ func TestAPIHandler_DeleteDataFlow(t *testing.T) {
 		t.Errorf("Expected status 204, got %d", w.Code)
 	}
 
-	// Проверяем, что DataFlow был удален
+	// Verify DataFlow was deleted
 	var result dataflowv1.DataFlow
 	if err := server.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: "test-dataflow"}, &result); err == nil {
 		t.Error("Expected DataFlow to be deleted, but it still exists")

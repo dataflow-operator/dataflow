@@ -29,7 +29,7 @@ type Transformer interface {
 	Transform(ctx context.Context, message *types.Message) ([]*types.Message, error)
 }
 
-// isValidJSON проверяет, являются ли данные валидным JSON
+// isValidJSON checks if data is valid JSON
 func isValidJSON(data []byte) bool {
 	var js interface{}
 	return json.Unmarshal(data, &js) == nil

@@ -16,14 +16,14 @@ limitations under the License.
 
 package version
 
-// Version задаётся при сборке через -ldflags "-X github.com/dataflow-operator/dataflow/internal/version.Version=...".
-// Если не задана — остаётся "dev" (локальная сборка).
+// Version is set at build time via -ldflags "-X github.com/dataflow-operator/dataflow/internal/version.Version=...".
+// If not set — remains "dev" (local build).
 var Version = "dev"
 
-// DefaultProcessorImageRepository — репозиторий образа процессора по умолчанию (тот же, что и оператор).
+// DefaultProcessorImageRepository is the default processor image repository (same as operator).
 const DefaultProcessorImageRepository = "ghcr.io/dataflow-operator/dataflow"
 
-// DefaultProcessorImage возвращает образ процессора по умолчанию: репозиторий + версия оператора.
+// DefaultProcessorImage returns the default processor image: repository + operator version.
 func DefaultProcessorImage() string {
 	return DefaultProcessorImageRepository + ":" + Version
 }

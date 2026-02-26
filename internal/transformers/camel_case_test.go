@@ -220,7 +220,7 @@ func TestCamelCaseTransformer_InvalidJSON(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }

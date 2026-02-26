@@ -27,7 +27,7 @@ import (
 func TestRecordMessageReceived(t *testing.T) {
 	RecordMessageReceived("test-ns", "test-name", "kafka")
 
-	// Проверяем, что метрика была записана
+	// Verify metric was recorded
 	metric, err := DataFlowMessagesReceived.GetMetricWithLabelValues("test-ns", "test-name", "kafka")
 	if err != nil {
 		t.Fatalf("Failed to get metric: %v", err)
@@ -112,7 +112,7 @@ func TestSetConnectorConnectionStatus(t *testing.T) {
 		t.Errorf("Expected gauge value 1.0, got %f", *dtoMetric.Gauge.Value)
 	}
 
-	// Проверяем отключение
+	// Verify disable
 	SetConnectorConnectionStatus("test-ns", "test-name", "kafka", "source", false)
 
 	if err := metric.Write(&dtoMetric); err != nil {
@@ -167,7 +167,7 @@ func TestSetDataFlowStatus(t *testing.T) {
 		t.Errorf("Expected gauge value 1.0 for Running, got %f", *dtoMetric.Gauge.Value)
 	}
 
-	// Проверяем статус Error
+	// Verify Error status
 	SetDataFlowStatus("test-ns", "test-name", "Error")
 
 	metric, err = DataFlowStatus.GetMetricWithLabelValues("test-ns", "test-name", "Error")
@@ -204,10 +204,10 @@ func TestFormatIndex(t *testing.T) {
 }
 
 func TestRecordTaskStageDuration(t *testing.T) {
-	// Записываем метрику (она уже зарегистрирована в глобальном реестре через init())
+	// Record metric (already registered in global registry via init())
 	RecordTaskStageDuration("test-ns", "test-name", "read", 0.1)
 
-	// Используем глобальный registry через controller-runtime metrics
+	// Use global registry via controller-runtime metrics
 	gatheredMetrics, err := ctrlmetrics.Registry.Gather()
 	if err != nil {
 		t.Fatalf("Failed to gather metrics: %v", err)
@@ -221,7 +221,7 @@ func TestRecordTaskStageDuration(t *testing.T) {
 		if mf.GetName() == "dataflow_task_stage_duration_seconds" {
 			found = true
 			for _, metric := range mf.Metric {
-				// Проверяем лейблы по имени, а не по индексу
+				// Verify labels by name, not by index
 				nsMatch := false
 				nameMatch := false
 				stageMatch := false
@@ -240,7 +240,7 @@ func TestRecordTaskStageDuration(t *testing.T) {
 					hasCorrectLabels = true
 					if metric.Histogram != nil && *metric.Histogram.SampleCount >= 1 {
 						hasSampleCount = true
-						return // Успешно
+						return // Success
 					}
 				}
 			}
@@ -279,7 +279,7 @@ func TestRecordTaskMessageSize(t *testing.T) {
 					metric.Label[1].GetValue() == "test-name" &&
 					metric.Label[2].GetValue() == "input" {
 					if metric.Histogram != nil && *metric.Histogram.SampleCount >= 1 {
-						return // Успешно
+						return // Success
 					}
 				}
 			}
@@ -312,7 +312,7 @@ func TestRecordTaskStageLatency(t *testing.T) {
 					metric.Label[2].GetValue() == "read" &&
 					metric.Label[3].GetValue() == "transform" {
 					if metric.Histogram != nil && *metric.Histogram.SampleCount >= 1 {
-						return // Успешно
+						return // Success
 					}
 				}
 			}
@@ -387,7 +387,7 @@ func TestRecordTaskEndToEndLatency(t *testing.T) {
 					metric.Label[0].GetValue() == "test-ns" &&
 					metric.Label[1].GetValue() == "test-name" {
 					if metric.Histogram != nil && *metric.Histogram.SampleCount >= 1 {
-						return // Успешно
+						return // Success
 					}
 				}
 			}
@@ -463,7 +463,7 @@ func TestRecordTaskQueueWaitTime(t *testing.T) {
 					metric.Label[1].GetValue() == "test-name" &&
 					metric.Label[2].GetValue() == "output" {
 					if metric.Histogram != nil && *metric.Histogram.SampleCount >= 1 {
-						return // Успешно
+						return // Success
 					}
 				}
 			}

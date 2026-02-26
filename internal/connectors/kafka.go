@@ -36,6 +36,7 @@ import (
 
 	"github.com/IBM/sarama"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -564,8 +565,8 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
 
-	msgChan := make(chan *types.Message, 100)
-	errorChan := make(chan error, 1)
+	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+	errorChan := make(chan error, constants.DefaultSingleValueChannelBufferSize)
 
 	handler := &kafkaConsumerGroupHandler{
 		connector: k,
@@ -580,7 +581,9 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 				return
 			default:
 				if err := k.consumer.Consume(ctx, []string{k.config.Topic}, handler); err != nil {
-					errorChan <- fmt.Errorf("error from consumer: %w", err)
+					errWrap := fmt.Errorf("error from consumer: %w", err)
+					k.logger.Error(errWrap, "Kafka consumer Consume failed", "topic", k.config.Topic)
+					errorChan <- errWrap
 					return
 				}
 			}
@@ -593,7 +596,9 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	// Handle errors
 	go func() {
 		for err := range k.consumer.Errors() {
-			errorChan <- fmt.Errorf("consumer error: %w", err)
+			errWrap := fmt.Errorf("consumer error: %w", err)
+			k.logger.Error(errWrap, "Kafka consumer error", "topic", k.config.Topic)
+			errorChan <- errWrap
 		}
 	}()
 
@@ -1016,7 +1021,7 @@ func (k *KafkaSinkConnector) Close() error {
 	return nil
 }
 
-// getRouteFromMessage извлекает маршрут из метаданных сообщения
+// getRouteFromMessage extracts the route from message metadata.
 func getRouteFromMessage(msg *types.Message) string {
 	if route, ok := msg.Metadata["routed_condition"].(string); ok {
 		return route

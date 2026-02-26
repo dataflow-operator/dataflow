@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	// DataFlowMessagesReceived - количество полученных сообщений по манифесту
+	// DataFlowMessagesReceived — messages received per manifest
 	DataFlowMessagesReceived = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_messages_received_total",
@@ -33,7 +33,7 @@ var (
 		[]string{"namespace", "name", "source_type"},
 	)
 
-	// DataFlowMessagesSent - количество отправленных сообщений по манифесту
+	// DataFlowMessagesSent — messages sent per manifest
 	DataFlowMessagesSent = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_messages_sent_total",
@@ -42,17 +42,17 @@ var (
 		[]string{"namespace", "name", "sink_type", "route"},
 	)
 
-	// DataFlowProcessingDuration - время обработки сообщений
+	// DataFlowProcessingDuration — message processing time
 	DataFlowProcessingDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "dataflow_processing_duration_seconds",
 			Help:    "Time spent processing messages",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 10), // от 1ms до ~1s
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 10), // 1ms to ~1s
 		},
 		[]string{"namespace", "name"},
 	)
 
-	// ConnectorMessagesRead - количество прочитанных сообщений из source коннектора
+	// ConnectorMessagesRead — messages read from source connector
 	ConnectorMessagesRead = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_connector_messages_read_total",
@@ -61,7 +61,7 @@ var (
 		[]string{"namespace", "name", "connector_type", "connector_name"},
 	)
 
-	// ConnectorMessagesWritten - количество записанных сообщений в sink коннектор
+	// ConnectorMessagesWritten — messages written to sink connector
 	ConnectorMessagesWritten = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_connector_messages_written_total",
@@ -70,7 +70,7 @@ var (
 		[]string{"namespace", "name", "connector_type", "connector_name", "route"},
 	)
 
-	// ConnectorErrors - количество ошибок в коннекторах
+	// ConnectorErrors — errors in connectors
 	ConnectorErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_connector_errors_total",
@@ -79,7 +79,7 @@ var (
 		[]string{"namespace", "name", "connector_type", "connector_name", "operation", "error_type"},
 	)
 
-	// ConnectorConnectionStatus - статус подключения коннектора
+	// ConnectorConnectionStatus — connector connection status
 	ConnectorConnectionStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dataflow_connector_connection_status",
@@ -88,7 +88,7 @@ var (
 		[]string{"namespace", "name", "connector_type", "connector_name"},
 	)
 
-	// TransformerExecutions - количество выполнений трансформера
+	// TransformerExecutions — transformer execution count
 	TransformerExecutions = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_transformer_executions_total",
@@ -97,7 +97,7 @@ var (
 		[]string{"namespace", "name", "transformer_type", "transformer_index"},
 	)
 
-	// TransformerErrors - количество ошибок в трансформерах
+	// TransformerErrors — errors in transformers
 	TransformerErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_transformer_errors_total",
@@ -106,17 +106,17 @@ var (
 		[]string{"namespace", "name", "transformer_type", "transformer_index", "error_type"},
 	)
 
-	// TransformerDuration - время выполнения трансформера
+	// TransformerDuration — transformer execution time
 	TransformerDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "dataflow_transformer_duration_seconds",
 			Help:    "Time spent executing transformer",
-			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // от 0.1ms до ~400ms
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // 0.1ms to ~400ms
 		},
 		[]string{"namespace", "name", "transformer_type", "transformer_index"},
 	)
 
-	// TransformerMessagesIn - количество входящих сообщений в трансформер
+	// TransformerMessagesIn — messages input to transformer
 	TransformerMessagesIn = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_transformer_messages_in_total",
@@ -125,7 +125,7 @@ var (
 		[]string{"namespace", "name", "transformer_type", "transformer_index"},
 	)
 
-	// TransformerMessagesOut - количество исходящих сообщений из трансформера
+	// TransformerMessagesOut — messages output from transformer
 	TransformerMessagesOut = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_transformer_messages_out_total",
@@ -134,7 +134,7 @@ var (
 		[]string{"namespace", "name", "transformer_type", "transformer_index"},
 	)
 
-	// DataFlowStatus - статус DataFlow манифеста
+	// DataFlowStatus — DataFlow manifest status
 	DataFlowStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dataflow_status",
@@ -143,37 +143,37 @@ var (
 		[]string{"namespace", "name", "phase"},
 	)
 
-	// TaskStageDuration - время выполнения отдельных этапов задачи
+	// TaskStageDuration — individual task stage execution time
 	TaskStageDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "dataflow_task_stage_duration_seconds",
 			Help:    "Time spent in each task execution stage",
-			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 14), // от 0.1ms до ~1.6s
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 14), // 0.1ms to ~1.6s
 		},
 		[]string{"namespace", "name", "stage"},
 	)
 
-	// TaskMessageSize - размер сообщений на разных этапах обработки
+	// TaskMessageSize — message size at different processing stages
 	TaskMessageSize = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "dataflow_task_message_size_bytes",
 			Help:    "Size of messages at different processing stages",
-			Buckets: prometheus.ExponentialBuckets(64, 2, 16), // от 64 байт до ~4MB
+			Buckets: prometheus.ExponentialBuckets(64, 2, 16), // 64 bytes to ~4MB
 		},
 		[]string{"namespace", "name", "stage"},
 	)
 
-	// TaskStageLatency - задержка между этапами обработки
+	// TaskStageLatency — latency between processing stages
 	TaskStageLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "dataflow_task_stage_latency_seconds",
 			Help:    "Latency between processing stages",
-			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // от 0.1ms до ~400ms
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // 0.1ms to ~400ms
 		},
 		[]string{"namespace", "name", "from_stage", "to_stage"},
 	)
 
-	// TaskThroughput - пропускная способность (сообщений в секунду)
+	// TaskThroughput — throughput (messages per second)
 	TaskThroughput = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dataflow_task_throughput_messages_per_second",
@@ -182,7 +182,7 @@ var (
 		[]string{"namespace", "name"},
 	)
 
-	// TaskSuccessRate - процент успешных задач
+	// TaskSuccessRate — success rate of tasks
 	TaskSuccessRate = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dataflow_task_success_rate",
@@ -191,17 +191,17 @@ var (
 		[]string{"namespace", "name"},
 	)
 
-	// TaskEndToEndLatency - полное время жизни сообщения от получения до отправки
+	// TaskEndToEndLatency — full message lifetime from receipt to delivery
 	TaskEndToEndLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "dataflow_task_end_to_end_latency_seconds",
 			Help:    "End-to-end latency from message receipt to delivery",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 12), // от 1ms до ~2s
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 12), // 1ms to ~2s
 		},
 		[]string{"namespace", "name"},
 	)
 
-	// TaskActiveMessages - количество активных сообщений в обработке
+	// TaskActiveMessages — active messages in processing
 	TaskActiveMessages = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dataflow_task_active_messages",
@@ -210,7 +210,7 @@ var (
 		[]string{"namespace", "name"},
 	)
 
-	// TaskQueueSize - размер очереди сообщений
+	// TaskQueueSize — message queue size
 	TaskQueueSize = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dataflow_task_queue_size",
@@ -219,17 +219,17 @@ var (
 		[]string{"namespace", "name", "queue_type"},
 	)
 
-	// TaskQueueWaitTime - время ожидания в очереди
+	// TaskQueueWaitTime — queue wait time
 	TaskQueueWaitTime = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "dataflow_task_queue_wait_time_seconds",
 			Help:    "Time messages spend waiting in queue",
-			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // от 0.1ms до ~400ms
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // 0.1ms to ~400ms
 		},
 		[]string{"namespace", "name", "queue_type"},
 	)
 
-	// TaskOperationsTotal - общее количество операций по типу
+	// TaskOperationsTotal — total operations by type
 	TaskOperationsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_task_operations_total",
@@ -238,7 +238,7 @@ var (
 		[]string{"namespace", "name", "operation", "status"},
 	)
 
-	// TaskStageErrors - количество ошибок на каждом этапе
+	// TaskStageErrors — errors per stage
 	TaskStageErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dataflow_task_stage_errors_total",
@@ -249,7 +249,7 @@ var (
 )
 
 func init() {
-	// Регистрируем все метрики в реестре controller-runtime
+	// Register all metrics in controller-runtime registry
 	metrics.Registry.MustRegister(
 		DataFlowMessagesReceived,
 		DataFlowMessagesSent,
@@ -278,32 +278,32 @@ func init() {
 	)
 }
 
-// RecordMessageReceived записывает метрику получения сообщения
+// RecordMessageReceived records message received metric.
 func RecordMessageReceived(namespace, name, sourceType string) {
 	DataFlowMessagesReceived.WithLabelValues(namespace, name, sourceType).Inc()
 }
 
-// RecordMessageSent записывает метрику отправки сообщения
+// RecordMessageSent records message sent metric.
 func RecordMessageSent(namespace, name, sinkType, route string) {
 	DataFlowMessagesSent.WithLabelValues(namespace, name, sinkType, route).Inc()
 }
 
-// RecordConnectorMessageRead записывает метрику чтения сообщения из коннектора
+// RecordConnectorMessageRead records connector message read metric.
 func RecordConnectorMessageRead(namespace, name, connectorType, connectorName string) {
 	ConnectorMessagesRead.WithLabelValues(namespace, name, connectorType, connectorName).Inc()
 }
 
-// RecordConnectorMessageWritten записывает метрику записи сообщения в коннектор
+// RecordConnectorMessageWritten records connector message written metric.
 func RecordConnectorMessageWritten(namespace, name, connectorType, connectorName, route string) {
 	ConnectorMessagesWritten.WithLabelValues(namespace, name, connectorType, connectorName, route).Inc()
 }
 
-// RecordConnectorError записывает метрику ошибки коннектора
+// RecordConnectorError records connector error metric.
 func RecordConnectorError(namespace, name, connectorType, connectorName, operation, errorType string) {
 	ConnectorErrors.WithLabelValues(namespace, name, connectorType, connectorName, operation, errorType).Inc()
 }
 
-// SetConnectorConnectionStatus устанавливает статус подключения коннектора
+// SetConnectorConnectionStatus sets connector connection status.
 func SetConnectorConnectionStatus(namespace, name, connectorType, connectorName string, connected bool) {
 	status := 0.0
 	if connected {
@@ -312,34 +312,34 @@ func SetConnectorConnectionStatus(namespace, name, connectorType, connectorName 
 	ConnectorConnectionStatus.WithLabelValues(namespace, name, connectorType, connectorName).Set(status)
 }
 
-// RecordTransformerExecution записывает метрику выполнения трансформера
+// RecordTransformerExecution records transformer execution metric.
 func RecordTransformerExecution(namespace, name, transformerType string, transformerIndex int) {
 	TransformerExecutions.WithLabelValues(namespace, name, transformerType, formatIndex(transformerIndex)).Inc()
 }
 
-// RecordTransformerError записывает метрику ошибки трансформера
+// RecordTransformerError records transformer error metric.
 func RecordTransformerError(namespace, name, transformerType string, transformerIndex int, errorType string) {
 	TransformerErrors.WithLabelValues(namespace, name, transformerType, formatIndex(transformerIndex), errorType).Inc()
 }
 
-// RecordTransformerDuration записывает время выполнения трансформера
+// RecordTransformerDuration records transformer execution duration.
 func RecordTransformerDuration(namespace, name, transformerType string, transformerIndex int, durationSeconds float64) {
 	TransformerDuration.WithLabelValues(namespace, name, transformerType, formatIndex(transformerIndex)).Observe(durationSeconds)
 }
 
-// RecordTransformerMessagesIn записывает количество входящих сообщений в трансформер
+// RecordTransformerMessagesIn records messages input to transformer.
 func RecordTransformerMessagesIn(namespace, name, transformerType string, transformerIndex int, count int) {
 	TransformerMessagesIn.WithLabelValues(namespace, name, transformerType, formatIndex(transformerIndex)).Add(float64(count))
 }
 
-// RecordTransformerMessagesOut записывает количество исходящих сообщений из трансформера
+// RecordTransformerMessagesOut records messages output from transformer.
 func RecordTransformerMessagesOut(namespace, name, transformerType string, transformerIndex int, count int) {
 	TransformerMessagesOut.WithLabelValues(namespace, name, transformerType, formatIndex(transformerIndex)).Add(float64(count))
 }
 
-// SetDataFlowStatus устанавливает статус DataFlow манифеста
+// SetDataFlowStatus sets DataFlow manifest status.
 func SetDataFlowStatus(namespace, name, phase string) {
-	// Устанавливаем 1 для Running, 0 для остальных
+	// Set 1 for Running, 0 for others
 	status := 0.0
 	if phase == "Running" {
 		status = 1.0
@@ -347,62 +347,62 @@ func SetDataFlowStatus(namespace, name, phase string) {
 	DataFlowStatus.WithLabelValues(namespace, name, phase).Set(status)
 }
 
-// formatIndex форматирует индекс как строку
+// formatIndex formats index as string.
 func formatIndex(index int) string {
 	return fmt.Sprintf("%d", index)
 }
 
-// RecordTaskStageDuration записывает время выполнения этапа задачи
+// RecordTaskStageDuration records task stage execution duration.
 func RecordTaskStageDuration(namespace, name, stage string, durationSeconds float64) {
 	TaskStageDuration.WithLabelValues(namespace, name, stage).Observe(durationSeconds)
 }
 
-// RecordTaskMessageSize записывает размер сообщения на этапе обработки
+// RecordTaskMessageSize records message size at processing stage.
 func RecordTaskMessageSize(namespace, name, stage string, sizeBytes int) {
 	TaskMessageSize.WithLabelValues(namespace, name, stage).Observe(float64(sizeBytes))
 }
 
-// RecordTaskStageLatency записывает задержку между этапами
+// RecordTaskStageLatency records latency between stages.
 func RecordTaskStageLatency(namespace, name, fromStage, toStage string, latencySeconds float64) {
 	TaskStageLatency.WithLabelValues(namespace, name, fromStage, toStage).Observe(latencySeconds)
 }
 
-// SetTaskThroughput устанавливает текущую пропускную способность
+// SetTaskThroughput sets current throughput.
 func SetTaskThroughput(namespace, name string, messagesPerSecond float64) {
 	TaskThroughput.WithLabelValues(namespace, name).Set(messagesPerSecond)
 }
 
-// SetTaskSuccessRate устанавливает процент успешных задач
+// SetTaskSuccessRate sets task success rate.
 func SetTaskSuccessRate(namespace, name string, rate float64) {
 	TaskSuccessRate.WithLabelValues(namespace, name).Set(rate)
 }
 
-// RecordTaskEndToEndLatency записывает полное время жизни сообщения
+// RecordTaskEndToEndLatency records full message lifetime.
 func RecordTaskEndToEndLatency(namespace, name string, latencySeconds float64) {
 	TaskEndToEndLatency.WithLabelValues(namespace, name).Observe(latencySeconds)
 }
 
-// SetTaskActiveMessages устанавливает количество активных сообщений
+// SetTaskActiveMessages sets active message count.
 func SetTaskActiveMessages(namespace, name string, count int) {
 	TaskActiveMessages.WithLabelValues(namespace, name).Set(float64(count))
 }
 
-// SetTaskQueueSize устанавливает размер очереди
+// SetTaskQueueSize sets queue size.
 func SetTaskQueueSize(namespace, name, queueType string, size int) {
 	TaskQueueSize.WithLabelValues(namespace, name, queueType).Set(float64(size))
 }
 
-// RecordTaskQueueWaitTime записывает время ожидания в очереди
+// RecordTaskQueueWaitTime records queue wait time.
 func RecordTaskQueueWaitTime(namespace, name, queueType string, waitTimeSeconds float64) {
 	TaskQueueWaitTime.WithLabelValues(namespace, name, queueType).Observe(waitTimeSeconds)
 }
 
-// RecordTaskOperation записывает выполнение операции
+// RecordTaskOperation records operation execution.
 func RecordTaskOperation(namespace, name, operation, status string) {
 	TaskOperationsTotal.WithLabelValues(namespace, name, operation, status).Inc()
 }
 
-// RecordTaskStageError записывает ошибку на этапе обработки
+// RecordTaskStageError records error at processing stage.
 func RecordTaskStageError(namespace, name, stage, errorType string) {
 	TaskStageErrors.WithLabelValues(namespace, name, stage, errorType).Inc()
 }

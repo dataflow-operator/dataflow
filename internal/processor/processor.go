@@ -25,6 +25,8 @@ import (
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/connectors"
+	"github.com/dataflow-operator/dataflow/internal/constants"
+	errclass "github.com/dataflow-operator/dataflow/internal/errors"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/transformers"
@@ -190,7 +192,7 @@ func (p *Processor) Start(ctx context.Context) error {
 	p.logger.Info("Started reading from source")
 
 	// Process messages
-	processedChan := make(chan *types.Message, 100)
+	processedChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
 	go p.processMessages(ctx, msgChan, processedChan)
 
 	// Write messages to sink(s)
@@ -202,12 +204,12 @@ func (p *Processor) Start(ctx context.Context) error {
 func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Message, output chan<- *types.Message) {
 	defer close(output)
 
-	// Метрики для отслеживания пропускной способности
+	// Metrics for throughput tracking
 	var messageCount int64
 	var lastThroughputUpdate time.Time
 	throughputWindow := 10 * time.Second
 
-	// Отслеживание активных сообщений
+	// Track active messages
 	activeMessages := 0
 
 	for {
@@ -219,19 +221,22 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				return
 			}
 
-			// Увеличиваем счетчик активных сообщений
+			// Increment active message counter
 			activeMessages++
 			metrics.SetTaskActiveMessages(p.namespace, p.name, activeMessages)
 
-			// Записываем размер входящего сообщения
+			// Record incoming message size
 			metrics.RecordTaskMessageSize(p.namespace, p.name, "input", len(msg.Data))
 
 			// Record message received
 			metrics.RecordMessageReceived(p.namespace, p.name, p.spec.Source.Type)
+			if activeMessages == 1 {
+				p.logger.Info("First message received from source", logkeys.MessageID, types.MessageID(msg))
+			}
 			messageReceivedTime := time.Now()
 			startTime := messageReceivedTime
 
-			// Записываем время этапа чтения
+			// Record read stage duration
 			readStageStart := time.Now()
 			metrics.RecordTaskStageDuration(p.namespace, p.name, "read", time.Since(readStageStart).Seconds())
 
@@ -246,7 +251,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				inputCount := len(messages)
 				metrics.RecordTransformerMessagesIn(p.namespace, p.name, transformerType, i, inputCount)
 
-				// Записываем задержку между трансформерами
+				// Record latency between transformers
 				if i > 0 {
 					prevStage := fmt.Sprintf("transformer_%d", i-1)
 					currStage := fmt.Sprintf("transformer_%d", i)
@@ -261,7 +266,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 						"inputMessageSize", len(m.Data),
 						"inputMessagePreview", string(m.Data)[:min(200, len(m.Data))])
 
-					// Записываем размер сообщения перед трансформацией
+					// Record message size before transformation
 					metrics.RecordTaskMessageSize(p.namespace, p.name, fmt.Sprintf("transformer_%d_input", i), len(m.Data))
 
 					transformed, err := transformer.Transform(ctx, m)
@@ -272,8 +277,8 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 							logkeys.MessageID, types.MessageID(m),
 							"transformerIndex", i,
 							"message", string(m.Data))
-						metrics.RecordTransformerError(p.namespace, p.name, transformerType, i, getErrorType(err))
-						metrics.RecordTaskStageError(p.namespace, p.name, fmt.Sprintf("transformer_%d", i), getErrorType(err))
+						metrics.RecordTransformerError(p.namespace, p.name, transformerType, i, errclass.GetErrorType(err))
+						metrics.RecordTaskStageError(p.namespace, p.name, fmt.Sprintf("transformer_%d", i), errclass.GetErrorType(err))
 						metrics.RecordTaskOperation(p.namespace, p.name, "transform", "error")
 						p.mu.Lock()
 						p.errorCount++
@@ -281,7 +286,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 						continue
 					}
 
-					// Записываем время выполнения трансформации
+					// Record transformation execution time
 					metrics.RecordTaskStageDuration(p.namespace, p.name, fmt.Sprintf("transformer_%d", i), transformationDuration)
 					metrics.RecordTransformerExecution(p.namespace, p.name, transformerType, i)
 					metrics.RecordTransformerDuration(p.namespace, p.name, transformerType, i, transformationDuration)
@@ -289,7 +294,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 
 					// Log transformation results
 					for j, tmsg := range transformed {
-						// Записываем размер выходного сообщения
+						// Record output message size
 						metrics.RecordTaskMessageSize(p.namespace, p.name, fmt.Sprintf("transformer_%d_output", i), len(tmsg.Data))
 
 						p.logger.V(1).Info("Transformation result",
@@ -331,11 +336,11 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				}
 			}
 
-			// Записываем время этапа трансформации
+			// Record transformation stage duration
 			transformationDuration := time.Since(transformationStart).Seconds()
 			metrics.RecordTaskStageDuration(p.namespace, p.name, "transformation", transformationDuration)
 
-			// Записываем задержку между трансформацией и записью
+			// Record latency between transformation and write
 			writeStageStart := time.Now()
 			metrics.RecordTaskStageLatency(p.namespace, p.name, "transformation", "write", time.Since(writeStageStart).Seconds())
 
@@ -347,19 +352,19 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 			processingDuration := time.Since(startTime).Seconds()
 			metrics.DataFlowProcessingDuration.WithLabelValues(p.namespace, p.name).Observe(processingDuration)
 
-			// Записываем end-to-end latency
+			// Record end-to-end latency
 			endToEndLatency := time.Since(messageReceivedTime).Seconds()
 			metrics.RecordTaskEndToEndLatency(p.namespace, p.name, endToEndLatency)
 
 			// Send transformed messages
 			writeStart := time.Now()
 			for _, m := range messages {
-				// Записываем размер сообщения перед записью
+				// Record message size before write
 				metrics.RecordTaskMessageSize(p.namespace, p.name, "output", len(m.Data))
 
 				select {
 				case output <- m:
-					// Записываем время этапа записи
+					// Record write stage duration
 					writeDuration := time.Since(writeStart).Seconds()
 					metrics.RecordTaskStageDuration(p.namespace, p.name, "write", writeDuration)
 
@@ -373,7 +378,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 					metrics.RecordMessageSent(p.namespace, p.name, p.spec.Sink.Type, route)
 					metrics.RecordTaskOperation(p.namespace, p.name, "write", "success")
 
-					// Уменьшаем счетчик активных сообщений
+					// Decrement active message counter
 					activeMessages--
 					metrics.SetTaskActiveMessages(p.namespace, p.name, activeMessages)
 				case <-ctx.Done():
@@ -384,7 +389,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				}
 			}
 
-			// Обновляем пропускную способность каждые 10 секунд
+			// Update throughput every 10 seconds
 			now := time.Now()
 			if now.Sub(lastThroughputUpdate) >= throughputWindow {
 				p.mu.RLock()
@@ -394,7 +399,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				messageCount = 0
 				lastThroughputUpdate = now
 
-				// Обновляем процент успешных операций
+				// Update success rate
 				p.mu.RLock()
 				total := p.processedCount + p.errorCount
 				var successRate float64
@@ -415,9 +420,9 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 		// Route messages to different sinks
 		routerChans := make(map[string]chan *types.Message)
 		for condition := range p.routerSinks {
-			routerChans[condition] = make(chan *types.Message, 100)
+			routerChans[condition] = make(chan *types.Message, constants.DefaultChannelBufferSize)
 		}
-		defaultChan := make(chan *types.Message, 100)
+		defaultChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
 
 		// Route messages
 		go func() {
@@ -437,7 +442,7 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 						return
 					}
 
-					// Отслеживаем размер очереди перед маршрутизацией
+					// Track queue size before routing
 					queueWaitStart := time.Now()
 					metrics.SetTaskQueueSize(p.namespace, p.name, "routing", len(messages))
 
@@ -447,7 +452,7 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 						// Find matching router sink by condition
 						if ch, ok := routerChans[routedCondition]; ok {
 							p.logger.V(1).Info("Routing message to condition sink", "condition", routedCondition)
-							// Записываем время ожидания в очереди маршрутизации
+							// Record routing queue wait time
 							metrics.RecordTaskQueueWaitTime(p.namespace, p.name, "routing", time.Since(queueWaitStart).Seconds())
 							metrics.SetTaskQueueSize(p.namespace, p.name, routedCondition, len(ch))
 							select {
@@ -537,7 +542,7 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 
 	// No router, write to main sink
 	p.logger.Info("Writing messages to main sink")
-	// Отслеживаем размер очереди перед записью
+	// Track queue size before write
 	metrics.SetTaskQueueSize(p.namespace, p.name, "output", len(messages))
 	return p.writeMessagesWithErrorHandling(ctx, messages, p.sink)
 }
@@ -566,7 +571,7 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 	// Process messages with error handling
 	// Since Write interface doesn't allow per-message error handling,
 	// we'll use a wrapper that processes messages individually
-	errorChan := make(chan *types.Message, 100)
+	errorChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
 	var wg sync.WaitGroup
 	hasErrors := false
 	var hasErrorsMu sync.Mutex
@@ -582,8 +587,8 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 
 	// Process messages individually to catch errors
 	// We'll use a buffered channel approach to handle errors
-	mainSinkChan := make(chan *types.Message, 100)
-	writeErrChan := make(chan error, 1)
+	mainSinkChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+	writeErrChan := make(chan error, constants.DefaultSingleValueChannelBufferSize)
 
 	// Start main sink writer in goroutine
 	wg.Add(1)
@@ -637,7 +642,7 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 					if err != nil {
 						writeDuration := time.Since(writeStart).Seconds()
 						metrics.RecordTaskStageDuration(p.namespace, p.name, "sink_write", writeDuration)
-						metrics.RecordTaskStageError(p.namespace, p.name, "sink_write", getErrorType(err))
+						metrics.RecordTaskStageError(p.namespace, p.name, "sink_write", errclass.GetErrorType(err))
 						metrics.RecordTaskOperation(p.namespace, p.name, "sink_write", "error")
 
 						p.logger.Error(err, "Failed to write message to sink, sending to error sink",
@@ -706,7 +711,7 @@ func (p *Processor) GetStats() (processedCount, errorCount int64) {
 	return p.processedCount, p.errorCount
 }
 
-// getTransformerType возвращает тип трансформера по индексу
+// getTransformerType returns the transformer type by index.
 func getTransformerType(spec *v1.DataFlowSpec, index int) string {
 	if index < len(spec.Transformations) {
 		return spec.Transformations[index].Type
@@ -714,21 +719,12 @@ func getTransformerType(spec *v1.DataFlowSpec, index int) string {
 	return "unknown"
 }
 
-// getRouteFromMessage извлекает маршрут из метаданных сообщения
+// getRouteFromMessage extracts the route from message metadata.
 func getRouteFromMessage(msg *types.Message) string {
 	if route, ok := msg.Metadata["routed_condition"].(string); ok {
 		return route
 	}
 	return "default"
-}
-
-// getErrorType извлекает тип ошибки из ошибки
-func getErrorType(err error) string {
-	if err == nil {
-		return "unknown"
-	}
-	// Можно расширить логику для более детальной классификации ошибок
-	return "transformation_error"
 }
 
 // createErrorMessage creates an error message with error information embedded in the data.
@@ -769,8 +765,8 @@ func (p *Processor) createErrorMessage(originalMsg *types.Message, err error, ap
 	}
 
 	// Marshal error message to JSON
-	errorDataBytes, err := json.Marshal(errorData)
-	if err != nil {
+	errorDataBytes, errMarshal := json.Marshal(errorData)
+	if errMarshal != nil {
 		// Fallback: create simple error message
 		fallbackData := map[string]interface{}{
 			"error":           err.Error(),

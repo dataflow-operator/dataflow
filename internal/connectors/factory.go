@@ -40,6 +40,11 @@ func CreateSourceConnector(source *v1.SourceSpec) (SourceConnector, error) {
 			return nil, fmt.Errorf("trino source configuration is required")
 		}
 		return NewTrinoSourceConnector(source.Trino), nil
+	case "clickhouse":
+		if source.ClickHouse == nil {
+			return nil, fmt.Errorf("clickhouse source configuration is required")
+		}
+		return NewClickHouseSourceConnector(source.ClickHouse), nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", source.Type)
 	}
@@ -63,6 +68,11 @@ func CreateSinkConnector(sink *v1.SinkSpec) (SinkConnector, error) {
 			return nil, fmt.Errorf("trino sink configuration is required")
 		}
 		return NewTrinoSinkConnector(sink.Trino), nil
+	case "clickhouse":
+		if sink.ClickHouse == nil {
+			return nil, fmt.Errorf("clickhouse sink configuration is required")
+		}
+		return NewClickHouseSinkConnector(sink.ClickHouse), nil
 	default:
 		return nil, fmt.Errorf("unsupported sink type: %s", sink.Type)
 	}

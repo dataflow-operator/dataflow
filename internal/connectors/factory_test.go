@@ -351,3 +351,93 @@ func TestCreateSinkConnector_Trino(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateSourceConnector_ClickHouse(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      *v1.SourceSpec
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid clickhouse source",
+			source: &v1.SourceSpec{
+				Type: "clickhouse",
+				ClickHouse: &v1.ClickHouseSourceSpec{
+					ConnectionString: "clickhouse://localhost:9000?username=default&password=&database=default",
+					Table:            "test_table",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "clickhouse source without config",
+			source: &v1.SourceSpec{
+				Type: "clickhouse",
+			},
+			wantErr:     true,
+			errContains: "clickhouse source configuration is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connector, err := CreateSourceConnector(tt.source)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				assert.Nil(t, connector)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, connector)
+			}
+		})
+	}
+}
+
+func TestCreateSinkConnector_ClickHouse(t *testing.T) {
+	tests := []struct {
+		name        string
+		sink        *v1.SinkSpec
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid clickhouse sink",
+			sink: &v1.SinkSpec{
+				Type: "clickhouse",
+				ClickHouse: &v1.ClickHouseSinkSpec{
+					ConnectionString: "clickhouse://localhost:9000?username=default&password=&database=default",
+					Table:            "test_table",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "clickhouse sink without config",
+			sink: &v1.SinkSpec{
+				Type: "clickhouse",
+			},
+			wantErr:     true,
+			errContains: "clickhouse sink configuration is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connector, err := CreateSinkConnector(tt.sink)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				assert.Nil(t, connector)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, connector)
+			}
+		})
+	}
+}

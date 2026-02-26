@@ -24,6 +24,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -83,7 +84,7 @@ func (p *PostgreSQLSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 	}
 
 	p.logger.Info("Starting to read from PostgreSQL", "table", p.config.Table)
-	msgChan := make(chan *types.Message, 100)
+	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
 
 	go func() {
 		defer close(msgChan)
@@ -228,11 +229,12 @@ func (p *PostgreSQLSourceConnector) Close() error {
 
 // PostgreSQLSinkConnector implements SinkConnector for PostgreSQL
 type PostgreSQLSinkConnector struct {
-	config *v1.PostgreSQLSinkSpec
-	conn   *pgx.Conn
-	closed bool
-	mu     sync.Mutex
-	logger logr.Logger
+	config         *v1.PostgreSQLSinkSpec
+	conn           *pgx.Conn
+	closed         bool
+	mu             sync.Mutex
+	logger         logr.Logger
+	firstWriteOnce sync.Once
 }
 
 // NewPostgreSQLSinkConnector creates a new PostgreSQL sink connector
@@ -531,6 +533,9 @@ func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.B
 			return fmt.Errorf("batch execution error: %w", err)
 		}
 	}
+	p.firstWriteOnce.Do(func() {
+		p.logger.Info("First message written to sink", "table", p.config.Table)
+	})
 	p.logger.V(1).Info("Batch executed successfully", "count", batch.Len(), "table", p.config.Table)
 	return nil
 }

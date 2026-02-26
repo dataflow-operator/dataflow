@@ -29,7 +29,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/types"
 )
 
-// TestTransformersIntegration тестирует все трансформеры с реальными данными
+// TestTransformersIntegration tests all transformers with real data.
 func TestTransformersIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -80,13 +80,13 @@ func TestTransformersIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, result, 2)
 
-		// Проверяем первое сообщение
+		// Verify first message
 		var output1 map[string]interface{}
 		err = json.Unmarshal(result[0].Data, &output1)
 		require.NoError(t, err)
 		assert.Equal(t, "item1", output1["name"])
 
-		// Проверяем второе сообщение
+		// Verify second message
 		var output2 map[string]interface{}
 		err = json.Unmarshal(result[1].Data, &output2)
 		require.NoError(t, err)
@@ -94,13 +94,13 @@ func TestTransformersIntegration(t *testing.T) {
 	})
 
 	t.Run("Filter Transformer", func(t *testing.T) {
-		// Filter использует JSONPath, который возвращает значение поля
-		// Проверяем, что значение существует и является truthy
+		// Filter uses JSONPath which returns the field value
+		// Verify the value exists and is truthy
 		transformer := transformers.NewFilterTransformer(&v1.FilterTransformation{
-			Condition: "value", // JSONPath к полю value
+			Condition: "value", // JSONPath to value field
 		})
 
-		// Тест 1: сообщение проходит фильтр (value существует и не равен 0)
+		// Test 1: message passes filter (value exists and is not 0)
 		testData1 := map[string]interface{}{
 			"id":    1,
 			"value": 20,
@@ -113,7 +113,7 @@ func TestTransformersIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, result1, 1)
 
-		// Тест 2: сообщение не проходит фильтр (value равен 0)
+		// Test 2: message does not pass filter (value is 0)
 		testData2 := map[string]interface{}{
 			"id":    2,
 			"value": 0,
@@ -126,7 +126,7 @@ func TestTransformersIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, result2, 0)
 
-		// Тест 3: поле отсутствует - сообщение фильтруется
+		// Test 3: field missing — message is filtered out
 		testData3 := map[string]interface{}{
 			"id": 3,
 		}
@@ -230,7 +230,7 @@ func TestTransformersIntegration(t *testing.T) {
 	})
 
 	t.Run("Router Transformer", func(t *testing.T) {
-		// Router трансформер использует условия с == для сравнения
+		// Router transformer uses conditions with == for comparison
 		transformer := transformers.NewRouterTransformer(&v1.RouterTransformation{
 			Routes: []v1.RouteRule{
 				{
@@ -256,7 +256,7 @@ func TestTransformersIntegration(t *testing.T) {
 			},
 		})
 
-		// Тест 1: сообщение типа user
+		// Test 1: message of type user
 		testData1 := map[string]interface{}{
 			"id":   1,
 			"type": "user",
@@ -270,12 +270,12 @@ func TestTransformersIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, result1, 1)
 
-		// Проверяем, что метаданные содержат информацию о роутинге
+		// Verify metadata contains routing info
 		assert.NotNil(t, result1[0].Metadata)
 		assert.Contains(t, result1[0].Metadata, "routed_condition")
 		assert.Equal(t, "type == 'user'", result1[0].Metadata["routed_condition"])
 
-		// Тест 2: сообщение типа order
+		// Test 2: message of type order
 		testData2 := map[string]interface{}{
 			"id":     2,
 			"type":   "order",
@@ -293,7 +293,7 @@ func TestTransformersIntegration(t *testing.T) {
 		assert.Contains(t, result2[0].Metadata, "routed_condition")
 		assert.Equal(t, "type == 'order'", result2[0].Metadata["routed_condition"])
 
-		// Тест 3: сообщение без совпадения условий - возвращается как есть
+		// Test 3: message with no matching conditions — returned as-is
 		testData3 := map[string]interface{}{
 			"id":   3,
 			"type": "unknown",
@@ -305,19 +305,19 @@ func TestTransformersIntegration(t *testing.T) {
 		result3, err := transformer.Transform(ctx, message3)
 		require.NoError(t, err)
 		require.Len(t, result3, 1)
-		// Не должно быть routed_condition в метаданных
+		// routed_condition should not be in metadata
 		assert.NotContains(t, result3[0].Metadata, "routed_condition")
 	})
 }
 
-// TestTransformersChainIntegration тестирует цепочку трансформеров
+// TestTransformersChainIntegration tests transformer chain.
 func TestTransformersChainIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 	ctx := context.Background()
 
-	// Создаем цепочку трансформеров: Select -> Mask -> Timestamp
+	// Create transformer chain: Select -> Mask -> Timestamp
 	selectTransformer := transformers.NewSelectTransformer(&v1.SelectTransformation{
 		Fields: []string{"id", "name", "email", "password"},
 	})
@@ -344,7 +344,7 @@ func TestTransformersChainIntegration(t *testing.T) {
 
 	message := types.NewMessage(jsonData)
 
-	// Применяем трансформеры по цепочке
+	// Apply transformers in chain
 	result, err := selectTransformer.Transform(ctx, message)
 	require.NoError(t, err)
 	require.Len(t, result, 1)
@@ -357,12 +357,12 @@ func TestTransformersChainIntegration(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result, 1)
 
-	// Проверяем результат
+	// Verify result
 	var output map[string]interface{}
 	err = json.Unmarshal(result[0].Data, &output)
 	require.NoError(t, err)
 
-	// Должны быть только выбранные поля
+	// Only selected fields should be present
 	assert.Contains(t, output, "id")
 	assert.Contains(t, output, "name")
 	assert.Contains(t, output, "email")
@@ -370,7 +370,7 @@ func TestTransformersChainIntegration(t *testing.T) {
 	assert.Contains(t, output, "created_at")
 	assert.NotContains(t, output, "extra")
 
-	// Пароль должен быть замаскирован
+	// Password should be masked
 	assert.NotEqual(t, "secret123", output["password"])
 	assert.Contains(t, output["password"].(string), "*")
 }

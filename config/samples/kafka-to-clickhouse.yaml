@@ -1,0 +1,19 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-clickhouse
+spec:
+  source:
+    type: kafka
+    kafka:
+      brokers:
+        - localhost:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: clickhouse
+    clickhouse:
+      connectionString: "clickhouse://default@clickhouse:9000/default?dial_timeout=10s"
+      table: output_table
+      batchSize: 100
+      autoCreateTable: true

@@ -70,8 +70,8 @@ func (m *MaskTransformer) Transform(ctx context.Context, message *types.Message)
 			// Fallback to manual approach
 			var data map[string]interface{}
 			if err := json.Unmarshal(message.Data, &data); err != nil {
-				// Если данные не являются валидным JSON, возвращаем исходное сообщение без изменений
-				// Это позволяет обрабатывать бинарные данные или другие форматы
+				// If data is not valid JSON, return original message unchanged
+				// This allows handling binary data or other formats
 				return []*types.Message{message}, nil
 			}
 			// Simple field masking (doesn't support nested paths)

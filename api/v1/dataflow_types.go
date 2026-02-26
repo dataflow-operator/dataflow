@@ -70,6 +70,10 @@ type SourceSpec struct {
 	// Trino source configuration
 	// +optional
 	Trino *TrinoSourceSpec `json:"trino,omitempty"`
+
+	// ClickHouse source configuration
+	// +optional
+	ClickHouse *ClickHouseSourceSpec `json:"clickhouse,omitempty"`
 }
 
 // KafkaSourceSpec defines Kafka source configuration
@@ -230,6 +234,31 @@ type TrinoSourceSpec struct {
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
 }
 
+// ClickHouseSourceSpec defines ClickHouse source configuration
+type ClickHouseSourceSpec struct {
+	// ConnectionString for ClickHouse database (e.g., clickhouse://host:9000?username=default&password=xxx&database=default)
+	ConnectionString string `json:"connectionString"`
+
+	// Table to read from
+	Table string `json:"table"`
+
+	// Query for custom SQL query (optional, if not provided, reads from table)
+	// +optional
+	Query string `json:"query,omitempty"`
+
+	// PollInterval in seconds for polling mode
+	// +optional
+	PollInterval *int32 `json:"pollInterval,omitempty"`
+
+	// ConnectionStringSecretRef references a Kubernetes secret for connection string
+	// +optional
+	ConnectionStringSecretRef *SecretRef `json:"connectionStringSecretRef,omitempty"`
+
+	// TableSecretRef references a Kubernetes secret for table name
+	// +optional
+	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+}
+
 // KeycloakConfig defines Keycloak OAuth2/OIDC authentication configuration
 type KeycloakConfig struct {
 	// ServerURL is the Keycloak server URL (e.g., https://keycloak.example.com/auth)
@@ -304,6 +333,10 @@ type SinkSpec struct {
 	// Trino sink configuration
 	// +optional
 	Trino *TrinoSinkSpec `json:"trino,omitempty"`
+
+	// ClickHouse sink configuration
+	// +optional
+	ClickHouse *ClickHouseSinkSpec `json:"clickhouse,omitempty"`
 }
 
 // KafkaSinkSpec defines Kafka sink configuration
@@ -403,6 +436,35 @@ type TrinoSinkSpec struct {
 	// SchemaSecretRef references a Kubernetes secret for schema name
 	// +optional
 	SchemaSecretRef *SecretRef `json:"schemaSecretRef,omitempty"`
+
+	// TableSecretRef references a Kubernetes secret for table name
+	// +optional
+	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+}
+
+// ClickHouseSinkSpec defines ClickHouse sink configuration
+type ClickHouseSinkSpec struct {
+	// ConnectionString for ClickHouse database (e.g., clickhouse://host:9000?username=default&password=xxx&database=default)
+	ConnectionString string `json:"connectionString"`
+
+	// Table to write to
+	Table string `json:"table"`
+
+	// BatchSize for batch inserts
+	// +optional
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10)
+	// +optional
+	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
+
+	// AutoCreateTable automatically creates the table if it doesn't exist
+	// +optional
+	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
+
+	// ConnectionStringSecretRef references a Kubernetes secret for connection string
+	// +optional
+	ConnectionStringSecretRef *SecretRef `json:"connectionStringSecretRef,omitempty"`
 
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional

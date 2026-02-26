@@ -184,7 +184,7 @@ func TestTimestampTransformer_InvalidJSON(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }
@@ -194,7 +194,7 @@ func TestTimestampTransformer_BinaryData(t *testing.T) {
 		FieldName: "created_at",
 	})
 
-	// Создаем бинарные данные с нулевыми байтами (как в ошибке)
+	// Create binary data with zero bytes (as in error case)
 	binaryData := []byte{0x00, 0x00, 0x00, 0x00, 0x09, 0x0a, 0x73, 0x74, 0x6f, 0x63, 0x6b, 0xff, 0xfd, 0xfd}
 	message := types.NewMessage(binaryData)
 	message.Metadata = map[string]interface{}{
@@ -204,7 +204,7 @@ func TestTimestampTransformer_BinaryData(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }

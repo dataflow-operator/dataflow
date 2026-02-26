@@ -57,17 +57,17 @@ tasks:
     cmds:
       - |
         KUBEBUILDER_ASSETS="$$({{.LOCALBIN}}/setup-envtest use {{.ENVTEST_K8S_VERSION}} -p path)" \
-        go test ./internal/... ./test/... -coverprofile cover.out || true
+        GOTOOLCHAIN=go1.25.0 go test ./internal/... ./test/... -coverprofile cover.out || true
 
   test-unit:
     desc: Run unit tests without envtest with statistics
     cmds:
-      - ./scripts/run-tests-with-stats.sh ./...
+      - GOTOOLCHAIN=go1.25.0 ./scripts/run-tests-with-stats.sh ./...
 
   test-unit-simple:
     desc: Run unit tests without envtest (simple output)
     cmds:
-      - go test ./... -v
+      - GOTOOLCHAIN=go1.25.0 go test ./... -v
 
   test-all:
     desc: Run all unit tests (alias for test-unit)
@@ -77,12 +77,12 @@ tasks:
   test-integration:
     desc: Run integration tests with statistics
     cmds:
-      - ./scripts/run-tests-with-stats.sh ./test/integration/...
+      - GOTOOLCHAIN=go1.25.0 ./scripts/run-tests-with-stats.sh ./test/integration/...
 
   test-integration-simple:
     desc: Run integration tests (simple output)
     cmds:
-      - go test ./test/integration/... -v
+      - GOTOOLCHAIN=go1.25.0 go test ./test/integration/... -v
 
   # Build tasks
   build:

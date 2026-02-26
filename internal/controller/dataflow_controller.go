@@ -57,13 +57,13 @@ type DataFlowReconciler struct {
 	Recorder       record.EventRecorder
 	secretResolver *SecretResolver
 	processorImage string
-	// operatorDeploymentName/Namespace — для наблюдения за Deployment оператора; при его обновлении реконсилируем все DataFlow.
+	// operatorDeploymentName/Namespace — for watching the operator Deployment; when it updates we reconcile all DataFlows.
 	operatorDeploymentName      string
 	operatorDeploymentNamespace string
 }
 
 func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder) *DataFlowReconciler {
-	// Образ процессора: из env или тот же образ и версия, что и оператор (задаётся при сборке через ldflags).
+	// Processor image: from env or same image and version as operator (set at build time via ldflags).
 	processorImage := version.DefaultProcessorImage()
 	if img := os.Getenv("PROCESSOR_IMAGE"); img != "" {
 		processorImage = img
@@ -80,7 +80,7 @@ func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme, recorde
 	}
 }
 
-// updateStatusWithRetry обновляет статус DataFlow с retry логикой для обработки конфликтов оптимистичной блокировки
+// updateStatusWithRetry updates DataFlow status with retry logic to handle optimistic locking conflicts.
 func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl.Request, updateFn func(*dataflowv1.DataFlow)) error {
 	log := log.FromContext(ctx)
 	maxRetries := 5
@@ -89,12 +89,12 @@ func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl
 		var df dataflowv1.DataFlow
 		if err := r.Get(ctx, req.NamespacedName, &df); err != nil {
 			if apierrors.IsNotFound(err) {
-				// Если объект не найден, не имеет смысла повторять попытки
+				// If object not found, no point retrying
 				return err
 			}
 			if attempt < maxRetries-1 {
 				log.Error(err, "unable to fetch DataFlow for status update, retrying", "attempt", attempt+1, "maxRetries", maxRetries)
-				// Экспоненциальная задержка с jitter: базовая задержка * (2^attempt) + случайная задержка до 50ms
+				// Exponential backoff with jitter: base delay * (2^attempt) + random delay up to 50ms
 				baseDelay := time.Duration(1<<uint(attempt)) * 200 * time.Millisecond
 				jitter := time.Duration(rand.Intn(50)) * time.Millisecond
 				time.Sleep(baseDelay + jitter)
@@ -103,27 +103,27 @@ func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl
 			return fmt.Errorf("failed to fetch DataFlow after %d attempts: %w", maxRetries, err)
 		}
 
-		// Применяем функцию обновления статуса
+		// Apply status update function
 		updateFn(&df)
 
 		if err := r.Status().Update(ctx, &df); err != nil {
 			if apierrors.IsConflict(err) {
 				if attempt < maxRetries-1 {
 					log.Info("status update conflict, retrying", "attempt", attempt+1, "maxRetries", maxRetries)
-					// Экспоненциальная задержка с jitter: базовая задержка * (2^attempt) + случайная задержка до 50ms
+					// Exponential backoff with jitter: base delay * (2^attempt) + random delay up to 50ms
 					baseDelay := time.Duration(1<<uint(attempt)) * 200 * time.Millisecond
 					jitter := time.Duration(rand.Intn(50)) * time.Millisecond
 					time.Sleep(baseDelay + jitter)
 					continue
 				}
-				// После всех попыток возвращаем конфликт, чтобы вызвать requeue
+				// After all attempts return conflict to trigger requeue
 				return err
 			}
-			// Для других ошибок возвращаем сразу
+			// For other errors return immediately
 			return err
 		}
 
-		// Успешное обновление
+		// Successful update
 		if attempt > 0 {
 			log.Info("Successfully updated DataFlow status after retry", "attempt", attempt+1)
 		}
@@ -188,7 +188,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Check if DataFlow is being deleted
 	if !dataflow.DeletionTimestamp.IsZero() {
-		// Удаляем Deployment и ConfigMap при удалении DataFlow
+		// Delete Deployment and ConfigMap when DataFlow is deleted
 		if err := r.cleanupResources(ctx, req); err != nil {
 			log.Error(err, "failed to cleanup resources")
 			if r.Recorder != nil {
@@ -226,7 +226,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Создаем или обновляем ConfigMap со spec
+	// Create or update ConfigMap with spec
 	if err := r.createOrUpdateConfigMap(ctx, req, resolvedSpec); err != nil {
 		log.Error(err, "failed to create or update ConfigMap")
 		if r.Recorder != nil {
@@ -242,7 +242,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Создаем или обновляем Deployment
+	// Create or update Deployment
 	if err := r.createOrUpdateDeployment(ctx, req, &dataflow); err != nil {
 		log.Error(err, "failed to create or update Deployment")
 		if r.Recorder != nil {
@@ -258,7 +258,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Проверяем статус Deployment
+	// Check Deployment status
 	deployment := &appsv1.Deployment{}
 	deploymentName := fmt.Sprintf("dataflow-%s", dataflow.Name)
 	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, deployment); err != nil {
@@ -270,7 +270,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 	} else {
-		// Обновляем статус на основе состояния Deployment
+		// Update status based on Deployment state
 		if deployment.Status.ReadyReplicas > 0 {
 			dataflow.Status.Phase = "Running"
 			dataflow.Status.Message = "Processor pod is running"
@@ -287,8 +287,8 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	metrics.SetDataFlowStatus(req.Namespace, req.Name, dataflow.Status.Phase)
 
 	// Update status with retry logic to handle optimistic locking conflicts
-	// Используем контекст реконсиляции, чтобы fake client и реальный API находили объект по одному контексту
-	// Сохраняем значения статуса перед обновлением
+	// Use reconcile context so fake client and real API find the object in the same context.
+	// Save status values before update.
 	statusPhase := dataflow.Status.Phase
 	statusMessage := dataflow.Status.Message
 	statusProcessedCount := dataflow.Status.ProcessedCount
@@ -310,11 +310,11 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err == context.Canceled || err == context.DeadlineExceeded {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		// Объект мог быть удалён между началом реконсиляции и обновлением статуса — не возвращаем ошибку
+		// Object may have been deleted between reconcile start and status update — don't return error
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		// Если это конфликт, запланируем повторную попытку
+		// If conflict, schedule retry
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
@@ -324,11 +324,11 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
-// createOrUpdateConfigMap создает или обновляет ConfigMap со spec
+// createOrUpdateConfigMap creates or updates ConfigMap with spec.
 func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ctrl.Request, spec *dataflowv1.DataFlowSpec) error {
 	log := log.FromContext(ctx)
 
-	// Сериализуем spec в JSON
+	// Serialize spec to JSON
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		return fmt.Errorf("failed to marshal spec: %w", err)
@@ -345,22 +345,22 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 		},
 	}
 
-	// Получаем DataFlow для установки owner reference
+	// Get DataFlow to set owner reference
 	var df dataflowv1.DataFlow
 	if err := r.Get(ctx, req.NamespacedName, &df); err != nil {
 		return fmt.Errorf("failed to get DataFlow: %w", err)
 	}
 
-	// Устанавливаем owner reference
+	// Set owner reference
 	if err := ctrl.SetControllerReference(&df, configMap, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference: %w", err)
 	}
 
-	// Проверяем, существует ли ConfigMap
+	// Check if ConfigMap exists
 	existing := &corev1.ConfigMap{}
 	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: req.Namespace}, existing)
 	if err != nil && apierrors.IsNotFound(err) {
-		// Создаем новый ConfigMap
+		// Create new ConfigMap
 		if err := r.Create(ctx, configMap); err != nil {
 			return fmt.Errorf("failed to create ConfigMap: %w", err)
 		}
@@ -371,7 +371,7 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 	} else if err != nil {
 		return fmt.Errorf("failed to get ConfigMap: %w", err)
 	} else {
-		// Обновляем существующий ConfigMap
+		// Update existing ConfigMap
 		existing.Data = configMap.Data
 		if err := r.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed to update ConfigMap: %w", err)
@@ -385,7 +385,7 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 	return nil
 }
 
-// createOrUpdateDeployment создает или обновляет Deployment для процессора
+// createOrUpdateDeployment creates or updates Deployment for the processor.
 func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
 	log := log.FromContext(ctx)
 
@@ -456,16 +456,16 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 		},
 	}
 
-	// Устанавливаем owner reference
+	// Set owner reference
 	if err := ctrl.SetControllerReference(dataflow, deployment, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference: %w", err)
 	}
 
-	// Проверяем, существует ли Deployment
+	// Check if Deployment exists
 	existing := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, existing)
 	if err != nil && apierrors.IsNotFound(err) {
-		// Создаем новый Deployment
+		// Create new Deployment
 		if err := r.Create(ctx, deployment); err != nil {
 			return fmt.Errorf("failed to create Deployment: %w", err)
 		}
@@ -476,7 +476,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 	} else if err != nil {
 		return fmt.Errorf("failed to get Deployment: %w", err)
 	} else {
-		// Обновляем существующий Deployment только при реальном изменении spec
+		// Update existing Deployment only when spec actually changed
 		if equality.Semantic.DeepEqual(existing.Spec, deployment.Spec) {
 			return nil
 		}
@@ -493,14 +493,14 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 	return nil
 }
 
-// getResourceRequirements возвращает требования к ресурсам из spec или дефолтные значения
+// getResourceRequirements returns resource requirements from spec or default values.
 func (r *DataFlowReconciler) getResourceRequirements(dataflow *dataflowv1.DataFlow) corev1.ResourceRequirements {
-	// Если ресурсы указаны в spec, используем их
+	// If resources specified in spec, use them
 	if dataflow.Spec.Resources != nil {
 		return *dataflow.Spec.Resources
 	}
 
-	// Иначе используем дефолтные значения
+	// Otherwise use default values
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -513,14 +513,14 @@ func (r *DataFlowReconciler) getResourceRequirements(dataflow *dataflowv1.DataFl
 	}
 }
 
-// cleanupResources удаляет Deployment и ConfigMap
+// cleanupResources deletes Deployment and ConfigMap.
 func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Request) error {
 	log := log.FromContext(ctx)
 
 	deploymentName := fmt.Sprintf("dataflow-%s", req.Name)
 	configMapName := fmt.Sprintf("dataflow-%s-spec", req.Name)
 
-	// Удаляем Deployment
+	// Delete Deployment
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deploymentName,
@@ -533,7 +533,7 @@ func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Requ
 	}
 	log.Info("Deleted Deployment", "name", deploymentName)
 
-	// Удаляем ConfigMap
+	// Delete ConfigMap
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
@@ -549,7 +549,7 @@ func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Requ
 	return nil
 }
 
-// isOperatorDeployment возвращает true, если obj — это Deployment оператора (по имени и namespace).
+// isOperatorDeployment returns true if obj is the operator Deployment (by name and namespace).
 func (r *DataFlowReconciler) isOperatorDeployment(obj client.Object) bool {
 	if r.operatorDeploymentName == "" || r.operatorDeploymentNamespace == "" {
 		return false
@@ -557,7 +557,7 @@ func (r *DataFlowReconciler) isOperatorDeployment(obj client.Object) bool {
 	return obj.GetNamespace() == r.operatorDeploymentNamespace && obj.GetName() == r.operatorDeploymentName
 }
 
-// enqueueAllDataFlowsForOperatorUpdate возвращает запросы на реконсиляцию всех DataFlow (вызывается при обновлении Deployment оператора).
+// enqueueAllDataFlowsForOperatorUpdate returns reconcile requests for all DataFlows (called when operator Deployment is updated).
 func (r *DataFlowReconciler) enqueueAllDataFlowsForOperatorUpdate(ctx context.Context, o client.Object) []reconcile.Request {
 	if !r.isOperatorDeployment(o) {
 		return nil
@@ -582,7 +582,7 @@ func (r *DataFlowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.ConfigMap{})
 
-	// При обновлении Deployment оператора реконсилируем все DataFlow, чтобы поды процессора получили новый образ.
+	// When operator Deployment is updated, reconcile all DataFlows so processor pods get the new image.
 	if r.operatorDeploymentName != "" && r.operatorDeploymentNamespace != "" {
 		b = b.Watches(
 			&appsv1.Deployment{},

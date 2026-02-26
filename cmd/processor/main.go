@@ -31,6 +31,7 @@ import (
 	zaprctrl "sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/processor"
 )
@@ -48,7 +49,7 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	// Уровень логирования: переменная окружения LOG_LEVEL (debug, info, warn, error) или флаги
+	// Log level: LOG_LEVEL env var (debug, info, warn, error) or flags
 	levelEnabler := processorLevelFromEnv(os.Getenv("LOG_LEVEL"), opts.Level)
 	zapOpts := []zaprctrl.Opts{zaprctrl.UseFlagOptions(&opts)}
 	if levelEnabler != nil {
@@ -57,7 +58,7 @@ func main() {
 	ctrl.SetLogger(zaprctrl.New(zapOpts...))
 	logger := ctrl.Log.WithName("processor").WithValues(logkeys.DataflowNamespace, namespace, logkeys.DataflowName, name)
 
-	// Читаем spec из файла
+	// Read spec from file
 	specData, err := os.ReadFile(specPath)
 	if err != nil {
 		logger.Error(err, "Failed to read spec file", "path", specPath)
@@ -70,34 +71,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Создаем процессор
+	// Create processor
 	proc, err := processor.NewProcessorWithLoggerAndMetadata(&spec, logger, namespace, name)
 	if err != nil {
 		logger.Error(err, "Failed to create processor")
 		os.Exit(1)
 	}
 
-	// Создаем контекст с обработкой сигналов
+	// Create context with signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Обработка сигналов для graceful shutdown
-	sigChan := make(chan os.Signal, 1)
+	// Signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, constants.DefaultSingleValueChannelBufferSize)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Запускаем процессор в горутине
-	errChan := make(chan error, 1)
+	// Start processor in goroutine
+	errChan := make(chan error, constants.DefaultSingleValueChannelBufferSize)
 	go func() {
 		logger.Info("Starting processor")
 		errChan <- proc.Start(ctx)
 	}()
 
-	// Ждем сигнала или ошибки
+	// Wait for signal or error
 	select {
 	case sig := <-sigChan:
 		logger.Info("Received signal, shutting down", "signal", sig)
 		cancel()
-		// Ждем завершения процессора
+		// Wait for processor to finish
 		if err := <-errChan; err != nil {
 			logger.Error(err, "Processor exited with error")
 			os.Exit(1)

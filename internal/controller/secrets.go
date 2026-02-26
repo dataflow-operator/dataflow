@@ -113,6 +113,12 @@ func (r *SecretResolver) resolveSourceSpec(ctx context.Context, namespace string
 				return err
 			}
 		}
+	case "clickhouse":
+		if source.ClickHouse != nil {
+			if err := r.resolveClickHouseSourceSpec(ctx, namespace, source.ClickHouse); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -137,6 +143,12 @@ func (r *SecretResolver) resolveSinkSpec(ctx context.Context, namespace string, 
 	case "trino":
 		if sink.Trino != nil {
 			if err := r.resolveTrinoSinkSpec(ctx, namespace, sink.Trino); err != nil {
+				return err
+			}
+		}
+	case "clickhouse":
+		if sink.ClickHouse != nil {
+			if err := r.resolveClickHouseSinkSpec(ctx, namespace, sink.ClickHouse); err != nil {
 				return err
 			}
 		}
@@ -166,9 +178,55 @@ func (r *SecretResolver) resolveSinkSpec(ctx context.Context, namespace string, 
 							return err
 						}
 					}
+				case "clickhouse":
+					if routeSink.ClickHouse != nil {
+						if err := r.resolveClickHouseSinkSpec(ctx, namespace, routeSink.ClickHouse); err != nil {
+							return err
+						}
+					}
 				}
 			}
 		}
+	}
+
+	return nil
+}
+
+func (r *SecretResolver) resolveClickHouseSourceSpec(ctx context.Context, namespace string, spec *dataflowv1.ClickHouseSourceSpec) error {
+	if spec.ConnectionStringSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.ConnectionStringSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.ConnectionString = value
+	}
+
+	if spec.TableSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TableSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Table = value
+	}
+
+	return nil
+}
+
+func (r *SecretResolver) resolveClickHouseSinkSpec(ctx context.Context, namespace string, spec *dataflowv1.ClickHouseSinkSpec) error {
+	if spec.ConnectionStringSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.ConnectionStringSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.ConnectionString = value
+	}
+
+	if spec.TableSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TableSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Table = value
 	}
 
 	return nil

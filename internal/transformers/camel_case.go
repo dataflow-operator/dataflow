@@ -42,7 +42,7 @@ func NewCamelCaseTransformer(config *v1.CamelCaseTransformation) *CamelCaseTrans
 func (c *CamelCaseTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
 	var data interface{}
 	if err := json.Unmarshal(message.Data, &data); err != nil {
-		// Если данные не являются валидным JSON, возвращаем исходное сообщение без изменений
+		// If data is not valid JSON, return original message unchanged
 		return []*types.Message{message}, nil
 	}
 
@@ -103,7 +103,7 @@ func toCamelCase(s string) string {
 		}
 		runes := []rune(part)
 		if len(runes) > 0 {
-			// Все части начинаются с большой буквы (PascalCase)
+			// All parts start with uppercase (PascalCase)
 			result.WriteRune(unicode.ToUpper(runes[0]))
 			if len(runes) > 1 {
 				result.WriteString(string(runes[1:]))
@@ -111,7 +111,7 @@ func toCamelCase(s string) string {
 		}
 	}
 
-	// Если результат пустой, возвращаем исходную строку
+	// If result is empty, return original string
 	if result.Len() == 0 {
 		return s
 	}

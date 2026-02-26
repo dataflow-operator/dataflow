@@ -18,19 +18,24 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
@@ -39,36 +44,93 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewDataFlowReconciler(t *testing.T) {
-	scheme := runtime.NewScheme()
-	err := dataflowv1.AddToScheme(scheme)
-	require.NoError(t, err)
-	err = clientgoscheme.AddToScheme(scheme)
-	require.NoError(t, err)
-
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
-
-	assert.NotNil(t, reconciler)
-	assert.Equal(t, fakeClient, reconciler.Client)
-	assert.Equal(t, scheme, reconciler.Scheme)
-	// Без PROCESSOR_IMAGE используется версия оператора (при сборке без ldflags — "dev").
-	assert.Equal(t, version.DefaultProcessorImage(), reconciler.processorImage)
+// conflictSimulatingClient wraps a client and returns Conflict on the first N Status().Update() calls.
+type conflictSimulatingClient struct {
+	client.Client
+	realStatus           client.SubResourceWriter
+	statusUpdateAttempts int
+	conflictsToSimulate  int
+	mu                   sync.Mutex
 }
 
-func TestNewDataFlowReconciler_ProcessorImageFromEnv(t *testing.T) {
-	const customImage = "my.registry/dataflow-processor:v1.2.3"
-	prev := os.Getenv("PROCESSOR_IMAGE")
-	defer func() { _ = os.Setenv("PROCESSOR_IMAGE", prev) }()
-	require.NoError(t, os.Setenv("PROCESSOR_IMAGE", customImage))
+func newConflictSimulatingClient(real client.Client, conflictsToSimulate int) *conflictSimulatingClient {
+	return &conflictSimulatingClient{
+		Client:              real,
+		realStatus:          real.Status(),
+		conflictsToSimulate: conflictsToSimulate,
+	}
+}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, dataflowv1.AddToScheme(scheme))
-	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+func (c *conflictSimulatingClient) Status() client.SubResourceWriter {
+	return &conflictSimulatingStatusWriter{client: c}
+}
 
-	assert.Equal(t, customImage, reconciler.processorImage)
+type conflictSimulatingStatusWriter struct {
+	client *conflictSimulatingClient
+}
+
+func (s *conflictSimulatingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	s.client.mu.Lock()
+	s.client.statusUpdateAttempts++
+	n := s.client.statusUpdateAttempts
+	s.client.mu.Unlock()
+
+	if n <= s.client.conflictsToSimulate {
+		return apierrors.NewConflict(
+			schema.GroupResource{Group: "dataflow.dataflow.io", Resource: "dataflows"},
+			obj.GetName(),
+			fmt.Errorf("simulated conflict (attempt %d)", n),
+		)
+	}
+	return s.client.realStatus.Update(ctx, obj, opts...)
+}
+
+func (s *conflictSimulatingStatusWriter) Create(ctx context.Context, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
+	return s.client.realStatus.Create(ctx, obj, subResource, opts...)
+}
+
+func (s *conflictSimulatingStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	return s.client.realStatus.Patch(ctx, obj, patch, opts...)
+}
+
+func TestNewDataFlowReconciler(t *testing.T) {
+	tests := []struct {
+		name                 string
+		setProcessorImageEnv string
+		wantImage            string
+	}{
+		{
+			name:                 "default processor image from version",
+			setProcessorImageEnv: "",
+			wantImage:            version.DefaultProcessorImage(),
+		},
+		{
+			name:                 "custom processor image from env",
+			setProcessorImageEnv: "my.registry/dataflow-processor:v1.2.3",
+			wantImage:            "my.registry/dataflow-processor:v1.2.3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prev := os.Getenv("PROCESSOR_IMAGE")
+			defer func() { _ = os.Setenv("PROCESSOR_IMAGE", prev) }()
+			if tt.setProcessorImageEnv != "" {
+				require.NoError(t, os.Setenv("PROCESSOR_IMAGE", tt.setProcessorImageEnv))
+			}
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, dataflowv1.AddToScheme(scheme))
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+
+			assert.NotNil(t, reconciler)
+			assert.Equal(t, fakeClient, reconciler.Client)
+			assert.Equal(t, scheme, reconciler.Scheme)
+			assert.Equal(t, tt.wantImage, reconciler.processorImage)
+		})
+	}
 }
 
 func TestEnqueueAllDataFlowsForOperatorUpdate(t *testing.T) {
@@ -109,6 +171,169 @@ func TestEnqueueAllDataFlowsForOperatorUpdate(t *testing.T) {
 	otherDeployment.SetNamespace(opNs)
 	reqs2 := reconciler.enqueueAllDataFlowsForOperatorUpdate(ctx, otherDeployment)
 	assert.Nil(t, reqs2)
+}
+
+func TestUpdateStatusWithRetry_SuccessOnFirstAttempt(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-df", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "t",
+					ConsumerGroup: "g",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "out",
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlow{}).
+		WithObjects(dataflow).
+		Build()
+
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-df", Namespace: "default"}}
+
+	err := reconciler.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+		df.Status.Phase = "Running"
+		df.Status.Message = "test"
+	})
+	require.NoError(t, err)
+
+	var updated dataflowv1.DataFlow
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &updated))
+	assert.Equal(t, "Running", updated.Status.Phase)
+	assert.Equal(t, "test", updated.Status.Message)
+}
+
+func TestUpdateStatusWithRetry_RetriesOnConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-df", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "t",
+					ConsumerGroup: "g",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "out",
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlow{}).
+		WithObjects(dataflow).
+		Build()
+
+	conflictClient := newConflictSimulatingClient(fakeClient, 2)
+	reconciler := NewDataFlowReconciler(conflictClient, scheme, nil)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-df", Namespace: "default"}}
+
+	err := reconciler.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+		df.Status.Phase = "Running"
+		df.Status.Message = "after retry"
+	})
+	require.NoError(t, err)
+
+	var updated dataflowv1.DataFlow
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &updated))
+	assert.Equal(t, "Running", updated.Status.Phase)
+	assert.Equal(t, "after retry", updated.Status.Message)
+	assert.Equal(t, 3, conflictClient.statusUpdateAttempts, "should have attempted 3 times (2 conflicts + 1 success)")
+}
+
+func TestUpdateStatusWithRetry_ReturnsErrorAfterMaxRetries(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-df", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "t",
+					ConsumerGroup: "g",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "out",
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlow{}).
+		WithObjects(dataflow).
+		Build()
+
+	conflictClient := newConflictSimulatingClient(fakeClient, 10)
+	reconciler := NewDataFlowReconciler(conflictClient, scheme, nil)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-df", Namespace: "default"}}
+
+	err := reconciler.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+		df.Status.Phase = "Running"
+	})
+	require.Error(t, err)
+	assert.True(t, apierrors.IsConflict(err) || strings.Contains(err.Error(), "conflict"))
+}
+
+func TestUpdateStatusWithRetry_NotFoundReturnsImmediately(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlow{}).
+		Build()
+
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "non-existent", Namespace: "default"}}
+
+	err := reconciler.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+		df.Status.Phase = "Running"
+	})
+	require.Error(t, err)
+	assert.True(t, apierrors.IsNotFound(err))
 }
 
 func TestGenReconcileID(t *testing.T) {
@@ -408,8 +633,8 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
-// TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged проверяет, что при второй реконсиляции
-// с неизменным spec DataFlow не вызывается Update Deployment (нет лишних PATCH и rolling update).
+// TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged verifies that on second reconcile
+// with unchanged DataFlow spec, Deployment Update is not called (no extra PATCH and rolling update).
 func TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, dataflowv1.AddToScheme(scheme))
@@ -453,11 +678,11 @@ func TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
 	}
 
-	// Первая реконсиляция — создаётся Deployment (DeploymentCreated)
+	// First reconcile — Deployment created (DeploymentCreated)
 	_, _ = reconciler.Reconcile(ctx, req)
-	drainRecorderEvents(fakeRecorder) // сбрасываем события создания
+	drainRecorderEvents(fakeRecorder) // drain creation events
 
-	// Вторая реконсиляция без изменения spec — Update не должен вызываться (DeploymentUpdated не должно быть)
+	// Second reconcile without spec change — Update should not be called (DeploymentUpdated should not occur)
 	_, _ = reconciler.Reconcile(ctx, req)
 	var deploymentUpdatedCount int
 	for {
@@ -475,8 +700,8 @@ done:
 		"expected no DeploymentUpdated event on second reconcile when spec unchanged")
 }
 
-// TestCreateOrUpdateDeployment_UpdateWhenSpecChanged проверяет, что при изменении spec DataFlow
-// вызывается Update Deployment и желаемое состояние применяется.
+// TestCreateOrUpdateDeployment_UpdateWhenSpecChanged verifies that when DataFlow spec changes,
+// Deployment Update is called and desired state is applied.
 func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, dataflowv1.AddToScheme(scheme))
@@ -519,18 +744,18 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
 	}
 
-	// Первая реконсиляция — создаётся Deployment
+	// First reconcile — Deployment created
 	_, _ = reconciler.Reconcile(ctx, req)
 
 	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
 	var deployment appsv1.Deployment
 
-	// Меняем spec DataFlow (NodeSelector попадает в spec Deployment)
+	// Change DataFlow spec (NodeSelector goes into Deployment spec)
 	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, dataflow))
 	dataflow.Spec.NodeSelector = map[string]string{"node-type": "compute"}
 	require.NoError(t, fakeClient.Update(ctx, dataflow))
 
-	// Вторая реконсиляция — должен вызваться Update
+	// Second reconcile — Update should be called
 	_, _ = reconciler.Reconcile(ctx, req)
 
 	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
@@ -542,7 +767,7 @@ func drainRecorderEvents(r *record.FakeRecorder) {
 	for {
 		select {
 		case <-r.Events:
-			// продолжаем вычитывать
+			// continue draining
 		default:
 			return
 		}
@@ -594,11 +819,11 @@ func TestDataFlowReconciler_Reconcile_InvalidSpec(t *testing.T) {
 		},
 	}
 
-	// Reconcile с невалидным source type: контроллер создаёт ConfigMap и Deployment (spec не валидируется здесь),
-	// ошибка проявится при старте пода процессора. Reconcile может завершиться без ошибки.
+	// Reconcile with invalid source type: controller creates ConfigMap and Deployment (spec not validated here),
+	// error will appear when processor pod starts. Reconcile may complete without error.
 	result, err := reconciler.Reconcile(ctx, req)
 
-	// DataFlow должен остаться, результат — без requeue
+	// DataFlow should remain, result — no requeue
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -606,8 +831,8 @@ func TestDataFlowReconciler_Reconcile_InvalidSpec(t *testing.T) {
 	getErr := fakeClient.Get(ctx, req.NamespacedName, &updatedDataflow)
 	require.NoError(t, getErr, "DataFlow should exist")
 
-	// Статус может быть Error (если где-то валидация вернула ошибку), Pending или Running
-	// Контроллер не валидирует тип source при создании Deployment — невалидный spec уйдёт в под процессора
+	// Status may be Error (if validation returned error somewhere), Pending or Running
+	// Controller does not validate source type when creating Deployment — invalid spec goes to processor pod
 	assert.Contains(t, []string{"", "Error", "Pending", "Running"}, updatedDataflow.Status.Phase,
 		"status phase should be one of Error, Pending, Running")
 }

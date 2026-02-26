@@ -27,7 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Тестовые бинарные данные (с нулевыми байтами, как в ошибке)
+// Test binary data (with zero bytes, as in the error case)
 var binaryData = []byte{0x00, 0x00, 0x00, 0x00, 0x09, 0x0a, 0x73, 0x74, 0x6f, 0x63, 0x6b, 0xff, 0xfd, 0xfd}
 
 func TestFlattenTransformer_BinaryData(t *testing.T) {
@@ -43,7 +43,7 @@ func TestFlattenTransformer_BinaryData(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }
@@ -61,7 +61,7 @@ func TestMaskTransformer_BinaryData(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }
@@ -79,7 +79,7 @@ func TestRemoveTransformer_BinaryData(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }
@@ -97,7 +97,7 @@ func TestSelectTransformer_BinaryData(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }
@@ -122,7 +122,7 @@ func TestRouterTransformer_BinaryData(t *testing.T) {
 	output, err := transformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно вернуть исходное сообщение без изменений
+	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 	assert.Equal(t, message.Metadata, output[0].Metadata)
 }
@@ -174,7 +174,7 @@ func TestIsValidJSON(t *testing.T) {
 }
 
 func TestTransformers_ValidJSON(t *testing.T) {
-	// Проверяем, что трансформеры работают корректно с валидным JSON
+	// Verify transformers work correctly with valid JSON
 	validJSON, err := json.Marshal(map[string]interface{}{
 		"id":   1,
 		"name": "test",
@@ -186,14 +186,14 @@ func TestTransformers_ValidJSON(t *testing.T) {
 		"source": "test",
 	}
 
-	// Проверяем timestamp transformer
+	// Verify timestamp transformer
 	timestampTransformer := NewTimestampTransformer(&v1.TimestampTransformation{
 		FieldName: "created_at",
 	})
 	output, err := timestampTransformer.Transform(context.Background(), message)
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Должно добавить поле created_at
+	// Should add created_at field
 	var data map[string]interface{}
 	err = json.Unmarshal(output[0].Data, &data)
 	require.NoError(t, err)

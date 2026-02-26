@@ -42,7 +42,7 @@ func NewSnakeCaseTransformer(config *v1.SnakeCaseTransformation) *SnakeCaseTrans
 func (s *SnakeCaseTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
 	var data interface{}
 	if err := json.Unmarshal(message.Data, &data); err != nil {
-		// Если данные не являются валидным JSON, возвращаем исходное сообщение без изменений
+		// If data is not valid JSON, return original message unchanged
 		return []*types.Message{message}, nil
 	}
 
@@ -101,9 +101,9 @@ func toSnakeCase(s string) string {
 
 	for i, r := range runes {
 		if unicode.IsUpper(r) {
-			// Добавляем подчеркивание если:
-			// 1. Предыдущая буква была маленькой, или
-			// 2. Предыдущая была заглавной, но следующая маленькая (конец последовательности заглавных)
+			// Add underscore if:
+			// 1. Previous letter was lowercase, or
+			// 2. Previous was uppercase but next is lowercase (end of uppercase sequence)
 			nextIsLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
 			if i > 0 && (prevLower || (prevUpper && nextIsLower)) {
 				result.WriteRune('_')

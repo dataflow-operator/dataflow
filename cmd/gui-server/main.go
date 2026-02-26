@@ -42,19 +42,19 @@ func main() {
 	flag.StringVar(&bindAddr, "bind-address", ":8080", "The address the GUI server binds to.")
 	flag.StringVar(&logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 
-	// kubeconfig может быть зарегистрирован плагинами auth, используем переменную окружения или стандартный путь
+	// kubeconfig may be registered by auth plugins; use env var or standard path
 	flag.Parse()
 
-	// Получаем kubeconfig из переменной окружения или используем стандартный путь
+	// Get kubeconfig from env var or use standard path
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
-		// Попробуем получить из флага, если он был зарегистрирован плагином
+		// Try to get from flag if it was registered by a plugin
 		if f := flag.Lookup("kubeconfig"); f != nil {
 			kubeconfig = f.Value.String()
 		}
 	}
 
-	// Устанавливаем уровень логирования
+	// Set log level
 	var level zapcore.Level
 	switch logLevel {
 	case "debug":
@@ -74,7 +74,7 @@ func main() {
 	config.EncoderConfig = zap.NewProductionEncoderConfig()
 	zapLogger, err := config.Build()
 	if err != nil {
-		// Не panic — пишем в stderr и выходим с кодом 2, чтобы сообщение было видно в логах пода
+		// Don't panic — write to stderr and exit with code 2 so the message is visible in pod logs
 		os.Stderr.WriteString("gui-server: failed to create logger: " + err.Error() + "\n")
 		os.Exit(2)
 	}
@@ -82,15 +82,15 @@ func main() {
 
 	setupLog.Info("Starting GUI server", "bind-address", bindAddr)
 
-	// Создаем GUI сервер
+	// Create GUI server
 	server, err := gui.NewServer(bindAddr, kubeconfig)
 	if err != nil {
 		setupLog.Error(err, "unable to create GUI server")
-		_ = zapLogger.Sync() // сброс буфера, чтобы сообщение об ошибке попало в логи пода
+		_ = zapLogger.Sync() // flush buffer so error message appears in pod logs
 		os.Exit(1)
 	}
 
-	// Запускаем сервер
+	// Start server
 	if err := server.Start(); err != nil {
 		setupLog.Error(err, "unable to start GUI server")
 		_ = zapLogger.Sync()

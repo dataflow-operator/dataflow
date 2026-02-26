@@ -14,23 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package version
+package constants
 
-import (
-	"strings"
-	"testing"
+// DefaultChannelBufferSize is the buffer size for message channels between source/processor/sink.
+const DefaultChannelBufferSize = 100
 
-	"github.com/stretchr/testify/assert"
-)
-
-func TestDefaultProcessorImage(t *testing.T) {
-	img := DefaultProcessorImage()
-	assert.True(t, strings.HasPrefix(img, DefaultProcessorImageRepository+":"), "image should be repo:tag")
-	assert.NotEmpty(t, Version, "Version should be set (dev when not built with ldflags)")
-	assert.Equal(t, DefaultProcessorImageRepository+":"+Version, img)
-}
-
-func TestVersionNonEmpty(t *testing.T) {
-	// When built without ldflags Version = "dev"
-	assert.NotEmpty(t, Version)
-}
+// DefaultSingleValueChannelBufferSize is the buffer size for single-value channels (errors, signals, sync).
+const DefaultSingleValueChannelBufferSize = 1
