@@ -591,6 +591,22 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 			continue
 		}
 
+		if t.config.RawMode != nil && *t.config.RawMode {
+			metadata := map[string]interface{}{
+				"catalog": t.config.Catalog,
+				"schema":  t.config.Schema,
+				"table":   t.config.Table,
+			}
+			if id, ok := row["id"]; ok {
+				metadata["id"] = id
+			}
+			jsonData, err = buildRawModeJSON(row, metadata)
+			if err != nil {
+				t.logger.Error(err, "Failed to build raw mode message")
+				continue
+			}
+		}
+
 		msg := types.NewMessage(jsonData)
 		msg.Metadata["catalog"] = t.config.Catalog
 		msg.Metadata["schema"] = t.config.Schema

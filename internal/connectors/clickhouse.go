@@ -234,6 +234,18 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 			continue
 		}
 
+		if c.config.RawMode != nil && *c.config.RawMode {
+			metadata := map[string]interface{}{"table": c.config.Table}
+			if idIndex >= 0 && len(values) > idIndex {
+				metadata["id"] = values[idIndex]
+			}
+			jsonData, err = buildRawModeJSON(rowMap, metadata)
+			if err != nil {
+				c.logger.Error(err, "Failed to build raw mode message", "table", c.config.Table)
+				continue
+			}
+		}
+
 		msg := types.NewMessage(jsonData)
 		msg.Metadata["table"] = c.config.Table
 		if idIndex >= 0 && len(values) > idIndex {

@@ -112,6 +112,10 @@ type KafkaSourceSpec struct {
 	// +optional
 	Format string `json:"format,omitempty"`
 
+	// RawMode when true, wraps each message as JSON: {"value": <message value>, "_metadata": {offset, partition, timestamp, key, topic}}
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
+
 	// AvroSchema is the Avro schema as JSON string (required if format is "avro")
 	// +optional
 	AvroSchema string `json:"avroSchema,omitempty"`
@@ -189,6 +193,10 @@ type PostgreSQLSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {table, id}}
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
 }
 
 // TrinoSourceSpec defines Trino source configuration
@@ -232,6 +240,10 @@ type TrinoSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {catalog, schema, table}}
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
 }
 
 // ClickHouseSourceSpec defines ClickHouse source configuration
@@ -257,6 +269,10 @@ type ClickHouseSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {table, id}}
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
 }
 
 // KeycloakConfig defines Keycloak OAuth2/OIDC authentication configuration

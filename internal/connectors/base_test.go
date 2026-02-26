@@ -17,12 +17,35 @@ limitations under the License.
 package connectors
 
 import (
+	"encoding/json"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBuildRawModeJSON(t *testing.T) {
+	value := map[string]interface{}{"id": 1, "name": "test"}
+	metadata := map[string]interface{}{"table": "users", "offset": int64(42)}
+
+	data, err := buildRawModeJSON(value, metadata)
+	require.NoError(t, err)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	assert.Contains(t, parsed, "value")
+	assert.Contains(t, parsed, "_metadata")
+
+	meta := parsed["_metadata"].(map[string]interface{})
+	assert.Equal(t, "users", meta["table"])
+	assert.Equal(t, float64(42), meta["offset"])
+
+	val := parsed["value"].(map[string]interface{})
+	assert.Equal(t, float64(1), val["id"])
+	assert.Equal(t, "test", val["name"])
+}
 
 func TestBaseConnector_GuardConnect_WhenNotClosed(t *testing.T) {
 	var b baseConnector

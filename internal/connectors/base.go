@@ -16,7 +16,19 @@ limitations under the License.
 
 package connectors
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
+
+// buildRawModeJSON wraps value and metadata into JSON: {"value": ..., "_metadata": {...}}
+func buildRawModeJSON(value interface{}, metadata map[string]interface{}) ([]byte, error) {
+	raw := map[string]interface{}{
+		"value":      value,
+		"_metadata": metadata,
+	}
+	return json.Marshal(raw)
+}
 
 // baseConnector provides common Connect/Close synchronization for connectors.
 // Embed it in source and sink connectors to avoid duplicating mutex and closed-state logic.
