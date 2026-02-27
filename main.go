@@ -63,7 +63,7 @@ func init() {
 }
 
 // leaderReadyCheck returns a healthz.Checker that succeeds only when electedCh is closed (this instance is the leader).
-// Used for readyz so that only the leader replica reports Ready.
+// Not used in readyz (all replicas report Ready to allow rolling updates); kept for tests and possible future use.
 func leaderReadyCheck(electedCh <-chan struct{}) healthz.Checker {
 	return func(_ *http.Request) error {
 		select {
@@ -203,13 +203,10 @@ func main() {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	// readyz: only the leader reports ready so that at most one replica is considered Ready (e.g. for PDB/Services)
+	// readyz: only Ping — do not require leader, so non-leader replicas stay Ready during rolling updates
+	// (otherwise new pod never becomes Ready while old leader holds the lease, causing update deadlock)
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("leader", leaderReadyCheck(mgr.Elected())); err != nil {
-		setupLog.Error(err, "unable to set up leader ready check")
 		os.Exit(1)
 	}
 
