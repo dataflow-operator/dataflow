@@ -35,7 +35,8 @@ func IsTimeoutError(err error) bool {
 }
 
 // IsTransientTrinoError returns true if err looks like a transient Trino error
-// (TOO_MANY_REQUESTS_FAILED, worker overload/crash, "transient", "retry your query").
+// (TOO_MANY_REQUESTS_FAILED, worker overload/crash, "transient", "retry your query",
+// or HTTP 502/503 from proxy/load balancer when Trino is temporarily unavailable).
 func IsTransientTrinoError(err error) bool {
 	if err == nil {
 		return false
@@ -49,7 +50,11 @@ func IsTransientTrinoError(err error) bool {
 		strings.Contains(lower, "too many errors") ||
 		strings.Contains(lower, "connect timeout") ||
 		strings.Contains(lower, "under too much load") ||
-		strings.Contains(lower, "the node may have crashed")
+		strings.Contains(lower, "the node may have crashed") ||
+		strings.Contains(lower, "status 503") ||
+		strings.Contains(lower, "status 502") ||
+		strings.Contains(lower, "service temporarily unavailable") ||
+		strings.Contains(lower, "bad gateway")
 }
 
 // IsRetryableForTrino returns true if the error is a timeout or a transient Trino error.

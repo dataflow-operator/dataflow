@@ -685,29 +685,31 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 		}
 	}
 
-	// Auto-create table if enabled
-	if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable {
-		if err := t.ensureTable(ctx); err != nil {
-			return fmt.Errorf("failed to ensure table exists: %w", err)
+	// Connect with retry on transient errors (503/502 from proxy, Trino overload, timeouts)
+	err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
+		if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable {
+			if err := t.ensureTable(ctx); err != nil {
+				return fmt.Errorf("failed to ensure table exists: %w", err)
+			}
 		}
-	}
-
-	// Get table columns and cache them
-	columns, err := t.getTableColumns(ctx)
+		columns, err := t.getTableColumns(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get table columns: %w", err)
+		}
+		t.columnsMu.Lock()
+		t.tableColumns = columns
+		t.columnsMu.Unlock()
+		testQuery := "SELECT 1"
+		if err := t.testConnection(ctx, testQuery); err != nil {
+			return fmt.Errorf("failed to connect to Trino: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get table columns: %w", err)
-	}
-	t.columnsMu.Lock()
-	t.tableColumns = columns
-	t.columnsMu.Unlock()
-
-	// Test connection
-	testQuery := "SELECT 1"
-	if err := t.testConnection(ctx, testQuery); err != nil {
-		return fmt.Errorf("failed to connect to Trino: %w", err)
+		return err
 	}
 
-	t.logger.Info("Successfully connected to Trino", "tableColumns", columns)
+	t.logger.Info("Successfully connected to Trino", "tableColumns", t.tableColumns)
 	return nil
 }
 

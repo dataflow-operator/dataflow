@@ -126,6 +126,10 @@ func TestIsTransientTrinoError(t *testing.T) {
 		{"connect timeout", errors.New("Connect Timeout"), true},
 		{"under too much load", errors.New("The node may be under too much load"), true},
 		{"node may have crashed", errors.New("The node may have crashed or be under load"), true},
+		{"status 503", errors.New("Trino query failed with status 503: <html>503 Service Temporarily Unavailable</html>"), true},
+		{"status 502", errors.New("Trino query failed with status 502: Bad Gateway"), true},
+		{"service temporarily unavailable", errors.New("503 Service Temporarily Unavailable"), true},
+		{"bad gateway", errors.New("502 bad gateway"), true},
 		{"permanent error", errors.New("syntax error at line 1"), false},
 	}
 	for _, tt := range tests {
@@ -146,6 +150,7 @@ func TestIsRetryableForTrino(t *testing.T) {
 		{"timeout", errors.New("connection timeout"), true},
 		{"transient Trino", errors.New("TOO_MANY_REQUESTS_FAILED"), true},
 		{"both", errors.New("transient: please retry"), true},
+		{"503 from nginx", errors.New("Trino query failed with status 503: <html>503 Service Temporarily Unavailable</html>"), true},
 		{"permanent", errors.New("syntax error"), false},
 	}
 	for _, tt := range tests {
@@ -189,5 +194,24 @@ func TestOnRetryableTrino_PermanentErrorNoRetry(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("expected 1 call (no retry on permanent error), got %d", calls)
+	}
+}
+
+func TestOnRetryableTrino_503ThenSuccess(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	err503 := errors.New("Trino query failed with status 503: <html>503 Service Temporarily Unavailable</html>")
+	err := OnRetryableTrino(ctx, 5, 5*time.Millisecond, func() error {
+		calls++
+		if calls < 3 {
+			return err503
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("OnRetryableTrino() err = %v, want nil", err)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 calls (503 twice then success), got %d", calls)
 	}
 }
