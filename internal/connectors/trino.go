@@ -1222,73 +1222,144 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 	if t.config.BatchSize != nil {
 		batchSize = int(*t.config.BatchSize)
 	}
+	maxBatchSize := batchSize
+	if batchSize == 0 {
+		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
+	}
 
-	t.logger.Info("Starting to write messages to Trino", "batchSize", batchSize, "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
+	flushIntervalSec := 10
+	if t.config.BatchFlushIntervalSeconds != nil {
+		flushIntervalSec = int(*t.config.BatchFlushIntervalSeconds)
+	}
+	useTimer := flushIntervalSec > 0
+	flushInterval := time.Duration(flushIntervalSec) * time.Second
 
-	batch := make([]*types.Message, 0, batchSize)
+	t.logger.Info("Starting to write messages to Trino", "batchSize", batchSize, "flushIntervalSeconds", flushIntervalSec, "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
+
+	batch := make([]*types.Message, 0, maxBatchSize)
 	messageCount := 0
+	var flushTimer *time.Timer
+
+	stopTimer := func() {
+		if flushTimer != nil {
+			flushTimer.Stop()
+			flushTimer = nil
+		}
+	}
+
+	doFlush := func() error {
+		stopTimer()
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
+			return t.executeBatch(ctx, batch)
+		}); err != nil {
+			return err
+		}
+		for _, m := range batch {
+			if m.Ack != nil {
+				m.Ack()
+			}
+		}
+		batch = make([]*types.Message, 0, maxBatchSize)
+		return nil
+	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
-			if len(batch) > 0 {
-				err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
-					return t.executeBatch(ctx, batch)
-				})
-				if err != nil {
-					return err
-				}
-				for _, m := range batch {
-					if m.Ack != nil {
-						m.Ack()
+		if useTimer && len(batch) > 0 && flushTimer == nil {
+			flushTimer = time.NewTimer(flushInterval)
+		}
+
+		if useTimer && flushTimer != nil {
+			select {
+			case <-ctx.Done():
+				stopTimer()
+				t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
+				if len(batch) > 0 {
+					if err := doFlush(); err != nil {
+						return err
 					}
 				}
 				return ctx.Err()
-			}
-			return ctx.Err()
-		case msg, ok := <-messages:
-			if !ok {
-				t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
-				if len(batch) > 0 {
-					err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
-						return t.executeBatch(ctx, batch)
-					})
-					if err != nil {
-						return err
-					}
-					for _, m := range batch {
-						if m.Ack != nil {
-							m.Ack()
-						}
-					}
+			case <-flushTimer.C:
+				flushTimer = nil
+				if len(batch) == 0 {
+					continue
 				}
-				return nil
-			}
-
-			messageCount++
-			t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data), "batchSize", len(batch)+1)
-
-			batch = append(batch, msg)
-
-			if len(batch) >= batchSize {
-				t.logger.Info("Batch size reached, executing batch", "batchSize", len(batch))
-				if err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
-					return t.executeBatch(ctx, batch)
-				}); err != nil {
-					firstMsgID := ""
-					if len(batch) > 0 {
-						firstMsgID = types.MessageID(batch[0])
-					}
-					t.logger.Error(err, "Failed to execute batch", logkeys.MessageID, firstMsgID, "batchSize", len(batch))
+				t.logger.Info("Flush interval reached, executing batch", "batchSize", len(batch))
+				if err := doFlush(); err != nil {
+					t.logger.Error(err, "Failed to execute batch on timer", "batchSize", len(batch))
 					return err
 				}
-				for _, m := range batch {
-					if m.Ack != nil {
-						m.Ack()
+			case msg, ok := <-messages:
+				if !ok {
+					stopTimer()
+					t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
+					if len(batch) > 0 {
+						if err := doFlush(); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+
+				messageCount++
+				t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data), "batchSize", len(batch)+1)
+
+				batch = append(batch, msg)
+
+				if len(batch) >= maxBatchSize {
+					t.logger.Info("Batch size reached, executing batch", "batchSize", len(batch))
+					if err := doFlush(); err != nil {
+						firstMsgID := ""
+						if len(batch) > 0 {
+							firstMsgID = types.MessageID(batch[0])
+						}
+						t.logger.Error(err, "Failed to execute batch", logkeys.MessageID, firstMsgID, "batchSize", len(batch))
+						return err
 					}
 				}
-				batch = make([]*types.Message, 0, batchSize)
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				stopTimer()
+				t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
+				if len(batch) > 0 {
+					if err := doFlush(); err != nil {
+						return err
+					}
+				}
+				return ctx.Err()
+			case msg, ok := <-messages:
+				if !ok {
+					stopTimer()
+					t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
+					if len(batch) > 0 {
+						if err := doFlush(); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+
+				messageCount++
+				t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data), "batchSize", len(batch)+1)
+
+				batch = append(batch, msg)
+
+				if len(batch) >= maxBatchSize {
+					t.logger.Info("Batch size reached, executing batch", "batchSize", len(batch))
+					if err := doFlush(); err != nil {
+						firstMsgID := ""
+						if len(batch) > 0 {
+							firstMsgID = types.MessageID(batch[0])
+						}
+						t.logger.Error(err, "Failed to execute batch", logkeys.MessageID, firstMsgID, "batchSize", len(batch))
+						return err
+					}
+				}
 			}
 		}
 	}

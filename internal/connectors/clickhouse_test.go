@@ -81,3 +81,39 @@ func TestClickHouseSourceConnector_Connect_WhenClosed(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
 }
+
+func TestNewClickHouseSinkConnector_WithBatchFlushInterval(t *testing.T) {
+	// Default: both batch size and timer
+	spec := &v1.ClickHouseSinkSpec{
+		ConnectionString: "clickhouse://localhost:9000",
+		Table:            "out",
+	}
+	conn := NewClickHouseSinkConnector(spec)
+	require.NotNil(t, conn)
+	assert.Equal(t, spec, conn.config)
+
+	// Timer only (batchSize 0)
+	spec0 := &v1.ClickHouseSinkSpec{
+		ConnectionString:          "clickhouse://localhost:9000",
+		Table:                     "out",
+		BatchSize:                 ptr(int32(0)),
+		BatchFlushIntervalSeconds: ptr(int32(5)),
+	}
+	conn0 := NewClickHouseSinkConnector(spec0)
+	require.NotNil(t, conn0)
+	assert.Equal(t, int32(0), *conn0.config.BatchSize)
+	assert.Equal(t, int32(5), *conn0.config.BatchFlushIntervalSeconds)
+
+	// Size only (timer 0)
+	specSize := &v1.ClickHouseSinkSpec{
+		ConnectionString:          "clickhouse://localhost:9000",
+		Table:                     "out",
+		BatchSize:                 ptr(int32(100)),
+		BatchFlushIntervalSeconds: ptr(int32(0)),
+	}
+	connSize := NewClickHouseSinkConnector(specSize)
+	require.NotNil(t, connSize)
+	assert.Equal(t, int32(0), *connSize.config.BatchFlushIntervalSeconds)
+}
+
+func ptr(i int32) *int32 { return &i }

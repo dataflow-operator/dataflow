@@ -311,8 +311,28 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 	if c.config.BatchSize != nil && *c.config.BatchSize > 0 {
 		batchSize = int64(*c.config.BatchSize)
 	}
+	maxBatchSize := int(batchSize)
+	if batchSize == 0 {
+		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
+	}
+
+	flushIntervalSec := 10
+	if c.config.BatchFlushIntervalSeconds != nil {
+		flushIntervalSec = int(*c.config.BatchFlushIntervalSeconds)
+	}
+	useTimer := flushIntervalSec > 0
+	flushInterval := time.Duration(flushIntervalSec) * time.Second
 
 	var batch []*types.Message
+	var flushTimer *time.Timer
+
+	stopTimer := func() {
+		if flushTimer != nil {
+			flushTimer.Stop()
+			flushTimer = nil
+		}
+	}
+
 	flush := func(msgs []*types.Message) error {
 		if len(msgs) == 0 {
 			return nil
@@ -322,7 +342,11 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 			return err
 		}
 		defer arrowTbl.Release()
-		_, err = c.tbl.AppendTable(ctx, arrowTbl, batchSize, nil)
+		appendSize := batchSize
+		if appendSize == 0 {
+			appendSize = int64(len(msgs))
+		}
+		_, err = c.tbl.AppendTable(ctx, arrowTbl, appendSize, nil)
 		if err != nil {
 			return fmt.Errorf("append table: %w", err)
 		}
@@ -334,31 +358,85 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		return nil
 	}
 
+	doFlush := func(toFlush []*types.Message) error {
+		stopTimer()
+		return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error { return flush(toFlush) })
+	}
+
 	for {
-		select {
-		case <-ctx.Done():
-			if len(batch) > 0 {
-				if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error { return flush(batch) }); err != nil {
-					return err
-				}
-			}
-			return ctx.Err()
-		case msg, ok := <-messages:
-			if !ok {
+		if useTimer && len(batch) > 0 && flushTimer == nil {
+			flushTimer = time.NewTimer(flushInterval)
+		}
+
+		if useTimer && flushTimer != nil {
+			select {
+			case <-ctx.Done():
+				stopTimer()
 				if len(batch) > 0 {
-					if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error { return flush(batch) }); err != nil {
+					if err := doFlush(batch); err != nil {
 						return err
 					}
 				}
-				return nil
-			}
-			batch = append(batch, msg)
-			if len(batch) >= int(batchSize) {
+				return ctx.Err()
+			case <-flushTimer.C:
+				flushTimer = nil
+				if len(batch) == 0 {
+					continue
+				}
 				toFlush := batch
 				batch = nil
-				if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error { return flush(toFlush) }); err != nil {
-					c.logger.Error(err, "Failed to write batch", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
+				if err := doFlush(toFlush); err != nil {
+					c.logger.Error(err, "Failed to write batch on timer", "table", c.config.Table)
 					return err
+				}
+			case msg, ok := <-messages:
+				if !ok {
+					stopTimer()
+					if len(batch) > 0 {
+						if err := doFlush(batch); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+				batch = append(batch, msg)
+				if len(batch) >= maxBatchSize {
+					toFlush := batch
+					batch = nil
+					if err := doFlush(toFlush); err != nil {
+						c.logger.Error(err, "Failed to write batch", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
+						return err
+					}
+				}
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				stopTimer()
+				if len(batch) > 0 {
+					if err := doFlush(batch); err != nil {
+						return err
+					}
+				}
+				return ctx.Err()
+			case msg, ok := <-messages:
+				if !ok {
+					stopTimer()
+					if len(batch) > 0 {
+						if err := doFlush(batch); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+				batch = append(batch, msg)
+				if len(batch) >= maxBatchSize {
+					toFlush := batch
+					batch = nil
+					if err := doFlush(toFlush); err != nil {
+						c.logger.Error(err, "Failed to write batch", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
+						return err
+					}
 				}
 			}
 		}

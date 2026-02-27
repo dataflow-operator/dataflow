@@ -445,6 +445,10 @@ type NessieSinkSpec struct {
 	// +optional
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
+	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).
+	// +optional
+	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
+
 	// AutoCreateTable creates the table if it does not exist.
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
@@ -511,6 +515,10 @@ type PostgreSQLSinkSpec struct {
 	// +optional
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
+	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).
+	// +optional
+	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
+
 	// AutoCreateTable automatically creates the table if it doesn't exist
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
@@ -552,6 +560,10 @@ type TrinoSinkSpec struct {
 	// +optional
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
+	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).
+	// +optional
+	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
+
 	// AutoCreateTable automatically creates the table if it doesn't exist
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
@@ -589,7 +601,7 @@ type ClickHouseSinkSpec struct {
 	// +optional
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
-	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10)
+	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).
 	// +optional
 	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
 

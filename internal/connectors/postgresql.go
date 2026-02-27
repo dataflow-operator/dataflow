@@ -335,182 +335,295 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	batchSize := 1 // Write immediately for testing, can be increased for production
+	batchSize := 1
 	if p.config.BatchSize != nil {
 		batchSize = int(*p.config.BatchSize)
 	}
+	maxBatchSize := batchSize
+	if batchSize == 0 {
+		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
+	}
 
-	p.logger.Info("Starting to write messages to PostgreSQL", "table", p.config.Table, "batchSize", batchSize)
+	flushIntervalSec := 10
+	if p.config.BatchFlushIntervalSeconds != nil {
+		flushIntervalSec = int(*p.config.BatchFlushIntervalSeconds)
+	}
+	useTimer := flushIntervalSec > 0
+	flushInterval := time.Duration(flushIntervalSec) * time.Second
+
+	p.logger.Info("Starting to write messages to PostgreSQL", "table", p.config.Table, "batchSize", batchSize, "flushIntervalSeconds", flushIntervalSec)
 	batch := &pgx.Batch{}
-	batchMessages := make([]*types.Message, 0, batchSize)
+	batchMessages := make([]*types.Message, 0, maxBatchSize)
 	count := 0
 	messageCount := 0
+	var flushTimer *time.Timer
+
+	stopTimer := func() {
+		if flushTimer != nil {
+			flushTimer.Stop()
+			flushTimer = nil
+		}
+	}
+
+	doFlush := func() error {
+		stopTimer()
+		if count == 0 {
+			return nil
+		}
+		if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+			return p.executeBatch(ctx, batch)
+		}); err != nil {
+			return err
+		}
+		for _, m := range batchMessages {
+			if m.Ack != nil {
+				m.Ack()
+			}
+		}
+		batch = &pgx.Batch{}
+		batchMessages = make([]*types.Message, 0, maxBatchSize)
+		count = 0
+		return nil
+	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			if batch.Len() > 0 {
-				p.logger.Info("Context cancelled, flushing batch", "batchSize", batch.Len(), "table", p.config.Table)
-				err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
-					return p.executeBatch(ctx, batch)
-				})
-				if err != nil {
-					return err
-				}
-				for _, m := range batchMessages {
-					if m.Ack != nil {
-						m.Ack()
+		if useTimer && count > 0 && flushTimer == nil {
+			flushTimer = time.NewTimer(flushInterval)
+		}
+
+		if useTimer && flushTimer != nil {
+			select {
+			case <-ctx.Done():
+				stopTimer()
+				if batch.Len() > 0 {
+					p.logger.Info("Context cancelled, flushing batch", "batchSize", batch.Len(), "table", p.config.Table)
+					if err := doFlush(); err != nil {
+						return err
 					}
 				}
 				return ctx.Err()
-			}
-			return ctx.Err()
-		case msg, ok := <-messages:
-			if !ok {
-				if batch.Len() > 0 {
-					p.logger.Info("Message channel closed, flushing batch", "batchSize", batch.Len(), "totalMessages", messageCount, "table", p.config.Table)
-					err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
-						return p.executeBatch(ctx, batch)
-					})
-					if err != nil {
-						return err
-					}
-					for _, m := range batchMessages {
-						if m.Ack != nil {
-							m.Ack()
-						}
-					}
+			case <-flushTimer.C:
+				flushTimer = nil
+				if count == 0 {
+					continue
 				}
-				p.logger.Info("Message channel closed", "totalMessages", messageCount, "table", p.config.Table)
-				return nil
-			}
-
-			messageCount++
-			var data map[string]interface{}
-			if err := json.Unmarshal(msg.Data, &data); err != nil {
-				p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
-				continue
-			}
-
-			p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
-
-			// Use JSONB storage if auto-created table, otherwise use column-based
-			var query string
-			var values []interface{}
-
-			// Check if upsert mode is enabled
-			upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
-
-			// Check if table has JSONB column (auto-created tables)
-			var hasJSONB bool
-			checkJSONBQuery := `SELECT EXISTS (
-				SELECT FROM information_schema.columns
-				WHERE table_schema = 'public'
-				AND table_name = $1
-				AND column_name = 'data'
-				AND data_type = 'jsonb'
-			)`
-			err := p.conn.QueryRow(ctx, checkJSONBQuery, p.config.Table).Scan(&hasJSONB)
-			if err == nil && hasJSONB {
-				// Use JSONB storage
-				if upsertMode {
-					// UPSERT: update data field on conflict with PRIMARY KEY
-					query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", p.config.Table)
-				} else {
-					query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", p.config.Table)
-				}
-				jsonData, _ := json.Marshal(data)
-				values = []interface{}{string(jsonData)}
-			} else {
-				// Use column-based storage (original logic)
-				columns := make([]string, 0, len(data))
-				colValues := make([]interface{}, 0, len(data))
-				placeholders := make([]string, 0, len(data))
-
-				idx := 1
-				for col, val := range data {
-					columns = append(columns, col)
-					colValues = append(colValues, val)
-					placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
-					idx++
-				}
-
-				if len(columns) == 0 {
-					continue // Skip empty messages
-				}
-
-				// Build column list for INSERT
-				columnList := fmt.Sprintf(`"%s"`, columns[0])
-				for i := 1; i < len(columns); i++ {
-					columnList += fmt.Sprintf(`, "%s"`, columns[i])
-				}
-
-				// Build placeholder list for VALUES
-				placeholderList := "$1"
-				for i := 2; i <= len(placeholders); i++ {
-					placeholderList += fmt.Sprintf(", $%d", i)
-				}
-
-				if upsertMode {
-					// Determine conflict key
-					conflictKey := "id" // Default to PRIMARY KEY
-					if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
-						conflictKey = *p.config.ConflictKey
-					}
-
-					// Build UPDATE clause for all columns except the conflict key
-					updateClauses := make([]string, 0)
-					for _, col := range columns {
-						if col != conflictKey {
-							updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
-						}
-					}
-
-					if len(updateClauses) == 0 {
-						// If only conflict key is present, just do nothing on conflict
-						query = fmt.Sprintf(
-							"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
-							p.config.Table, columnList, placeholderList, conflictKey,
-						)
-					} else {
-						updateClause := updateClauses[0]
-						for i := 1; i < len(updateClauses); i++ {
-							updateClause += ", " + updateClauses[i]
-						}
-						query = fmt.Sprintf(
-							"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s",
-							p.config.Table, columnList, placeholderList, conflictKey, updateClause,
-						)
-					}
-				} else {
-					query = fmt.Sprintf(
-						"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING",
-						p.config.Table, columnList, placeholderList,
-					)
-				}
-				values = colValues
-			}
-
-			batch.Queue(query, values...)
-			batchMessages = append(batchMessages, msg)
-			count++
-
-			if count >= batchSize {
-				p.logger.V(1).Info("Batch size reached, executing batch", "batchSize", count, "table", p.config.Table)
-				if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
-					return p.executeBatch(ctx, batch)
-				}); err != nil {
-					p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
+				p.logger.V(1).Info("Flush interval reached, executing batch", "batchSize", count, "table", p.config.Table)
+				if err := doFlush(); err != nil {
 					return err
 				}
-				for _, m := range batchMessages {
-					if m.Ack != nil {
-						m.Ack()
+			case msg, ok := <-messages:
+				if !ok {
+					stopTimer()
+					if batch.Len() > 0 {
+						p.logger.Info("Message channel closed, flushing batch", "batchSize", batch.Len(), "totalMessages", messageCount, "table", p.config.Table)
+						if err := doFlush(); err != nil {
+							return err
+						}
+					}
+					p.logger.Info("Message channel closed", "totalMessages", messageCount, "table", p.config.Table)
+					return nil
+				}
+				messageCount++
+				var data map[string]interface{}
+				if err := json.Unmarshal(msg.Data, &data); err != nil {
+					p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
+					continue
+				}
+
+				p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
+
+				var query string
+				var values []interface{}
+				upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
+				var hasJSONB bool
+				checkJSONBQuery := `SELECT EXISTS (
+					SELECT FROM information_schema.columns
+					WHERE table_schema = 'public'
+					AND table_name = $1
+					AND column_name = 'data'
+					AND data_type = 'jsonb'
+				)`
+				err := p.conn.QueryRow(ctx, checkJSONBQuery, p.config.Table).Scan(&hasJSONB)
+				if err == nil && hasJSONB {
+					if upsertMode {
+						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", p.config.Table)
+					} else {
+						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", p.config.Table)
+					}
+					jsonData, _ := json.Marshal(data)
+					values = []interface{}{string(jsonData)}
+				} else {
+					columns := make([]string, 0, len(data))
+					colValues := make([]interface{}, 0, len(data))
+					placeholders := make([]string, 0, len(data))
+					idx := 1
+					for col, val := range data {
+						columns = append(columns, col)
+						colValues = append(colValues, val)
+						placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
+						idx++
+					}
+					if len(columns) == 0 {
+						continue
+					}
+					columnList := fmt.Sprintf(`"%s"`, columns[0])
+					for i := 1; i < len(columns); i++ {
+						columnList += fmt.Sprintf(`, "%s"`, columns[i])
+					}
+					placeholderList := "$1"
+					for i := 2; i <= len(placeholders); i++ {
+						placeholderList += fmt.Sprintf(", $%d", i)
+					}
+					if upsertMode {
+						conflictKey := "id"
+						if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
+							conflictKey = *p.config.ConflictKey
+						}
+						updateClauses := make([]string, 0)
+						for _, col := range columns {
+							if col != conflictKey {
+								updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
+							}
+						}
+						if len(updateClauses) == 0 {
+							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", p.config.Table, columnList, placeholderList, conflictKey)
+						} else {
+							updateClause := updateClauses[0]
+							for i := 1; i < len(updateClauses); i++ {
+								updateClause += ", " + updateClauses[i]
+							}
+							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", p.config.Table, columnList, placeholderList, conflictKey, updateClause)
+						}
+					} else {
+						query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", p.config.Table, columnList, placeholderList)
+					}
+					values = colValues
+				}
+
+				batch.Queue(query, values...)
+				batchMessages = append(batchMessages, msg)
+				count++
+
+				if count >= maxBatchSize {
+					p.logger.V(1).Info("Batch size reached, executing batch", "batchSize", count, "table", p.config.Table)
+					if err := doFlush(); err != nil {
+						p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
+						return err
 					}
 				}
-				batch = &pgx.Batch{}
-				batchMessages = make([]*types.Message, 0, batchSize)
-				count = 0
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				stopTimer()
+				if batch.Len() > 0 {
+					p.logger.Info("Context cancelled, flushing batch", "batchSize", batch.Len(), "table", p.config.Table)
+					if err := doFlush(); err != nil {
+						return err
+					}
+				}
+				return ctx.Err()
+			case msg, ok := <-messages:
+				if !ok {
+					stopTimer()
+					if batch.Len() > 0 {
+						p.logger.Info("Message channel closed, flushing batch", "batchSize", batch.Len(), "totalMessages", messageCount, "table", p.config.Table)
+						if err := doFlush(); err != nil {
+							return err
+						}
+					}
+					p.logger.Info("Message channel closed", "totalMessages", messageCount, "table", p.config.Table)
+					return nil
+				}
+
+				messageCount++
+				var data map[string]interface{}
+				if err := json.Unmarshal(msg.Data, &data); err != nil {
+					p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
+					continue
+				}
+
+				p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
+
+				var query string
+				var values []interface{}
+				upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
+				var hasJSONB bool
+				checkJSONBQuery := `SELECT EXISTS (
+					SELECT FROM information_schema.columns
+					WHERE table_schema = 'public'
+					AND table_name = $1
+					AND column_name = 'data'
+					AND data_type = 'jsonb'
+				)`
+				err := p.conn.QueryRow(ctx, checkJSONBQuery, p.config.Table).Scan(&hasJSONB)
+				if err == nil && hasJSONB {
+					if upsertMode {
+						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", p.config.Table)
+					} else {
+						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", p.config.Table)
+					}
+					jsonData, _ := json.Marshal(data)
+					values = []interface{}{string(jsonData)}
+				} else {
+					columns := make([]string, 0, len(data))
+					colValues := make([]interface{}, 0, len(data))
+					placeholders := make([]string, 0, len(data))
+					idx := 1
+					for col, val := range data {
+						columns = append(columns, col)
+						colValues = append(colValues, val)
+						placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
+						idx++
+					}
+					if len(columns) == 0 {
+						continue
+					}
+					columnList := fmt.Sprintf(`"%s"`, columns[0])
+					for i := 1; i < len(columns); i++ {
+						columnList += fmt.Sprintf(`, "%s"`, columns[i])
+					}
+					placeholderList := "$1"
+					for i := 2; i <= len(placeholders); i++ {
+						placeholderList += fmt.Sprintf(", $%d", i)
+					}
+					if upsertMode {
+						conflictKey := "id"
+						if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
+							conflictKey = *p.config.ConflictKey
+						}
+						updateClauses := make([]string, 0)
+						for _, col := range columns {
+							if col != conflictKey {
+								updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
+							}
+						}
+						if len(updateClauses) == 0 {
+							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", p.config.Table, columnList, placeholderList, conflictKey)
+						} else {
+							updateClause := updateClauses[0]
+							for i := 1; i < len(updateClauses); i++ {
+								updateClause += ", " + updateClauses[i]
+							}
+							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", p.config.Table, columnList, placeholderList, conflictKey, updateClause)
+						}
+					} else {
+						query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", p.config.Table, columnList, placeholderList)
+					}
+					values = colValues
+				}
+
+				batch.Queue(query, values...)
+				batchMessages = append(batchMessages, msg)
+				count++
+
+				if count >= maxBatchSize {
+					p.logger.V(1).Info("Batch size reached, executing batch", "batchSize", count, "table", p.config.Table)
+					if err := doFlush(); err != nil {
+						p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
+						return err
+					}
+				}
 			}
 		}
 	}

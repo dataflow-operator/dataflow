@@ -574,6 +574,7 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer(t *testing.T)
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlow{}).
 		WithObjects(dataflow, deployment, configMap).
 		Build()
 	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)

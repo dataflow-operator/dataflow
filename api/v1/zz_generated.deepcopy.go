@@ -479,6 +479,11 @@ func (in *NessieSinkSpec) DeepCopyInto(out *NessieSinkSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.BatchFlushIntervalSeconds != nil {
+		in, out := &in.BatchFlushIntervalSeconds, &out.BatchFlushIntervalSeconds
+		*out = new(int32)
+		**out = **in
+	}
 	if in.AutoCreateTable != nil {
 		in, out := &in.AutoCreateTable, &out.AutoCreateTable
 		*out = new(bool)
@@ -576,6 +581,11 @@ func (in *PostgreSQLSinkSpec) DeepCopyInto(out *PostgreSQLSinkSpec) {
 	*out = *in
 	if in.BatchSize != nil {
 		in, out := &in.BatchSize, &out.BatchSize
+		*out = new(int32)
+		**out = **in
+	}
+	if in.BatchFlushIntervalSeconds != nil {
+		in, out := &in.BatchFlushIntervalSeconds, &out.BatchFlushIntervalSeconds
 		*out = new(int32)
 		**out = **in
 	}
@@ -1004,6 +1014,11 @@ func (in *TrinoSinkSpec) DeepCopyInto(out *TrinoSinkSpec) {
 	*out = *in
 	if in.BatchSize != nil {
 		in, out := &in.BatchSize, &out.BatchSize
+		*out = new(int32)
+		**out = **in
+	}
+	if in.BatchFlushIntervalSeconds != nil {
+		in, out := &in.BatchFlushIntervalSeconds, &out.BatchFlushIntervalSeconds
 		*out = new(int32)
 		**out = **in
 	}

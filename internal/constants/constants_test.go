@@ -29,3 +29,12 @@ func TestDefaultSingleValueChannelBufferSize(t *testing.T) {
 		t.Errorf("DefaultSingleValueChannelBufferSize must be 1, got %d", DefaultSingleValueChannelBufferSize)
 	}
 }
+
+func TestMaxBatchSizeWhenTimerOnly(t *testing.T) {
+	if MaxBatchSizeWhenTimerOnly <= 0 {
+		t.Errorf("MaxBatchSizeWhenTimerOnly must be positive, got %d", MaxBatchSizeWhenTimerOnly)
+	}
+	if MaxBatchSizeWhenTimerOnly != 10000 {
+		t.Errorf("MaxBatchSizeWhenTimerOnly should be 10000 for OOM protection, got %d", MaxBatchSizeWhenTimerOnly)
+	}
+}

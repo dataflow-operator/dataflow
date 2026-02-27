@@ -965,7 +965,7 @@ spec:
                       batchFlushIntervalSeconds:
                         description: 'BatchFlushIntervalSeconds flushes the batch
                           after this many seconds even if BatchSize is not reached
-                          (default: 10)'
+                          (default: 10; 0 disables timer).'
                         format: int32
                         type: integer
                       batchSize:
@@ -1270,6 +1270,12 @@ spec:
                             - name
                             type: object
                         type: object
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10; 0 disables timer).'
+                        format: int32
+                        type: integer
                       batchSize:
                         description: BatchSize for batch appends.
                         format: int32
@@ -1358,6 +1364,12 @@ spec:
                         description: AutoCreateTable automatically creates the table
                           if it doesn't exist
                         type: boolean
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10; 0 disables timer).'
+                        format: int32
+                        type: integer
                       batchSize:
                         description: BatchSize for batch inserts
                         format: int32
@@ -1425,6 +1437,12 @@ spec:
                         description: AutoCreateTable automatically creates the table
                           if it doesn't exist
                         type: boolean
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10; 0 disables timer).'
+                        format: int32
+                        type: integer
                       batchSize:
                         description: BatchSize for batch inserts
                         format: int32
@@ -1766,7 +1784,7 @@ spec:
                       batchFlushIntervalSeconds:
                         description: 'BatchFlushIntervalSeconds flushes the batch
                           after this many seconds even if BatchSize is not reached
-                          (default: 10)'
+                          (default: 10; 0 disables timer).'
                         format: int32
                         type: integer
                       batchSize:
@@ -2071,6 +2089,12 @@ spec:
                             - name
                             type: object
                         type: object
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10; 0 disables timer).'
+                        format: int32
+                        type: integer
                       batchSize:
                         description: BatchSize for batch appends.
                         format: int32
@@ -2159,6 +2183,12 @@ spec:
                         description: AutoCreateTable automatically creates the table
                           if it doesn't exist
                         type: boolean
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10; 0 disables timer).'
+                        format: int32
+                        type: integer
                       batchSize:
                         description: BatchSize for batch inserts
                         format: int32
@@ -2226,6 +2256,12 @@ spec:
                         description: AutoCreateTable automatically creates the table
                           if it doesn't exist
                         type: boolean
+                      batchFlushIntervalSeconds:
+                        description: 'BatchFlushIntervalSeconds flushes the batch
+                          after this many seconds even if BatchSize is not reached
+                          (default: 10; 0 disables timer).'
+                        format: int32
+                        type: integer
                       batchSize:
                         description: BatchSize for batch inserts
                         format: int32
@@ -3566,7 +3602,8 @@ spec:
                                       batchFlushIntervalSeconds:
                                         description: 'BatchFlushIntervalSeconds flushes
                                           the batch after this many seconds even if
-                                          BatchSize is not reached (default: 10)'
+                                          BatchSize is not reached (default: 10; 0
+                                          disables timer).'
                                         format: int32
                                         type: integer
                                       batchSize:
@@ -3897,6 +3934,13 @@ spec:
                                             - name
                                             type: object
                                         type: object
+                                      batchFlushIntervalSeconds:
+                                        description: 'BatchFlushIntervalSeconds flushes
+                                          the batch after this many seconds even if
+                                          BatchSize is not reached (default: 10; 0
+                                          disables timer).'
+                                        format: int32
+                                        type: integer
                                       batchSize:
                                         description: BatchSize for batch appends.
                                         format: int32
@@ -3989,6 +4033,13 @@ spec:
                                         description: AutoCreateTable automatically
                                           creates the table if it doesn't exist
                                         type: boolean
+                                      batchFlushIntervalSeconds:
+                                        description: 'BatchFlushIntervalSeconds flushes
+                                          the batch after this many seconds even if
+                                          BatchSize is not reached (default: 10; 0
+                                          disables timer).'
+                                        format: int32
+                                        type: integer
                                       batchSize:
                                         description: BatchSize for batch inserts
                                         format: int32
@@ -4059,6 +4110,13 @@ spec:
                                         description: AutoCreateTable automatically
                                           creates the table if it doesn't exist
                                         type: boolean
+                                      batchFlushIntervalSeconds:
+                                        description: 'BatchFlushIntervalSeconds flushes
+                                          the batch after this many seconds even if
+                                          BatchSize is not reached (default: 10; 0
+                                          disables timer).'
+                                        format: int32
+                                        type: integer
                                       batchSize:
                                         description: BatchSize for batch inserts
                                         format: int32

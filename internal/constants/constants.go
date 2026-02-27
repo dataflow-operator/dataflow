@@ -21,3 +21,6 @@ const DefaultChannelBufferSize = 100
 
 // DefaultSingleValueChannelBufferSize is the buffer size for single-value channels (errors, signals, sync).
 const DefaultSingleValueChannelBufferSize = 1
+
+// MaxBatchSizeWhenTimerOnly is the maximum batch size when flush is only by timer (batchSize=0), to avoid unbounded memory growth.
+const MaxBatchSizeWhenTimerOnly = 10000
