@@ -20,9 +20,11 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"time"
 
 	crand "crypto/rand"
@@ -36,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +52,11 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/version"
 )
+
+// DataFlowFinalizer is the finalizer name for DataFlow. While present, the object
+// is not removed from etcd; the controller runs cleanup (Deployment, ConfigMap) and
+// then removes this finalizer so deletion can complete.
+const DataFlowFinalizer = "dataflow.dataflow.io/finalizer"
 
 // DataFlowReconciler reconciles a DataFlow object
 type DataFlowReconciler struct {
@@ -133,12 +141,61 @@ func (r *DataFlowReconciler) updateStatusWithRetry(ctx context.Context, req ctrl
 	return fmt.Errorf("failed to update status after %d attempts", maxRetries)
 }
 
+// ensureDataFlowFinalizer adds DataFlowFinalizer to the DataFlow if not present.
+// Call before creating the first child resource (ConfigMap or Deployment).
+func (r *DataFlowReconciler) ensureDataFlowFinalizer(ctx context.Context, req ctrl.Request) error {
+	var df dataflowv1.DataFlow
+	if err := r.Get(ctx, req.NamespacedName, &df); err != nil {
+		return err
+	}
+	for _, f := range df.Finalizers {
+		if f == DataFlowFinalizer {
+			return nil
+		}
+	}
+	df.Finalizers = append(df.Finalizers, DataFlowFinalizer)
+	return r.Update(ctx, &df)
+}
+
+// removeDataFlowFinalizer removes DataFlowFinalizer from the DataFlow so the object can be deleted.
+func (r *DataFlowReconciler) removeDataFlowFinalizer(ctx context.Context, req ctrl.Request) error {
+	var df dataflowv1.DataFlow
+	if err := r.Get(ctx, req.NamespacedName, &df); err != nil {
+		return err
+	}
+	var newFinalizers []string
+	for _, f := range df.Finalizers {
+		if f != DataFlowFinalizer {
+			newFinalizers = append(newFinalizers, f)
+		}
+	}
+	if len(newFinalizers) == len(df.Finalizers) {
+		return nil
+	}
+	df.Finalizers = newFinalizers
+	return r.Update(ctx, &df)
+}
+
 // processorLogLevel returns LOG_LEVEL for processor pods (from env PROCESSOR_LOG_LEVEL or default "info").
 func processorLogLevel() string {
 	if v := os.Getenv("PROCESSOR_LOG_LEVEL"); v != "" {
 		return v
 	}
 	return "info"
+}
+
+// reconcileTimeout returns the timeout for a single Reconcile run from env RECONCILE_TIMEOUT_SECONDS (default 180s).
+func reconcileTimeout() time.Duration {
+	const defaultSeconds = 180
+	s := os.Getenv("RECONCILE_TIMEOUT_SECONDS")
+	if s == "" {
+		return defaultSeconds * time.Second
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec <= 0 {
+		return defaultSeconds * time.Second
+	}
+	return time.Duration(sec) * time.Second
 }
 
 // genReconcileID returns a short hex string for correlating logs within one reconcile.
@@ -170,6 +227,10 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	ctx = log.IntoContext(ctx, reconcileLogger)
 	log := log.FromContext(ctx)
 
+	timeout := reconcileTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	var dataflow dataflowv1.DataFlow
 	if err := r.Get(ctx, req.NamespacedName, &dataflow); err != nil {
 		log.Error(err, "unable to fetch DataFlow")
@@ -186,8 +247,19 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	log.Info("Reconciling DataFlow")
 
-	// Check if DataFlow is being deleted
+	// Check if DataFlow is being deleted: run cleanup only when our finalizer is present
 	if !dataflow.DeletionTimestamp.IsZero() {
+		hasOurFinalizer := false
+		for _, f := range dataflow.Finalizers {
+			if f == DataFlowFinalizer {
+				hasOurFinalizer = true
+				break
+			}
+		}
+		if !hasOurFinalizer {
+			return ctrl.Result{}, nil
+		}
+
 		// Delete Deployment and ConfigMap when DataFlow is deleted
 		if err := r.cleanupResources(ctx, req); err != nil {
 			log.Error(err, "failed to cleanup resources")
@@ -206,6 +278,11 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			log.Error(err, "unable to update DataFlow status")
 		}
 		metrics.SetDataFlowStatus(req.Namespace, req.Name, "Stopped")
+
+		if err := r.removeDataFlowFinalizer(ctx, req); err != nil {
+			log.Error(err, "unable to remove DataFlow finalizer")
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -306,8 +383,8 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "StatusUpdateFailed", "Unable to update DataFlow status: %v", err)
 		}
-		// Don't return error if context was canceled, just log it
-		if err == context.Canceled || err == context.DeadlineExceeded {
+		// Don't return error if context was canceled or timed out, just requeue
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return ctrl.Result{Requeue: true}, nil
 		}
 		// Object may have been deleted between reconcile start and status update — don't return error
@@ -360,6 +437,10 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 	existing := &corev1.ConfigMap{}
 	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: req.Namespace}, existing)
 	if err != nil && apierrors.IsNotFound(err) {
+		// Ensure finalizer before creating first child so deletion is coordinated
+		if err := r.ensureDataFlowFinalizer(ctx, req); err != nil {
+			return fmt.Errorf("failed to ensure DataFlow finalizer: %w", err)
+		}
 		// Create new ConfigMap
 		if err := r.Create(ctx, configMap); err != nil {
 			return fmt.Errorf("failed to create ConfigMap: %w", err)
@@ -413,6 +494,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: ptr.To(int64(30)),
 					Containers: []corev1.Container{
 						{
 							Name:  "processor",
@@ -425,6 +507,13 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 							},
 							Env: []corev1.EnvVar{
 								{Name: "LOG_LEVEL", Value: processorLogLevel()},
+							},
+							Lifecycle: &corev1.Lifecycle{
+								PreStop: &corev1.LifecycleHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{"/bin/sh", "-c", "sleep 5"},
+									},
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -465,6 +554,10 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 	existing := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, existing)
 	if err != nil && apierrors.IsNotFound(err) {
+		// Ensure finalizer before creating first child so deletion is coordinated
+		if err := r.ensureDataFlowFinalizer(ctx, req); err != nil {
+			return fmt.Errorf("failed to ensure DataFlow finalizer: %w", err)
+		}
 		// Create new Deployment
 		if err := r.Create(ctx, deployment); err != nil {
 			return fmt.Errorf("failed to create Deployment: %w", err)

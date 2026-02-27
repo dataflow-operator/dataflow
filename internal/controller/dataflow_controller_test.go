@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -344,6 +345,30 @@ func TestGenReconcileID(t *testing.T) {
 	}
 }
 
+func TestReconcileTimeout(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		// Unset in case it was set by another test or env
+		t.Setenv("RECONCILE_TIMEOUT_SECONDS", "")
+		d := reconcileTimeout()
+		assert.Equal(t, 180*time.Second, d)
+	})
+	t.Run("valid", func(t *testing.T) {
+		t.Setenv("RECONCILE_TIMEOUT_SECONDS", "120")
+		d := reconcileTimeout()
+		assert.Equal(t, 120*time.Second, d)
+	})
+	t.Run("invalid_fallback_to_default", func(t *testing.T) {
+		t.Setenv("RECONCILE_TIMEOUT_SECONDS", "invalid")
+		d := reconcileTimeout()
+		assert.Equal(t, 180*time.Second, d)
+	})
+	t.Run("zero_fallback_to_default", func(t *testing.T) {
+		t.Setenv("RECONCILE_TIMEOUT_SECONDS", "0")
+		d := reconcileTimeout()
+		assert.Equal(t, 180*time.Second, d)
+	})
+}
+
 func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
@@ -398,10 +423,11 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	result, err := reconciler.Reconcile(ctx, req)
 	// We don't require no error because connection to Kafka will fail in background
 
-	// Verify that the DataFlow still exists
+	// Verify that the DataFlow still exists and has finalizer (added when first child is created)
 	var updatedDataflow dataflowv1.DataFlow
 	getErr := fakeClient.Get(ctx, req.NamespacedName, &updatedDataflow)
 	require.NoError(t, getErr, "DataFlow should exist after reconcile")
+	assert.Contains(t, updatedDataflow.Finalizers, DataFlowFinalizer, "DataFlow should have finalizer after creating Deployment/ConfigMap")
 
 	// Verify Deployment was created
 	var deployment appsv1.Deployment
@@ -487,18 +513,170 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow(t *testing.T) {
 		},
 	}
 
-	// Note: fake client has limitations with DeletionTimestamp - it may not find the object
-	// In real Kubernetes, objects with DeletionTimestamp still exist until finalizers are removed
-	// This test verifies that reconcile handles deletion gracefully without panicking
+	// DataFlow has no finalizer: deletion branch returns early, no cleanup attempted
 	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
 
-	// Reconcile should handle NotFound errors gracefully (returns no error via IgnoreNotFound)
-	// The main test is that reconcile doesn't panic
+// TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer verifies that when DataFlow
+// has DeletionTimestamp and our finalizer, Reconcile runs cleanup and removes the finalizer.
+func TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
+	require.NoError(t, err)
+
+	now := metav1.Now()
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-dataflow",
+			Namespace:         "default",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{DataFlowFinalizer},
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "output-topic",
+				},
+			},
+		},
+	}
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dataflow-test-dataflow",
+			Namespace: "default",
+		},
+	}
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dataflow-test-dataflow-spec",
+			Namespace: "default",
+		},
+		Data: map[string]string{"spec.json": "{}"},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(dataflow, deployment, configMap).
+		Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
-	// Note: Due to fake client limitation, if object is not found, deletion logic doesn't run
-	// In real scenario, object would exist and processor would be removed
-	// We just verify that reconcile completes without error/panic
+	// Deployment and ConfigMap should be deleted
+	var dep appsv1.Deployment
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &dep)
+	assert.True(t, apierrors.IsNotFound(err), "Deployment should be deleted")
+
+	var cm corev1.ConfigMap
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow-spec", Namespace: "default"}, &cm)
+	assert.True(t, apierrors.IsNotFound(err), "ConfigMap should be deleted")
+
+	// DataFlow: either deleted (real API server removes object once finalizer is gone) or still present without our finalizer
+	var df dataflowv1.DataFlow
+	err = fakeClient.Get(ctx, req.NamespacedName, &df)
+	if apierrors.IsNotFound(err) {
+		// Expected with envtest/real API: object is deleted after finalizer removal
+		return
+	}
+	require.NoError(t, err)
+	assert.NotContains(t, df.Finalizers, DataFlowFinalizer, "finalizer should be removed")
+	assert.Equal(t, "Stopped", df.Status.Phase)
+}
+
+func TestEnsureDataFlowFinalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
+	require.NoError(t, err)
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "df1", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{}},
+			Sink:   dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dataflow).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "df1", Namespace: "default"}}
+
+	err = reconciler.ensureDataFlowFinalizer(ctx, req)
+	require.NoError(t, err)
+
+	var df dataflowv1.DataFlow
+	err = fakeClient.Get(ctx, req.NamespacedName, &df)
+	require.NoError(t, err)
+	assert.Contains(t, df.Finalizers, DataFlowFinalizer)
+
+	// Idempotent: second call does not duplicate
+	err = reconciler.ensureDataFlowFinalizer(ctx, req)
+	require.NoError(t, err)
+	err = fakeClient.Get(ctx, req.NamespacedName, &df)
+	require.NoError(t, err)
+	assert.Equal(t, []string{DataFlowFinalizer}, df.Finalizers)
+}
+
+func TestRemoveDataFlowFinalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	err := dataflowv1.AddToScheme(scheme)
+	require.NoError(t, err)
+	err = clientgoscheme.AddToScheme(scheme)
+	require.NoError(t, err)
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "df1",
+			Namespace:  "default",
+			Finalizers: []string{"other.io/finalizer", DataFlowFinalizer},
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{}},
+			Sink:   dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dataflow).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "df1", Namespace: "default"}}
+
+	err = reconciler.removeDataFlowFinalizer(ctx, req)
+	require.NoError(t, err)
+
+	var df dataflowv1.DataFlow
+	err = fakeClient.Get(ctx, req.NamespacedName, &df)
+	require.NoError(t, err)
+	assert.NotContains(t, df.Finalizers, DataFlowFinalizer)
+	assert.Equal(t, []string{"other.io/finalizer"}, df.Finalizers)
 }
 
 func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T) {
@@ -629,6 +807,14 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 	assert.Len(t, deployment.Spec.Template.Spec.Tolerations, 1)
 	assert.Equal(t, "dedicated", deployment.Spec.Template.Spec.Tolerations[0].Key)
 	assert.Equal(t, "dataflow", deployment.Spec.Template.Spec.Tolerations[0].Value)
+
+	// Verify graceful shutdown: terminationGracePeriodSeconds and preStop
+	assert.NotNil(t, deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	assert.Equal(t, int64(30), *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	require.NotNil(t, container.Lifecycle)
+	require.NotNil(t, container.Lifecycle.PreStop)
+	require.NotNil(t, container.Lifecycle.PreStop.Exec)
+	assert.Equal(t, []string{"/bin/sh", "-c", "sleep 5"}, container.Lifecycle.PreStop.Exec.Command)
 
 	assert.Equal(t, ctrl.Result{}, result)
 }
