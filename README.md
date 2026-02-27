@@ -75,7 +75,7 @@ kubectl get pods -l app.kubernetes.io/name=dataflow-operator
 
 **Note**: For local development, you can also use the local chart:
 ```bash
-helm install dataflow-operator ./helm/dataflow-operator
+helm install dataflow-operator ./helm-charts/dataflow-operator
 ```
 
 #### Updating
@@ -142,7 +142,6 @@ dataflow/
 │   ├── transformers/    # Message transformations
 │   ├── processor/       # Message processor
 │   └── controller/      # Kubernetes controller
-├── helm/dataflow-operator/  # Helm Chart for installation
 ├── config/samples/      # CRD examples
 ├── docs/                # MkDocs documentation
 ├── test/                # Tests and utilities
@@ -191,35 +190,6 @@ make test
 ./scripts/setup-kind.sh
 make test-integration
 ```
-
-## Web GUI
-
-DataFlow включает веб-интерфейс для управления манифестами, просмотра логов и мониторинга метрик.
-
-### Запуск GUI сервера
-
-```bash
-go run cmd/gui-server/main.go --bind-address :8080
-```
-
-Или с параметрами:
-
-```bash
-go run cmd/gui-server/main.go \
-  --bind-address :8080 \
-  --kubeconfig ~/.kube/config \
-  --log-level info
-```
-
-### Использование
-
-1. Откройте браузер и перейдите на `http://localhost:8080`
-2. Используйте вкладки для:
-   - **Манифесты**: Управление DataFlow ресурсами (создание, просмотр, обновление, удаление)
-   - **Логи**: Просмотр логов обработки в реальном времени
-   - **Метрики**: Мониторинг статуса обработки, количества обработанных сообщений и ошибок
-
-Подробнее см. [cmd/gui-server/README.md](cmd/gui-server/README.md)
 
 ## Security
 

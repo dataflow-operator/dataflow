@@ -75,14 +75,14 @@ tasks:
       - task: test-unit
 
   test-integration:
-    desc: Run integration tests with statistics
+    desc: Run integration tests with statistics (Docker required for Kafka/ClickHouse)
     cmds:
-      - GOTOOLCHAIN=go1.25.0 ./scripts/run-tests-with-stats.sh ./test/integration/...
+      - GOTOOLCHAIN=go1.25.0 GO_TEST_TAGS=integration ./scripts/run-tests-with-stats.sh ./test/integration/...
 
   test-integration-simple:
-    desc: Run integration tests (simple output)
+    desc: Run integration tests (simple output, Docker required for Kafka/ClickHouse)
     cmds:
-      - GOTOOLCHAIN=go1.25.0 go test ./test/integration/... -v
+      - GOTOOLCHAIN=go1.25.0 go test -tags=integration ./test/integration/... -v
 
   # Build tasks
   build:

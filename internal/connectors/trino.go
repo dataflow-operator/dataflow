@@ -1437,8 +1437,8 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 				// Value exists in message - format according to column type
 				values[j] = t.formatValueForType(val, col.Type)
 			} else {
-				// Value doesn't exist, use NULL
-				values[j] = "NULL"
+				// Value doesn't exist, use typed NULL so Trino can infer column type
+				values[j] = t.nullLiteralForTrinoType(col.Type)
 			}
 		}
 		valueRows = append(valueRows, fmt.Sprintf("(%s)", strings.Join(values, ", ")))
@@ -1462,6 +1462,11 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 
 	t.logger.Info("Batch inserted successfully", "count", len(batch))
 	return nil
+}
+
+// nullLiteralForTrinoType returns a typed NULL literal for INSERT so Trino can infer the column type (e.g. CAST(NULL AS bigint)).
+func (t *TrinoSinkConnector) nullLiteralForTrinoType(columnType string) string {
+	return "CAST(NULL AS " + strings.TrimSpace(columnType) + ")"
 }
 
 // formatValueForType formats a value for SQL insertion according to column type
@@ -1625,6 +1630,10 @@ func (t *TrinoSinkConnector) formatValueForType(val interface{}, columnType stri
 			return fmt.Sprintf("DATE '%s'", escaped)
 		}
 
+	case "row", "array":
+		// ROW and ARRAY: serialize value to JSON and use CAST(JSON '...' AS columnType)
+		return t.formatComplexTypeAsCastJSON(val, columnType)
+
 	case "varchar", "char", "text", "string":
 		// String types
 		switch v := val.(type) {
@@ -1663,6 +1672,17 @@ func (t *TrinoSinkConnector) formatValueForType(val interface{}, columnType stri
 			return fmt.Sprintf("'%s'", escaped)
 		}
 	}
+}
+
+// formatComplexTypeAsCastJSON serializes val to JSON and returns CAST(JSON '...' AS columnType) for ROW/ARRAY columns.
+func (t *TrinoSinkConnector) formatComplexTypeAsCastJSON(val interface{}, columnType string) string {
+	jsonBytes, err := json.Marshal(val)
+	if err != nil {
+		t.logger.Error(err, "Failed to marshal value to JSON for ROW/ARRAY", "value", val)
+		return "NULL"
+	}
+	escaped := strings.ReplaceAll(string(jsonBytes), "'", "''")
+	return "CAST(JSON '" + escaped + "' AS " + strings.TrimSpace(columnType) + ")"
 }
 
 // Close closes the Trino connection

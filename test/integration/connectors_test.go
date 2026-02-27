@@ -1,3 +1,5 @@
+//go:build integration
+
 /*
 Copyright 2024.
 
@@ -27,6 +29,7 @@ import (
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/IBM/sarama"
+	"github.com/docker/go-connections/nat"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,15 +50,14 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
 
-	// Start Kafka container with more reliable wait strategy
-	// Use port wait and then verify readiness via connection
+	// Start Kafka container. Do not pass WithWaitStrategy: the kafka module uses a PostStarts
+	// hook that copies a starter script and then waits for log "Transitioning from RECOVERY to RUNNING".
+	// A custom ForListeningPort(9093) would block that hook (port only opens after the script runs).
 	kafkaContainer, err := kafka.RunContainer(ctx,
 		kafka.WithClusterID("test-cluster"),
-		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("9093/tcp").WithStartupTimeout(120*time.Second),
-		),
 	)
 	require.NoError(t, err)
 	defer func() {
@@ -115,13 +117,10 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 			break
 		}
 		// Check if topic already exists — that's ok
-		if err != nil {
-			errStr := err.Error()
-			if strings.Contains(errStr, "already exists") || strings.Contains(errStr, "TopicExistsException") {
-				// Topic already exists — that's ok
-				err = nil
-				break
-			}
+		errStr := err.Error()
+		if strings.Contains(errStr, "already exists") || strings.Contains(errStr, "TopicExistsException") {
+			err = nil
+			break
 		}
 		if i < 4 {
 			time.Sleep(2 * time.Second)
@@ -420,14 +419,18 @@ func TestClickHouseConnectorIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
 
+	// HTTP wait on 8123 with long timeout and poll interval for slow Docker envs.
 	clickHouseContainer, err := clickhouse.Run(ctx, "clickhouse/clickhouse-server:23.3-alpine",
 		clickhouse.WithUsername("default"),
 		clickhouse.WithPassword(""),
 		clickhouse.WithDatabase("default"),
 		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("9000/tcp").WithStartupTimeout(60*time.Second),
+			wait.ForHTTP("/").WithPort(nat.Port("8123/tcp")).
+				WithStartupTimeout(5*time.Minute).
+				WithPollInterval(2*time.Second),
 		),
 	)
 	require.NoError(t, err)

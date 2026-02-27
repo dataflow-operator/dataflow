@@ -571,19 +571,34 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 		ready:     make(chan bool),
 	}
 
+	const coordinatorRetryAttempts = 5
+	const coordinatorRetryDelay = 10 * time.Second
 	go func() {
-		for {
+		var consumeErr error
+		for attempt := 0; attempt <= coordinatorRetryAttempts; attempt++ {
 			select {
 			case <-ctx.Done():
 				return
 			default:
-				if err := k.consumer.Consume(ctx, []string{k.config.Topic}, handler); err != nil {
-					errWrap := fmt.Errorf("error from consumer: %w", err)
-					k.logger.Error(errWrap, "Kafka consumer Consume failed", "topic", k.config.Topic)
-					errorChan <- errWrap
-					return
-				}
 			}
+			consumeErr = k.consumer.Consume(ctx, []string{k.config.Topic}, handler)
+			if consumeErr == nil {
+				return
+			}
+			if isCoordinatorUnavailableError(consumeErr) && attempt < coordinatorRetryAttempts {
+				k.logger.Info("Kafka consumer coordinator unavailable, retrying",
+					"topic", k.config.Topic, "attempt", attempt+1, "maxAttempts", coordinatorRetryAttempts+1)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(coordinatorRetryDelay):
+				}
+				continue
+			}
+			errWrap := fmt.Errorf("error from consumer: %w", consumeErr)
+			k.logger.Error(errWrap, "Kafka consumer Consume failed", "topic", k.config.Topic)
+			errorChan <- errWrap
+			return
 		}
 	}()
 
@@ -600,6 +615,16 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	}()
 
 	return msgChan, nil
+}
+
+// isCoordinatorUnavailableError reports whether err is Kafka "coordinator is not available" (retriable).
+func isCoordinatorUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "coordinator is not available") ||
+		strings.Contains(s, "CoordinatorNotAvailable")
 }
 
 // Close closes the Kafka connection

@@ -18,8 +18,12 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -31,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	zaprctrl "sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -55,6 +60,32 @@ func init() {
 
 	utilruntime.Must(dataflowv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
+}
+
+// leaderReadyCheck returns a healthz.Checker that succeeds only when electedCh is closed (this instance is the leader).
+// Used for readyz so that only the leader replica reports Ready.
+func leaderReadyCheck(electedCh <-chan struct{}) healthz.Checker {
+	return func(_ *http.Request) error {
+		select {
+		case <-electedCh:
+			return nil
+		default:
+			return fmt.Errorf("not the leader")
+		}
+	}
+}
+
+// leaderElectionDurationFromEnv parses envKey as seconds and returns duration; if unset or invalid, returns defaultDur.
+func leaderElectionDurationFromEnv(envKey string, defaultDur time.Duration) time.Duration {
+	s := strings.TrimSpace(os.Getenv(envKey))
+	if s == "" {
+		return defaultDur
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec <= 0 {
+		return defaultDur
+	}
+	return time.Duration(sec) * time.Second
 }
 
 // levelFromEnvOrOptions returns zap LevelEnabler from LOG_LEVEL env (debug, info, warn, error) if set,
@@ -129,6 +160,13 @@ func main() {
 
 	// Webhook server is enabled only when WEBHOOK_CERT_DIR is set (in e2e and when webhook is disabled in Helm, certs are not mounted).
 	certDir := webhookenv.GetWebhookCertDir()
+	// Leader election: HTTP timeout for lease updates is RenewDeadline/2. Use larger defaults to avoid
+	// "context deadline exceeded" when API server or network is slow (e.g. 60s/40s → 20s per request).
+	leaseDuration := leaderElectionDurationFromEnv("LEADER_ELECTION_LEASE_DURATION_SECONDS", 60*time.Second)
+	renewDeadline := leaderElectionDurationFromEnv("LEADER_ELECTION_RENEW_DEADLINE_SECONDS", 40*time.Second)
+	if renewDeadline >= leaseDuration {
+		renewDeadline = leaseDuration/2 + leaseDuration/4 // e.g. 45s if lease 60s
+	}
 	mgrOpts := ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -137,6 +175,8 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         true, // Always HA-ready: only one active controller across replicas
 		LeaderElectionID:       "dataflow-operator.dataflow.io",
+		LeaseDuration:          ptr.To(leaseDuration),
+		RenewDeadline:          ptr.To(renewDeadline),
 	}
 	if certDir != "" {
 		mgrOpts.WebhookServer = webhook.NewServer(webhook.Options{Port: 9443, CertDir: certDir})
@@ -163,8 +203,13 @@ func main() {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
+	// readyz: only the leader reports ready so that at most one replica is considered Ready (e.g. for PDB/Services)
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("leader", leaderReadyCheck(mgr.Elected())); err != nil {
+		setupLog.Error(err, "unable to set up leader ready check")
 		os.Exit(1)
 	}
 

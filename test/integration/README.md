@@ -10,17 +10,16 @@
 
 ## Запуск тестов
 
-### Все интеграционные тесты со статистикой
+**Важно:** тесты коннекторов (Kafka, ClickHouse, PostgreSQL и т.д.) помечены тегом `integration` и **не входят** в стандартный `task test`. Они требуют Docker и запускаются отдельно: `task test-integration` или `go test -tags=integration ./test/integration/... -v`. Тесты трансформеров запускаются в обычном `task test` (без Docker).
+
+### Все интеграционные тесты со статистикой (включая коннекторы, нужен Docker)
 
 ```bash
-# С использованием скрипта (рекомендуется)
-./scripts/run-tests-with-stats.sh ./test/integration/...
-
-# Или через Makefile
-make test-integration
-
-# Или через Taskfile
+# Через Taskfile (передаёт -tags=integration)
 task test-integration
+
+# Или вручную со скриптом
+GO_TEST_TAGS=integration ./scripts/run-tests-with-stats.sh ./test/integration/...
 ```
 
 Скрипт выведет:
@@ -30,21 +29,22 @@ task test-integration
 - Количество пропущенных тестов
 - Список проваленных тестов (если есть)
 
-### Все интеграционные тесты (простой вывод)
+### Все интеграционные тесты (простой вывод, с коннекторами — нужен Docker)
 
 ```bash
-go test ./test/integration/... -v
-
+task test-integration-simple
+# или
+go test -tags=integration ./test/integration/... -v
 ```
 
 ### Конкретные тесты
 
 ```bash
-# Только тесты коннекторов
-go test ./test/integration/... -v -run TestKafkaConnectorIntegration
-go test ./test/integration/... -v -run TestPostgreSQLConnectorIntegration
+# Только тесты коннекторов (нужен Docker и -tags=integration)
+go test -tags=integration ./test/integration/... -v -run TestKafkaConnectorIntegration
+go test -tags=integration ./test/integration/... -v -run TestPostgreSQLConnectorIntegration
 
-# Только тесты трансформеров
+# Только тесты трансформеров (Docker не нужен)
 go test ./test/integration/... -v -run TestTransformersIntegration
 go test ./test/integration/... -v -run TestTransformersChainIntegration
 ```

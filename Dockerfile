@@ -1,36 +1,23 @@
-# Build stage
+# Build stage. Контекст — каталог dataflow (docker build из dataflow/ или -f dataflow/Dockerfile dataflow).
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /workspace
 
-# Install dependencies
 RUN apk add --no-cache git make
 
-# Copy go mod files
-COPY go.mod go.mod
-COPY go.sum go.sum
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
-# Download dependencies
-RUN go mod download
-
-# Copy source code
 COPY . .
 
-# Версия оператора для дефолтного образа процессора (тот же тег при сборке из релиза).
 ARG VERSION=dev
-# Multi-arch: при docker buildx --platform передаётся TARGETARCH (amd64, arm64).
 ARG TARGETARCH=amd64
-# Build manager (operator)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o manager \
-  -ldflags "-X github.com/dataflow-operator/dataflow/internal/version.Version=${VERSION}" \
-  main.go
-
-# Build processor
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o processor cmd/processor/main.go
-
-# Build GUI server
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o gui-server cmd/gui-server/main.go
-
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH sh -c "\
+    go build -o manager -ldflags \"-X github.com/dataflow-operator/dataflow/internal/version.Version=${VERSION}\" main.go && \
+    go build -o processor cmd/processor/main.go"
 # Final stage
 FROM alpine:3.19
 
@@ -40,11 +27,5 @@ RUN apk --no-cache add ca-certificates
 
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/processor .
-COPY --from=builder /workspace/gui-server .
-# Статика для GUI (gui-server обслуживает ./web/static при WORKDIR /)
-COPY --from=builder /workspace/web /web
 
 ENTRYPOINT ["/manager"]
-
-
-

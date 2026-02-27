@@ -17,6 +17,7 @@ limitations under the License.
 package connectors
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -237,4 +238,112 @@ func TestTrinoSinkConnector_formatValueForType_TimestampFormat(t *testing.T) {
 	// Format should be: TIMESTAMP '2026-01-16 05:55:03' (converted to UTC)
 	// The time should be converted to UTC (13:55:03 +08:00 = 05:55:03 UTC)
 	assert.Contains(t, result, "05:55:03") // UTC time
+}
+
+func TestTrinoSinkConnector_nullLiteralForTrinoType(t *testing.T) {
+	connector := NewTrinoSinkConnector(&v1.TrinoSinkSpec{
+		ServerURL: "http://localhost:8080",
+		Catalog:   "test",
+		Schema:    "test",
+		Table:     "test",
+	})
+
+	tests := []struct {
+		columnType string
+		want       string
+	}{
+		{"bigint", "CAST(NULL AS bigint)"},
+		{"varchar", "CAST(NULL AS varchar)"},
+		{"row(a int)", "CAST(NULL AS row(a int))"},
+		{"  row(agentDelivery boolean, systemId varchar)  ", "CAST(NULL AS row(agentDelivery boolean, systemId varchar))"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.columnType, func(t *testing.T) {
+			got := connector.nullLiteralForTrinoType(tt.columnType)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTrinoSinkConnector_formatValueForType_ROW_ARRAY(t *testing.T) {
+	connector := NewTrinoSinkConnector(&v1.TrinoSinkSpec{
+		ServerURL: "http://localhost:8080",
+		Catalog:   "test",
+		Schema:    "test",
+		Table:     "test",
+	})
+	connector.SetLogger(logr.Discard())
+
+	tests := []struct {
+		name         string
+		val          interface{}
+		columnType   string
+		wantPrefix   string
+		wantSuffix   string
+		wantContains string
+	}{
+		{
+			name:         "ROW from map with string and number",
+			val:          map[string]interface{}{"v1": float64(123), "v2": "abc", "v3": true},
+			columnType:   "row(v1 bigint, v2 varchar, v3 boolean)",
+			wantPrefix:   "CAST(JSON '",
+			wantSuffix:   "' AS row(v1 bigint, v2 varchar, v3 boolean))",
+			wantContains: `"v1":123,"v2":"abc","v3":true`,
+		},
+		{
+			name:         "ROW nested object",
+			val:          map[string]interface{}{"a": map[string]interface{}{"b": "nested"}},
+			columnType:   "row(a row(b varchar))",
+			wantPrefix:   "CAST(JSON '",
+			wantSuffix:   "' AS row(a row(b varchar)))",
+			wantContains: `"a":{"b":"nested"}`,
+		},
+		{
+			name:         "ARRAY of integers",
+			val:          []interface{}{float64(1), float64(2), float64(3)},
+			columnType:   "array(integer)",
+			wantPrefix:   "CAST(JSON '",
+			wantSuffix:   "' AS array(integer))",
+			wantContains: "[1,2,3]",
+		},
+		{
+			name: "ARRAY of rows",
+			val: []interface{}{
+				map[string]interface{}{"x": "a"},
+				map[string]interface{}{"x": "b"},
+			},
+			columnType:   "array(row(x varchar))",
+			wantPrefix:   "CAST(JSON '",
+			wantSuffix:   "' AS array(row(x varchar)))",
+			wantContains: `"x":"a"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := connector.formatValueForType(tt.val, tt.columnType)
+			assert.True(t, len(result) > 0, "result should not be empty")
+			assert.True(t, len(tt.wantPrefix) > 0)
+			assert.True(t, len(tt.wantSuffix) > 0)
+			assert.True(t, strings.HasPrefix(result, tt.wantPrefix), "result should have prefix %q, got %q", tt.wantPrefix, result)
+			assert.True(t, strings.HasSuffix(result, tt.wantSuffix), "result should have suffix %q, got %q", tt.wantSuffix, result)
+			if tt.wantContains != "" {
+				assert.Contains(t, result, tt.wantContains)
+			}
+		})
+	}
+}
+
+func TestTrinoSinkConnector_formatValueForType_ROW_ARRAY_invalidValReturnsNULL(t *testing.T) {
+	connector := NewTrinoSinkConnector(&v1.TrinoSinkSpec{
+		ServerURL: "http://localhost:8080",
+		Catalog:   "test",
+		Schema:    "test",
+		Table:     "test",
+	})
+	connector.SetLogger(logr.Discard())
+
+	// ROW column but value is a plain string (not map) - still JSON-marshalable, so we get CAST(JSON '"...' AS row(...)).
+	// Only unmarshalable values would return NULL. So test with something that fails json.Marshal - e.g. channel.
+	result := connector.formatValueForType(make(chan int), "row(a int)")
+	assert.Equal(t, "NULL", result)
 }

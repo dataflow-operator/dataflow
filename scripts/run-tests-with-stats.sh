@@ -15,6 +15,11 @@ NC='\033[0m' # No Color
 
 # Путь к тестам (по умолчанию все тесты)
 TEST_PATH="${1:-./...}"
+# Опциональные флаги (например GO_TEST_TAGS=integration для тестов с контейнерами)
+EXTRA_GO_FLAGS=""
+if [ -n "${GO_TEST_TAGS:-}" ]; then
+  EXTRA_GO_FLAGS="-tags=${GO_TEST_TAGS}"
+fi
 
 echo -e "${BLUE}=== Запуск тестов: ${TEST_PATH} ===${NC}\n"
 
@@ -24,7 +29,7 @@ TEMP_OUTPUT=$(mktemp)
 
 # Запускаем тесты с JSON выводом
 set +e
-go test -json "${TEST_PATH}" -v 2>&1 | tee "${TEMP_JSON}" > "${TEMP_OUTPUT}"
+go test ${EXTRA_GO_FLAGS} -json "${TEST_PATH}" -v 2>&1 | tee "${TEMP_JSON}" > "${TEMP_OUTPUT}"
 TEST_EXIT_CODE=$?
 set -e
 

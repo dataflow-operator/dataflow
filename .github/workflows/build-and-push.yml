@@ -35,6 +35,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set build platforms
+        id: platforms
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "platforms=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
+          else
+            echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
+          fi
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -57,7 +66,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.platforms.outputs.platforms }}
           build-args: |
             VERSION=${{ github.ref_name }}
           cache-from: type=gha
@@ -113,7 +122,7 @@ jobs:
             ## Installation
 
             ```bash
-            helm install dataflow-operator ./helm/dataflow-operator \
+            helm install dataflow-operator ./helm-charts/dataflow-operator \
               --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
               --set image.tag=${{ steps.tag.outputs.TAG_NAME }}
             ```
