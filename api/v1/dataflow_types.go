@@ -52,6 +52,20 @@ type DataFlowSpec struct {
 	// Tolerations are attached to tolerate any taint that matches the triple <key,value,effect>
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// ProcessorImage is the full container image for the dataflow processor (e.g. ghcr.io/org/dataflow:v1.0.0).
+	// If not set, the processor runs with the same image as the controller (or ProcessorVersion is used if set).
+	// +optional
+	ProcessorImage string `json:"processorImage,omitempty"`
+
+	// ProcessorVersion is the image tag for the processor when using the default image repository (same as controller).
+	// Ignored if ProcessorImage is set. Example: "v1.2.3".
+	// +optional
+	ProcessorVersion string `json:"processorVersion,omitempty"`
+
+	// ImagePullSecrets is a list of references to secrets in the same namespace to use for pulling the processor image from a private registry.
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 // SourceSpec defines the source configuration

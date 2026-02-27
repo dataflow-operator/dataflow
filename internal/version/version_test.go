@@ -34,3 +34,10 @@ func TestVersionNonEmpty(t *testing.T) {
 	// When built without ldflags Version = "dev"
 	assert.NotEmpty(t, Version)
 }
+
+func TestProcessorImageWithTag(t *testing.T) {
+	img := ProcessorImageWithTag("v1.2.3")
+	assert.Equal(t, DefaultProcessorImageRepository+":v1.2.3", img)
+	img2 := ProcessorImageWithTag("latest")
+	assert.Equal(t, DefaultProcessorImageRepository+":latest", img2)
+}

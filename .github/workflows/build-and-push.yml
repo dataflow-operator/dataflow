@@ -44,6 +44,14 @@ jobs:
             echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
           fi
 
+      - name: Set VERSION to match image tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${{ github.ref_name }}-${GITHUB_SHA:0:7}" >> $GITHUB_ENV
+          fi
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -52,6 +60,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
@@ -68,7 +77,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ steps.platforms.outputs.platforms }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ env.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

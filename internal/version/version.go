@@ -27,3 +27,8 @@ const DefaultProcessorImageRepository = "ghcr.io/dataflow-operator/dataflow"
 func DefaultProcessorImage() string {
 	return DefaultProcessorImageRepository + ":" + Version
 }
+
+// ProcessorImageWithTag returns the processor image for the given tag (same repository as operator).
+func ProcessorImageWithTag(tag string) string {
+	return DefaultProcessorImageRepository + ":" + tag
+}

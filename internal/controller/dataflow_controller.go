@@ -466,6 +466,18 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 	return nil
 }
 
+// processorImageFor returns the container image to use for the dataflow processor.
+// Precedence: spec.ProcessorImage > spec.ProcessorVersion (repo+tag) > default (same as controller).
+func (r *DataFlowReconciler) processorImageFor(dataflow *dataflowv1.DataFlow) string {
+	if dataflow.Spec.ProcessorImage != "" {
+		return dataflow.Spec.ProcessorImage
+	}
+	if dataflow.Spec.ProcessorVersion != "" {
+		return version.ProcessorImageWithTag(dataflow.Spec.ProcessorVersion)
+	}
+	return r.processorImage
+}
+
 // createOrUpdateDeployment creates or updates Deployment for the processor.
 func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
 	log := log.FromContext(ctx)
@@ -478,6 +490,8 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 		"dataflow.dataflow.io/name":  dataflow.Name,
 		"dataflow.dataflow.io/owned": "true",
 	}
+
+	processorImage := r.processorImageFor(dataflow)
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -498,7 +512,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 					Containers: []corev1.Container{
 						{
 							Name:  "processor",
-							Image: r.processorImage,
+							Image: processorImage,
 							Command: []string{
 								"/processor",
 								"--spec-path=/etc/dataflow/spec.json",
@@ -537,9 +551,10 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 							},
 						},
 					},
-					NodeSelector: dataflow.Spec.NodeSelector,
-					Affinity:     dataflow.Spec.Affinity,
-					Tolerations:  dataflow.Spec.Tolerations,
+					ImagePullSecrets: dataflow.Spec.ImagePullSecrets,
+					NodeSelector:     dataflow.Spec.NodeSelector,
+					Affinity:         dataflow.Spec.Affinity,
+					Tolerations:      dataflow.Spec.Tolerations,
 				},
 			},
 		},

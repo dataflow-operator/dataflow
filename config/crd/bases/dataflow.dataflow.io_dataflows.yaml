@@ -3510,6 +3510,30 @@ spec:
                       type: string
                   type: object
                 type: array
+              processorImage:
+                description: ProcessorImage is the full container image for the dataflow
+                  processor (e.g. ghcr.io/org/dataflow:v1.0.0). If not set, the processor
+                  runs with the same image as the controller (or ProcessorVersion is
+                  used if set).
+                type: string
+              processorVersion:
+                description: ProcessorVersion is the image tag for the processor when
+                  using the default image repository (same as controller). Ignored if
+                  ProcessorImage is set. Example "v1.2.3".
+                type: string
+              imagePullSecrets:
+                description: ImagePullSecrets is a list of references to secrets in
+                  the same namespace to use for pulling the processor image from a
+                  private registry.
+                items:
+                  description: LocalObjectReference contains enough information to
+                    let you locate the referenced object inside the same namespace.
+                  properties:
+                    name:
+                      description: Name of the referent.
+                      type: string
+                  type: object
+                type: array
               transformations:
                 description: Transformations is a list of transformations to apply
                   to messages

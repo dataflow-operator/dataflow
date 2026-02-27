@@ -134,6 +134,56 @@ func TestNewDataFlowReconciler(t *testing.T) {
 	}
 }
 
+func TestProcessorImageFor(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	t.Run("default_same_as_controller", func(t *testing.T) {
+		reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+		df := &dataflowv1.DataFlow{
+			ObjectMeta: metav1.ObjectMeta{Name: "df", Namespace: "default"},
+			Spec: dataflowv1.DataFlowSpec{
+				Source: dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"}},
+				Sink:   dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}},
+			},
+		}
+		img := reconciler.processorImageFor(df)
+		assert.Equal(t, version.DefaultProcessorImage(), img)
+	})
+
+	t.Run("spec_processor_version", func(t *testing.T) {
+		reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+		df := &dataflowv1.DataFlow{
+			ObjectMeta: metav1.ObjectMeta{Name: "df", Namespace: "default"},
+			Spec: dataflowv1.DataFlowSpec{
+				ProcessorVersion: "v1.2.3",
+				Source:           dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"}},
+				Sink:             dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}},
+			},
+		}
+		img := reconciler.processorImageFor(df)
+		assert.Equal(t, version.ProcessorImageWithTag("v1.2.3"), img)
+		assert.Equal(t, "ghcr.io/dataflow-operator/dataflow:v1.2.3", img)
+	})
+
+	t.Run("spec_processor_image_overrides_version", func(t *testing.T) {
+		reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+		df := &dataflowv1.DataFlow{
+			ObjectMeta: metav1.ObjectMeta{Name: "df", Namespace: "default"},
+			Spec: dataflowv1.DataFlowSpec{
+				ProcessorImage:   "my.registry.io/my-processor:custom",
+				ProcessorVersion: "v1.2.3",
+				Source:           dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"}},
+				Sink:             dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}},
+			},
+		}
+		img := reconciler.processorImageFor(df)
+		assert.Equal(t, "my.registry.io/my-processor:custom", img)
+	})
+}
+
 func TestEnqueueAllDataFlowsForOperatorUpdate(t *testing.T) {
 	const opName, opNs = "dataflow-operator", "dataflow-system"
 	prevName, prevNs := os.Getenv("OPERATOR_DEPLOYMENT_NAME"), os.Getenv("OPERATOR_NAMESPACE")
@@ -439,6 +489,7 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	assert.NoError(t, err, "Deployment should be created")
 	assert.Equal(t, "dataflow-test-dataflow", deployment.Name)
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	assert.Equal(t, version.DefaultProcessorImage(), deployment.Spec.Template.Spec.Containers[0].Image, "default processor image should match controller")
 	var hasLogLevel bool
 	for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
 		if e.Name == "LOG_LEVEL" {
@@ -459,6 +510,112 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	assert.Contains(t, configMap.Data, "spec.json")
 
 	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorImage(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	customImage := "my.registry.io/dataflow-processor:v2.0.0"
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-dataflow", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			ProcessorImage: customImage,
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type:  "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"}}
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	assert.Equal(t, customImage, deployment.Spec.Template.Spec.Containers[0].Image, "Deployment should use spec.processorImage")
+}
+
+func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorVersion(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-dataflow", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			ProcessorVersion: "v0.5.0",
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type:  "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"}}
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	expectedImage := version.ProcessorImageWithTag("v0.5.0")
+	assert.Equal(t, expectedImage, deployment.Spec.Template.Spec.Containers[0].Image, "Deployment should use default repo with spec.processorVersion")
+}
+
+func TestDataFlowReconciler_Reconcile_DeploymentUsesImagePullSecrets(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-dataflow", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "my-registry-secret"},
+				{Name: "other-pull-secret"},
+			},
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type:  "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"}}
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	assert.Equal(t, []corev1.LocalObjectReference{
+		{Name: "my-registry-secret"},
+		{Name: "other-pull-secret"},
+	}, deployment.Spec.Template.Spec.ImagePullSecrets, "Deployment should use spec.imagePullSecrets for private registry")
 }
 
 func TestDataFlowReconciler_Reconcile_DeleteDataFlow(t *testing.T) {
