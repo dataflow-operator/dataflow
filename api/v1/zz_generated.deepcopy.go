@@ -609,6 +609,16 @@ func (in *PostgreSQLSinkSpec) DeepCopyInto(out *PostgreSQLSinkSpec) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.SoftDeleteColumn != nil {
+		in, out := &in.SoftDeleteColumn, &out.SoftDeleteColumn
+		*out = new(string)
+		**out = **in
+	}
+	if in.RawMode != nil {
+		in, out := &in.RawMode, &out.RawMode
+		*out = new(bool)
+		**out = **in
+	}
 	if in.ConnectionStringSecretRef != nil {
 		in, out := &in.ConnectionStringSecretRef, &out.ConnectionStringSecretRef
 		*out = new(SecretRef)
@@ -651,6 +661,16 @@ func (in *PostgreSQLSourceSpec) DeepCopyInto(out *PostgreSQLSourceSpec) {
 	}
 	if in.RawMode != nil {
 		in, out := &in.RawMode, &out.RawMode
+		*out = new(bool)
+		**out = **in
+	}
+	if in.ReadBatchSize != nil {
+		in, out := &in.ReadBatchSize, &out.ReadBatchSize
+		*out = new(int32)
+		**out = **in
+	}
+	if in.AutoCreateTable != nil {
+		in, out := &in.AutoCreateTable, &out.AutoCreateTable
 		*out = new(bool)
 		**out = **in
 	}

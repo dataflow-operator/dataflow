@@ -211,6 +211,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 
 	// Track active messages
 	activeMessages := 0
+	firstMessageLogged := false
 
 	for {
 		select {
@@ -230,7 +231,8 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 
 			// Record message received
 			metrics.RecordMessageReceived(p.namespace, p.name, p.spec.Source.Type)
-			if activeMessages == 1 {
+			if !firstMessageLogged {
+				firstMessageLogged = true
 				p.logger.Info("First message received from source", logkeys.MessageID, types.MessageID(msg))
 			}
 			messageReceivedTime := time.Now()

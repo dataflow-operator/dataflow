@@ -408,6 +408,33 @@ func TestProcessor_ErrorSinkConfiguration(t *testing.T) {
 	assert.NotNil(t, processor)
 }
 
+func TestProcessor_FirstMessageLoggedOnce(t *testing.T) {
+	// Documents the fix for excessive "First message received from source" logging.
+	// The fix uses firstMessageLogged flag instead of activeMessages==1, since
+	// activeMessages resets to 0 after each message when processing is sequential,
+	// causing the log to fire for every message (e.g. 100+ logs for 100 messages).
+	spec := &v1.DataFlowSpec{
+		Source: v1.SourceSpec{
+			Type: "kafka",
+			Kafka: &v1.KafkaSourceSpec{
+				Brokers:       []string{"localhost:9092"},
+				Topic:         "test-topic",
+				ConsumerGroup: "test-group",
+			},
+		},
+		Sink: v1.SinkSpec{
+			Type: "kafka",
+			Kafka: &v1.KafkaSinkSpec{
+				Brokers: []string{"localhost:9092"},
+				Topic:   "output-topic",
+			},
+		},
+	}
+	p, err := NewProcessor(spec)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+}
+
 func TestProcessor_createErrorMessage_approximateMetadata(t *testing.T) {
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{

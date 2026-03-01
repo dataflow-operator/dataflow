@@ -1371,7 +1371,8 @@ spec:
                         format: int32
                         type: integer
                       batchSize:
-                        description: BatchSize for batch inserts
+                        default: 1
+                        description: 'BatchSize for batch inserts (default: 1)'
                         format: int32
                         type: integer
                       conflictKey:
@@ -1400,6 +1401,16 @@ spec:
                         - key
                         - name
                         type: object
+                      rawMode:
+                        description: |-
+                          RawMode when true, expects messages in format {"value": <data>, "_metadata": {...}}. Table is created with value JSONB and _metadata JSONB columns.
+                          When false, table structure is inferred from the first message (replicates source structure).
+                        type: boolean
+                      softDeleteColumn:
+                        description: SoftDeleteColumn specifies column for soft delete
+                          (e.g. "deleted_at"). If set, DELETE operations will UPDATE
+                          this column instead of physical delete.
+                        type: string
                       table:
                         description: Table to write to
                         type: string
@@ -1705,12 +1716,43 @@ spec:
                 required:
                 - type
                 type: object
+              imagePullSecrets:
+                description: ImagePullSecrets is a list of references to secrets in
+                  the same namespace to use for pulling the processor image from a
+                  private registry.
+                items:
+                  description: |-
+                    LocalObjectReference contains enough information to let you locate the
+                    referenced object inside the same namespace.
+                  properties:
+                    name:
+                      default: ""
+                      description: |-
+                        Name of the referent.
+                        This field is effectively required, but due to backwards compatibility is
+                        allowed to be empty. Instances of this type with an empty value here are
+                        almost certainly wrong.
+                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                type: array
               nodeSelector:
                 additionalProperties:
                   type: string
                 description: NodeSelector is a selector which must be true for the
                   pod to fit on a node
                 type: object
+              processorImage:
+                description: |-
+                  ProcessorImage is the full container image for the dataflow processor (e.g. ghcr.io/org/dataflow:v1.0.0).
+                  If not set, the processor runs with the same image as the controller (or ProcessorVersion is used if set).
+                type: string
+              processorVersion:
+                description: |-
+                  ProcessorVersion is the image tag for the processor when using the default image repository (same as controller).
+                  Ignored if ProcessorImage is set. Example: "v1.2.3".
+                type: string
               resources:
                 description: Resources defines the resource requirements for the processor
                   pod
@@ -2190,7 +2232,8 @@ spec:
                         format: int32
                         type: integer
                       batchSize:
-                        description: BatchSize for batch inserts
+                        default: 1
+                        description: 'BatchSize for batch inserts (default: 1)'
                         format: int32
                         type: integer
                       conflictKey:
@@ -2219,6 +2262,16 @@ spec:
                         - key
                         - name
                         type: object
+                      rawMode:
+                        description: |-
+                          RawMode when true, expects messages in format {"value": <data>, "_metadata": {...}}. Table is created with value JSONB and _metadata JSONB columns.
+                          When false, table structure is inferred from the first message (replicates source structure).
+                        type: boolean
+                      softDeleteColumn:
+                        description: SoftDeleteColumn specifies column for soft delete
+                          (e.g. "deleted_at"). If set, DELETE operations will UPDATE
+                          this column instead of physical delete.
+                        type: string
                       table:
                         description: Table to write to
                         type: string
@@ -3138,6 +3191,16 @@ spec:
                   postgresql:
                     description: PostgreSQL source configuration
                     properties:
+                      autoCreateTable:
+                        description: AutoCreateTable creates the table if it doesn't
+                          exist before reading
+                        type: boolean
+                      changeTrackingColumn:
+                        default: updated_at
+                        description: |-
+                          ChangeTrackingColumn is the column used to track changes (default: updated_at).
+                          Not used when Query is specified.
+                        type: string
                       connectionString:
                         description: ConnectionString for PostgreSQL database
                         type: string
@@ -3171,6 +3234,11 @@ spec:
                         description: 'RawMode when true, wraps each row as JSON: {"value":
                           <row data>, "_metadata": {table, id}}'
                         type: boolean
+                      readBatchSize:
+                        description: ReadBatchSize limits rows per poll to reduce
+                          DB load (0 = no limit)
+                        format: int32
+                        type: integer
                       table:
                         description: Table to read from
                         type: string
@@ -3507,30 +3575,6 @@ spec:
                       description: |-
                         Value is the taint value the toleration matches to.
                         If the operator is Exists, the value should be empty, otherwise just a regular string.
-                      type: string
-                  type: object
-                type: array
-              processorImage:
-                description: ProcessorImage is the full container image for the dataflow
-                  processor (e.g. ghcr.io/org/dataflow:v1.0.0). If not set, the processor
-                  runs with the same image as the controller (or ProcessorVersion is
-                  used if set).
-                type: string
-              processorVersion:
-                description: ProcessorVersion is the image tag for the processor when
-                  using the default image repository (same as controller). Ignored if
-                  ProcessorImage is set. Example "v1.2.3".
-                type: string
-              imagePullSecrets:
-                description: ImagePullSecrets is a list of references to secrets in
-                  the same namespace to use for pulling the processor image from a
-                  private registry.
-                items:
-                  description: LocalObjectReference contains enough information to
-                    let you locate the referenced object inside the same namespace.
-                  properties:
-                    name:
-                      description: Name of the referent.
                       type: string
                   type: object
                 type: array
@@ -4065,7 +4109,9 @@ spec:
                                         format: int32
                                         type: integer
                                       batchSize:
-                                        description: BatchSize for batch inserts
+                                        default: 1
+                                        description: 'BatchSize for batch inserts
+                                          (default: 1)'
                                         format: int32
                                         type: integer
                                       conflictKey:
@@ -4096,6 +4142,17 @@ spec:
                                         - key
                                         - name
                                         type: object
+                                      rawMode:
+                                        description: |-
+                                          RawMode when true, expects messages in format {"value": <data>, "_metadata": {...}}. Table is created with value JSONB and _metadata JSONB columns.
+                                          When false, table structure is inferred from the first message (replicates source structure).
+                                        type: boolean
+                                      softDeleteColumn:
+                                        description: SoftDeleteColumn specifies column
+                                          for soft delete (e.g. "deleted_at"). If
+                                          set, DELETE operations will UPDATE this
+                                          column instead of physical delete.
+                                        type: string
                                       table:
                                         description: Table to write to
                                         type: string

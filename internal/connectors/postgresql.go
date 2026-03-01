@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,11 +37,10 @@ import (
 // PostgreSQLSourceConnector implements SourceConnector for PostgreSQL
 type PostgreSQLSourceConnector struct {
 	baseConnector
-	config       *v1.PostgreSQLSourceSpec
-	conn         *pgx.Conn
-	logger       logr.Logger
-	lastReadID   int64      // Track last read ID to avoid duplicates
-	lastReadTime *time.Time // Track last read time to avoid duplicates
+	config             *v1.PostgreSQLSourceSpec
+	conn               *pgx.Conn
+	logger             logr.Logger
+	lastReadChangeTime *time.Time // Track last change time for CDC (ChangeTrackingColumn or COALESCE(updated_at, created_at))
 }
 
 // NewPostgreSQLSourceConnector creates a new PostgreSQL source connector
@@ -71,6 +72,48 @@ func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
 
 	p.conn = conn
 	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
+
+	// Auto-create table if enabled (source)
+	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable {
+		if err := p.ensureSourceTable(ctx); err != nil {
+			p.logger.Error(err, "Failed to ensure source table exists", "table", p.config.Table)
+			return fmt.Errorf("failed to ensure source table exists: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ensureSourceTable creates the table if it doesn't exist (CDC-friendly schema)
+func (p *PostgreSQLSourceConnector) ensureSourceTable(ctx context.Context) error {
+	var exists bool
+	schema, tableName := parseTableRef(p.config.Table)
+	checkQuery := `SELECT EXISTS (
+		SELECT FROM information_schema.tables
+		WHERE table_schema = $1
+		AND table_name = $2
+	)`
+	err := p.conn.QueryRow(ctx, checkQuery, schema, tableName).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("failed to check if table exists: %w", err)
+	}
+	if exists {
+		p.logger.V(1).Info("Source table already exists", "table", p.config.Table)
+		return nil
+	}
+	p.logger.Info("Creating source table", "table", p.config.Table)
+	createQuery := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id SERIAL PRIMARY KEY,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`, p.config.Table)
+	_, err = p.conn.Exec(ctx, createQuery)
+	if err != nil {
+		return fmt.Errorf("failed to create source table: %w", err)
+	}
+	p.logger.Info("Source table created successfully", "table", p.config.Table)
 	return nil
 }
 
@@ -114,108 +157,171 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 	p.Lock()
 	defer p.Unlock()
 
-	var query string
-	if p.config.Query != "" {
-		query = p.config.Query
-	} else {
-		// Add filtering to avoid reading the same rows multiple times
-		// Use ID-based filtering if available, otherwise use timestamp
-		if p.lastReadID > 0 {
-			query = fmt.Sprintf("SELECT * FROM %s WHERE id > %d ORDER BY id", p.config.Table, p.lastReadID)
-		} else if p.lastReadTime != nil {
-			query = fmt.Sprintf("SELECT * FROM %s WHERE created_at > '%s' ORDER BY created_at, id",
-				p.config.Table, p.lastReadTime.Format(time.RFC3339))
+	readBatchSize := 0
+	if p.config.ReadBatchSize != nil && *p.config.ReadBatchSize > 0 {
+		readBatchSize = int(*p.config.ReadBatchSize)
+	}
+
+	for {
+		var query string
+		if p.config.Query != "" {
+			query = p.config.Query
 		} else {
-			// First read - get all rows
-			query = fmt.Sprintf("SELECT * FROM %s ORDER BY id", p.config.Table)
+			query = p.buildReadQuery()
 		}
-	}
 
-	p.logger.V(1).Info("Executing PostgreSQL query", "query", query, "table", p.config.Table)
-	rows, err := p.conn.Query(ctx, query)
-	if err != nil {
-		p.logger.Error(err, "Failed to execute PostgreSQL query", "query", query, "table", p.config.Table)
-		return
-	}
-	defer rows.Close()
-
-	fieldNames := rows.FieldDescriptions()
-	var idIndex = -1
-	var createdAtIndex = -1
-	for i, field := range fieldNames {
-		if field.Name == "id" {
-			idIndex = i
+		if readBatchSize > 0 {
+			query = fmt.Sprintf("%s LIMIT %d", query, readBatchSize)
 		}
-		if field.Name == "created_at" {
-			createdAtIndex = i
-		}
-	}
 
-	for rows.Next() {
-		values, err := rows.Values()
+		p.logger.V(1).Info("Executing PostgreSQL query", "query", query, "table", p.config.Table)
+		rows, err := p.conn.Query(ctx, query)
 		if err != nil {
-			p.logger.Error(err, "Failed to read row values", "table", p.config.Table)
-			continue
-		}
-
-		rowMap := make(map[string]interface{})
-		for i, field := range fieldNames {
-			rowMap[field.Name] = values[i]
-		}
-
-		// Update last read ID or timestamp
-		if idIndex >= 0 {
-			if id, ok := values[idIndex].(int64); ok {
-				if id > p.lastReadID {
-					p.lastReadID = id
-				}
-			} else if id, ok := values[idIndex].(int32); ok {
-				if int64(id) > p.lastReadID {
-					p.lastReadID = int64(id)
-				}
-			}
-		}
-		if createdAtIndex >= 0 && p.lastReadTime != nil {
-			if ts, ok := values[createdAtIndex].(time.Time); ok {
-				if ts.After(*p.lastReadTime) {
-					p.lastReadTime = &ts
-				}
-			}
-		} else if createdAtIndex >= 0 && p.lastReadTime == nil {
-			if ts, ok := values[createdAtIndex].(time.Time); ok {
-				p.lastReadTime = &ts
-			}
-		}
-
-		jsonData, err := json.Marshal(rowMap)
-		if err != nil {
-			p.logger.Error(err, "Failed to marshal row to JSON", "table", p.config.Table)
-			continue
-		}
-
-		if p.config.RawMode != nil && *p.config.RawMode {
-			metadata := map[string]interface{}{"table": p.config.Table}
-			if idIndex >= 0 && len(values) > idIndex {
-				metadata["id"] = values[idIndex]
-			}
-			jsonData, err = buildRawModeJSON(rowMap, metadata)
-			if err != nil {
-				p.logger.Error(err, "Failed to build raw mode message", "table", p.config.Table)
-				continue
-			}
-		}
-
-		msg := types.NewMessage(jsonData)
-		msg.Metadata["table"] = p.config.Table
-		if idIndex >= 0 && len(values) > idIndex {
-			msg.Metadata["id"] = values[idIndex]
-		}
-
-		select {
-		case msgChan <- msg:
-		case <-ctx.Done():
+			p.logger.Error(err, "Failed to execute PostgreSQL query", "query", query, "table", p.config.Table)
 			return
 		}
+
+		fieldNames := rows.FieldDescriptions()
+		var idIndex, createdAtIndex, updatedAtIndex, changeTrackingIndex = -1, -1, -1, -1
+		changeCol := p.getChangeTrackingColumn()
+		for i, field := range fieldNames {
+			switch field.Name {
+			case "id":
+				idIndex = i
+			case "created_at":
+				createdAtIndex = i
+			case "updated_at":
+				updatedAtIndex = i
+			}
+			if field.Name == changeCol {
+				changeTrackingIndex = i
+			}
+		}
+
+		rowCount := 0
+		for rows.Next() {
+			values, err := rows.Values()
+			if err != nil {
+				p.logger.Error(err, "Failed to read row values", "table", p.config.Table)
+				rows.Close()
+				return
+			}
+
+			rowMap := make(map[string]interface{})
+			for i, field := range fieldNames {
+				rowMap[field.Name] = values[i]
+			}
+
+			// Determine operation for CDC (insert vs update)
+			operation := "insert"
+			if updatedAtIndex >= 0 && createdAtIndex >= 0 && len(values) > updatedAtIndex && len(values) > createdAtIndex {
+				var updatedAt, createdAt *time.Time
+				if ts, ok := values[updatedAtIndex].(time.Time); ok {
+					updatedAt = &ts
+				}
+				if ts, ok := values[createdAtIndex].(time.Time); ok {
+					createdAt = &ts
+				}
+				if updatedAt != nil && createdAt != nil && updatedAt.After(*createdAt) {
+					operation = "update"
+				}
+			}
+
+			// Update last read state
+			p.updateLastReadState(values, createdAtIndex, updatedAtIndex, changeTrackingIndex)
+
+			jsonData, err := json.Marshal(rowMap)
+			if err != nil {
+				p.logger.Error(err, "Failed to marshal row to JSON", "table", p.config.Table)
+				continue
+			}
+
+			if p.config.RawMode != nil && *p.config.RawMode {
+				metadata := map[string]interface{}{"table": p.config.Table}
+				if idIndex >= 0 && len(values) > idIndex {
+					metadata["id"] = values[idIndex]
+				}
+				metadata["operation"] = operation
+				jsonData, err = buildRawModeJSON(rowMap, metadata)
+				if err != nil {
+					p.logger.Error(err, "Failed to build raw mode message", "table", p.config.Table)
+					continue
+				}
+			}
+
+			msg := types.NewMessage(jsonData)
+			msg.Metadata["table"] = p.config.Table
+			if idIndex >= 0 && len(values) > idIndex {
+				msg.Metadata["id"] = values[idIndex]
+			}
+			msg.Metadata["operation"] = operation
+
+			select {
+			case msgChan <- msg:
+			case <-ctx.Done():
+				rows.Close()
+				return
+			}
+			rowCount++
+		}
+		rows.Close()
+
+		// If we got fewer rows than batch size, no more data in this poll cycle
+		if readBatchSize == 0 || rowCount < readBatchSize {
+			if rowCount > 0 {
+				p.logger.Info("PostgreSQL poll completed", "table", p.config.Table, "rows", rowCount)
+			}
+			break
+		}
+	}
+}
+
+func (p *PostgreSQLSourceConnector) getChangeTrackingColumn() string {
+	if p.config.ChangeTrackingColumn != "" {
+		return p.config.ChangeTrackingColumn
+	}
+	return "updated_at"
+}
+
+func (p *PostgreSQLSourceConnector) buildReadQuery() string {
+	changeCol := p.getChangeTrackingColumn()
+	var orderExpr string
+	if changeCol == "updated_at" {
+		orderExpr = "COALESCE(updated_at, created_at)"
+	} else {
+		orderExpr = fmt.Sprintf(`"%s"`, changeCol)
+	}
+	if p.lastReadChangeTime != nil {
+		// RFC3339Nano preserves sub-second precision to avoid re-reading or skipping rows at boundaries
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s > '%s' ORDER BY %s, id",
+			p.config.Table, orderExpr, p.lastReadChangeTime.UTC().Format(time.RFC3339Nano), orderExpr)
+	}
+	return fmt.Sprintf("SELECT * FROM %s ORDER BY %s, id", p.config.Table, orderExpr)
+}
+
+func (p *PostgreSQLSourceConnector) updateLastReadState(values []interface{}, createdAtIndex, updatedAtIndex, changeTrackingIndex int) {
+	// Use change tracking column for lastReadChangeTime
+	var changeTime *time.Time
+	if changeTrackingIndex >= 0 && len(values) > changeTrackingIndex {
+		if ts, ok := values[changeTrackingIndex].(time.Time); ok {
+			changeTime = &ts
+		}
+	}
+	// Fallback to COALESCE(updated_at, created_at) when using default column
+	if changeTime == nil && p.getChangeTrackingColumn() == "updated_at" {
+		if updatedAtIndex >= 0 && len(values) > updatedAtIndex {
+			if ts, ok := values[updatedAtIndex].(time.Time); ok {
+				changeTime = &ts
+			}
+		}
+		if changeTime == nil && createdAtIndex >= 0 && len(values) > createdAtIndex {
+			if ts, ok := values[createdAtIndex].(time.Time); ok {
+				changeTime = &ts
+			}
+		}
+	}
+	if changeTime != nil && (p.lastReadChangeTime == nil || changeTime.After(*p.lastReadChangeTime)) {
+		p.lastReadChangeTime = changeTime
 	}
 }
 
@@ -240,6 +346,9 @@ type PostgreSQLSinkConnector struct {
 	conn           *pgx.Conn
 	logger         logr.Logger
 	firstWriteOnce sync.Once
+	// Cache to avoid N queries per message (tableExists + hasJSONB check)
+	tableExistsCached *bool
+	hasJSONBCached    *bool
 }
 
 // NewPostgreSQLSinkConnector creates a new PostgreSQL sink connector
@@ -272,8 +381,8 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 	p.conn = conn
 	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
 
-	// Auto-create table if enabled
-	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable {
+	// Auto-create table if enabled and RawMode (structure known at Connect time)
+	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable && p.rawMode() {
 		if err := p.ensureTable(ctx); err != nil {
 			p.logger.Error(err, "Failed to ensure table exists", "table", p.config.Table)
 			return fmt.Errorf("failed to ensure table exists: %w", err)
@@ -283,33 +392,76 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 	return nil
 }
 
-// ensureTable creates the table if it doesn't exist
-func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
-	// Check if table exists
+func (p *PostgreSQLSinkConnector) rawMode() bool {
+	return p.config.RawMode != nil && *p.config.RawMode
+}
+
+// parseTableRef splits "schema.table" into schema and table name for information_schema queries.
+func parseTableRef(table string) (schema, name string) {
+	if i := strings.LastIndex(table, "."); i >= 0 {
+		return table[:i], table[i+1:]
+	}
+	return "public", table
+}
+
+func (p *PostgreSQLSinkConnector) tableExists(ctx context.Context) (bool, error) {
+	if p.tableExistsCached != nil {
+		return *p.tableExistsCached, nil
+	}
 	var exists bool
+	schema, tableName := parseTableRef(p.config.Table)
 	checkQuery := `SELECT EXISTS (
 		SELECT FROM information_schema.tables
-		WHERE table_schema = 'public'
-		AND table_name = $1
+		WHERE table_schema = $1
+		AND table_name = $2
 	)`
-	err := p.conn.QueryRow(ctx, checkQuery, p.config.Table).Scan(&exists)
+	err := p.conn.QueryRow(ctx, checkQuery, schema, tableName).Scan(&exists)
+	if err == nil {
+		p.tableExistsCached = &exists
+	}
+	return exists, err
+}
+
+func (p *PostgreSQLSinkConnector) hasJSONBColumn(ctx context.Context) (bool, error) {
+	if p.hasJSONBCached != nil {
+		return *p.hasJSONBCached, nil
+	}
+	schema, tableName := parseTableRef(p.config.Table)
+	checkQuery := `SELECT EXISTS (
+		SELECT FROM information_schema.columns
+		WHERE table_schema = $1
+		AND table_name = $2
+		AND column_name = 'data'
+		AND data_type = 'jsonb'
+	)`
+	var hasJSONB bool
+	err := p.conn.QueryRow(ctx, checkQuery, schema, tableName).Scan(&hasJSONB)
+	if err == nil {
+		p.hasJSONBCached = &hasJSONB
+	}
+	return hasJSONB, err
+}
+
+// ensureTable creates the table if it doesn't exist (RawMode: value + _metadata structure)
+func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
+	exists, err := p.tableExists(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to check if table exists: %w", err)
 	}
-
 	if exists {
 		p.logger.V(1).Info("Table already exists", "table", p.config.Table)
 		return nil
 	}
 
-	p.logger.Info("Creating table", "table", p.config.Table)
-	// Create table with flexible schema for JSON-like data
-	// Using JSONB to handle dynamic fields
+	p.logger.Info("Creating table (raw mode)", "table", p.config.Table)
 	createQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id SERIAL PRIMARY KEY,
-			data JSONB NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			value JSONB NOT NULL,
+			_metadata JSONB,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			deleted_at TIMESTAMP
 		)
 	`, p.config.Table)
 
@@ -317,16 +469,111 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
+	trueVal := true
+	p.tableExistsCached = &trueVal
+	p.hasJSONBCached = nil // raw mode table has value, not data column
 	p.logger.Info("Table created successfully", "table", p.config.Table)
 
-	// Create index on data for better query performance
-	indexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_%s_data ON %s USING GIN (data)`, p.config.Table, p.config.Table)
+	indexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_%s_value ON %s USING GIN (value)`, p.config.Table, p.config.Table)
 	_, err = p.conn.Exec(ctx, indexQuery)
 	if err != nil {
 		p.logger.Info("Failed to create index (non-critical)", "table", p.config.Table, "error", err)
 	}
 
 	return nil
+}
+
+// ensureTableFromMessage creates the table from the first message structure (replicates source schema)
+func (p *PostgreSQLSinkConnector) ensureTableFromMessage(ctx context.Context, data map[string]interface{}) error {
+	exists, err := p.tableExists(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check if table exists: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
+	columns := make([]string, 0, len(data))
+	for k := range data {
+		columns = append(columns, k)
+	}
+	sort.Strings(columns)
+	if len(columns) == 0 {
+		return fmt.Errorf("cannot create table from empty message")
+	}
+
+	hasColumn := func(name string) bool {
+		for _, c := range columns {
+			if c == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	colDefs := make([]string, 0, len(columns)+4)
+	for _, col := range columns {
+		val := data[col]
+		pgType := inferPostgreSQLType(val)
+		def := fmt.Sprintf(`"%s" %s`, col, pgType)
+		if col == "id" {
+			def += " PRIMARY KEY"
+		}
+		colDefs = append(colDefs, def)
+	}
+	if !hasColumn("created_at") {
+		colDefs = append(colDefs, "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+	}
+	if !hasColumn("updated_at") {
+		colDefs = append(colDefs, "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+	}
+	if p.config.SoftDeleteColumn != nil && *p.config.SoftDeleteColumn != "" && !hasColumn(*p.config.SoftDeleteColumn) {
+		colDefs = append(colDefs, *p.config.SoftDeleteColumn+" TIMESTAMP")
+	}
+
+	p.logger.Info("Creating table from message structure", "table", p.config.Table, "columns", columns)
+	createQuery := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (%s)`, p.config.Table, joinStrings(colDefs, ", "))
+	_, err = p.conn.Exec(ctx, createQuery)
+	if err != nil {
+		return fmt.Errorf("failed to create table from message: %w", err)
+	}
+	trueVal := true
+	p.tableExistsCached = &trueVal
+	p.hasJSONBCached = nil // table created from message has regular columns, not data JSONB
+	p.logger.Info("Table created successfully from message structure", "table", p.config.Table)
+	return nil
+}
+
+func inferPostgreSQLType(v interface{}) string {
+	switch v.(type) {
+	case nil:
+		return "TEXT"
+	case bool:
+		return "BOOLEAN"
+	case int, int32, int64:
+		return "BIGINT"
+	case float64:
+		// Always use NUMERIC for float64 to preserve decimal precision (e.g. price 10.50).
+		// Using BIGINT for whole-number floats would truncate decimals in subsequent rows.
+		return "NUMERIC"
+	case string:
+		return "TEXT"
+	case map[string]interface{}, []interface{}:
+		return "JSONB"
+	default:
+		return "TEXT"
+	}
+}
+
+func joinStrings(ss []string, sep string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	s := ss[0]
+	for i := 1; i < len(ss); i++ {
+		s += sep + ss[i]
+	}
+	return s
 }
 
 // Write writes messages to PostgreSQL
@@ -370,8 +617,17 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		if count == 0 {
 			return nil
 		}
-		if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
-			return p.executeBatch(ctx, batch)
+		// Use non-cancelled context for batch execution when ctx is done (e.g. Ctrl+C).
+		// pgx closes the connection on context cancellation, causing "conn closed" during
+		// br.Close() deallocation. A fresh context allows the flush to complete.
+		batchCtx := ctx
+		if batchCtx.Err() != nil {
+			var cancel context.CancelFunc
+			batchCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+		}
+		if err := retry.OnTimeout(batchCtx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+			return p.executeBatch(batchCtx, batch)
 		}); err != nil {
 			return err
 		}
@@ -424,6 +680,15 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 					return nil
 				}
 				messageCount++
+				if p.trySoftDelete(msg, batch, &batchMessages, &count) {
+					if count >= maxBatchSize {
+						if err := doFlush(); err != nil {
+							p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
+							return err
+						}
+					}
+					continue
+				}
 				var data map[string]interface{}
 				if err := json.Unmarshal(msg.Data, &data); err != nil {
 					p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
@@ -431,73 +696,14 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 				}
 
 				p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
+				if op, _ := msg.Metadata["operation"].(string); op == "update" {
+					p.logger.Info("Applying update (upsert)", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table)
+				}
 
-				var query string
-				var values []interface{}
-				upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
-				var hasJSONB bool
-				checkJSONBQuery := `SELECT EXISTS (
-					SELECT FROM information_schema.columns
-					WHERE table_schema = 'public'
-					AND table_name = $1
-					AND column_name = 'data'
-					AND data_type = 'jsonb'
-				)`
-				err := p.conn.QueryRow(ctx, checkJSONBQuery, p.config.Table).Scan(&hasJSONB)
-				if err == nil && hasJSONB {
-					if upsertMode {
-						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", p.config.Table)
-					} else {
-						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", p.config.Table)
-					}
-					jsonData, _ := json.Marshal(data)
-					values = []interface{}{string(jsonData)}
-				} else {
-					columns := make([]string, 0, len(data))
-					colValues := make([]interface{}, 0, len(data))
-					placeholders := make([]string, 0, len(data))
-					idx := 1
-					for col, val := range data {
-						columns = append(columns, col)
-						colValues = append(colValues, val)
-						placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
-						idx++
-					}
-					if len(columns) == 0 {
-						continue
-					}
-					columnList := fmt.Sprintf(`"%s"`, columns[0])
-					for i := 1; i < len(columns); i++ {
-						columnList += fmt.Sprintf(`, "%s"`, columns[i])
-					}
-					placeholderList := "$1"
-					for i := 2; i <= len(placeholders); i++ {
-						placeholderList += fmt.Sprintf(", $%d", i)
-					}
-					if upsertMode {
-						conflictKey := "id"
-						if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
-							conflictKey = *p.config.ConflictKey
-						}
-						updateClauses := make([]string, 0)
-						for _, col := range columns {
-							if col != conflictKey {
-								updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
-							}
-						}
-						if len(updateClauses) == 0 {
-							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", p.config.Table, columnList, placeholderList, conflictKey)
-						} else {
-							updateClause := updateClauses[0]
-							for i := 1; i < len(updateClauses); i++ {
-								updateClause += ", " + updateClauses[i]
-							}
-							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", p.config.Table, columnList, placeholderList, conflictKey, updateClause)
-						}
-					} else {
-						query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", p.config.Table, columnList, placeholderList)
-					}
-					values = colValues
+				query, values, err := p.buildInsertForMessage(ctx, data, msg)
+				if err != nil {
+					p.logger.Error(err, "Failed to build insert", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
+					continue
 				}
 
 				batch.Queue(query, values...)
@@ -537,6 +743,15 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 				}
 
 				messageCount++
+				if p.trySoftDelete(msg, batch, &batchMessages, &count) {
+					if count >= maxBatchSize {
+						if err := doFlush(); err != nil {
+							p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
+							return err
+						}
+					}
+					continue
+				}
 				var data map[string]interface{}
 				if err := json.Unmarshal(msg.Data, &data); err != nil {
 					p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
@@ -544,73 +759,14 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 				}
 
 				p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
+				if op, _ := msg.Metadata["operation"].(string); op == "update" {
+					p.logger.Info("Applying update (upsert)", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table)
+				}
 
-				var query string
-				var values []interface{}
-				upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
-				var hasJSONB bool
-				checkJSONBQuery := `SELECT EXISTS (
-					SELECT FROM information_schema.columns
-					WHERE table_schema = 'public'
-					AND table_name = $1
-					AND column_name = 'data'
-					AND data_type = 'jsonb'
-				)`
-				err := p.conn.QueryRow(ctx, checkJSONBQuery, p.config.Table).Scan(&hasJSONB)
-				if err == nil && hasJSONB {
-					if upsertMode {
-						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", p.config.Table)
-					} else {
-						query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", p.config.Table)
-					}
-					jsonData, _ := json.Marshal(data)
-					values = []interface{}{string(jsonData)}
-				} else {
-					columns := make([]string, 0, len(data))
-					colValues := make([]interface{}, 0, len(data))
-					placeholders := make([]string, 0, len(data))
-					idx := 1
-					for col, val := range data {
-						columns = append(columns, col)
-						colValues = append(colValues, val)
-						placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
-						idx++
-					}
-					if len(columns) == 0 {
-						continue
-					}
-					columnList := fmt.Sprintf(`"%s"`, columns[0])
-					for i := 1; i < len(columns); i++ {
-						columnList += fmt.Sprintf(`, "%s"`, columns[i])
-					}
-					placeholderList := "$1"
-					for i := 2; i <= len(placeholders); i++ {
-						placeholderList += fmt.Sprintf(", $%d", i)
-					}
-					if upsertMode {
-						conflictKey := "id"
-						if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
-							conflictKey = *p.config.ConflictKey
-						}
-						updateClauses := make([]string, 0)
-						for _, col := range columns {
-							if col != conflictKey {
-								updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
-							}
-						}
-						if len(updateClauses) == 0 {
-							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", p.config.Table, columnList, placeholderList, conflictKey)
-						} else {
-							updateClause := updateClauses[0]
-							for i := 1; i < len(updateClauses); i++ {
-								updateClause += ", " + updateClauses[i]
-							}
-							query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", p.config.Table, columnList, placeholderList, conflictKey, updateClause)
-						}
-					} else {
-						query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", p.config.Table, columnList, placeholderList)
-					}
-					values = colValues
+				query, values, err := p.buildInsertForMessage(ctx, data, msg)
+				if err != nil {
+					p.logger.Error(err, "Failed to build insert", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
+					continue
 				}
 
 				batch.Queue(query, values...)
@@ -629,12 +785,156 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 	}
 }
 
+// trySoftDelete handles operation=delete with SoftDeleteColumn. Returns true if message was handled.
+func (p *PostgreSQLSinkConnector) trySoftDelete(msg *types.Message, batch *pgx.Batch, batchMessages *[]*types.Message, count *int) bool {
+	if p.config.SoftDeleteColumn == nil || *p.config.SoftDeleteColumn == "" {
+		return false
+	}
+	op, _ := msg.Metadata["operation"].(string)
+	if op != "delete" {
+		return false
+	}
+	// Get id from metadata or from data
+	var idVal interface{}
+	if msg.Metadata["id"] != nil {
+		idVal = msg.Metadata["id"]
+	} else {
+		var data map[string]interface{}
+		if err := json.Unmarshal(msg.Data, &data); err == nil && data["id"] != nil {
+			idVal = data["id"]
+		}
+	}
+	if idVal == nil {
+		p.logger.Info("Soft delete skipped: no id in message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
+		return false
+	}
+	conflictKey := "id"
+	if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
+		conflictKey = *p.config.ConflictKey
+	}
+	query := fmt.Sprintf("UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s = $1", p.config.Table, *p.config.SoftDeleteColumn, conflictKey)
+	batch.Queue(query, idVal)
+	*batchMessages = append(*batchMessages, msg)
+	*count++
+	p.logger.V(1).Info("Soft delete queued", "id", idVal, "table", p.config.Table)
+	return true
+}
+
 func getKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// buildInsertForMessage ensures table if needed and builds INSERT query and values for the message.
+// msg is used when rawMode wraps plain data: msg.Metadata becomes _metadata.
+func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, data map[string]interface{}, msg *types.Message) (query string, values []interface{}, err error) {
+	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable {
+		exists, e := p.tableExists(ctx)
+		if e == nil && !exists {
+			if p.rawMode() {
+				if e := p.ensureTable(ctx); e != nil {
+					return "", nil, e
+				}
+			} else {
+				if e := p.ensureTableFromMessage(ctx, data); e != nil {
+					return "", nil, e
+				}
+			}
+		}
+	}
+
+	upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
+
+	if p.rawMode() {
+		var valueJSON, metaJSON []byte
+		if data["value"] != nil {
+			// Source sent raw format: {"value": ..., "_metadata": ...}
+			valueJSON, _ = json.Marshal(data["value"])
+			metaJSON, _ = json.Marshal(data["_metadata"])
+		} else {
+			// Source sent plain format: {"id": 1, "name": "foo", ...} — wrap as value, use msg.Metadata for _metadata
+			valueJSON, _ = json.Marshal(data)
+			meta := map[string]interface{}{}
+			if msg != nil && msg.Metadata != nil {
+				for k, v := range msg.Metadata {
+					meta[k] = v
+				}
+			}
+			metaJSON, _ = json.Marshal(meta)
+		}
+		if upsertMode {
+			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb) ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value, _metadata = EXCLUDED._metadata", p.config.Table)
+		} else {
+			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb)", p.config.Table)
+		}
+		values = []interface{}{string(valueJSON), string(metaJSON)}
+		return query, values, nil
+	}
+
+	hasJSONB, e := p.hasJSONBColumn(ctx)
+	if e == nil && hasJSONB {
+		if upsertMode {
+			query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", p.config.Table)
+		} else {
+			query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", p.config.Table)
+		}
+		jsonData, _ := json.Marshal(data)
+		values = []interface{}{string(jsonData)}
+		return query, values, nil
+	}
+
+	columns := make([]string, 0, len(data))
+	colValues := make([]interface{}, 0, len(data))
+	for col, val := range data {
+		columns = append(columns, col)
+		colValues = append(colValues, val)
+	}
+	sort.Strings(columns) // stable order for consistent INSERTs and correct upsert
+	placeholders := make([]string, 0, len(columns))
+	colValues = make([]interface{}, 0, len(columns))
+	for i, col := range columns {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		colValues = append(colValues, data[col])
+	}
+	if len(columns) == 0 {
+		return "", nil, fmt.Errorf("empty message, no columns to insert")
+	}
+	columnList := fmt.Sprintf(`"%s"`, columns[0])
+	for i := 1; i < len(columns); i++ {
+		columnList += fmt.Sprintf(`, "%s"`, columns[i])
+	}
+	placeholderList := "$1"
+	for i := 2; i <= len(placeholders); i++ {
+		placeholderList += fmt.Sprintf(", $%d", i)
+	}
+	if upsertMode {
+		conflictKey := "id"
+		if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
+			conflictKey = *p.config.ConflictKey
+		}
+		updateClauses := make([]string, 0)
+		for _, col := range columns {
+			if col != conflictKey {
+				updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
+			}
+		}
+		if len(updateClauses) == 0 {
+			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", p.config.Table, columnList, placeholderList, conflictKey)
+		} else {
+			updateClause := updateClauses[0]
+			for i := 1; i < len(updateClauses); i++ {
+				updateClause += ", " + updateClauses[i]
+			}
+			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", p.config.Table, columnList, placeholderList, conflictKey, updateClause)
+		}
+	} else {
+		query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", p.config.Table, columnList, placeholderList)
+	}
+	values = colValues
+	return query, values, nil
 }
 
 func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.Batch) error {

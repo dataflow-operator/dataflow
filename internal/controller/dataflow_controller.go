@@ -581,24 +581,41 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 		if r.Recorder != nil {
 			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "DeploymentCreated", "Created Deployment %s", deploymentName)
 		}
-	} else if err != nil {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("failed to get Deployment: %w", err)
-	} else {
-		// Update existing Deployment only when spec actually changed
+	}
+
+	// Update existing Deployment with retry on conflict (no extra rollout: we only Update when spec differs)
+	maxRetries := 5
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, existing); err != nil {
+				return fmt.Errorf("failed to get Deployment: %w", err)
+			}
+		}
 		if equality.Semantic.DeepEqual(existing.Spec, deployment.Spec) {
 			return nil
 		}
 		existing.Spec = deployment.Spec
 		if err := r.Update(ctx, existing); err != nil {
+			if apierrors.IsConflict(err) && attempt < maxRetries-1 {
+				log.Info("Deployment update conflict, retrying", "attempt", attempt+1, "maxRetries", maxRetries, "name", deploymentName)
+				baseDelay := time.Duration(1<<uint(attempt)) * 200 * time.Millisecond
+				jitter := time.Duration(rand.Intn(50)) * time.Millisecond
+				time.Sleep(baseDelay + jitter)
+				continue
+			}
 			return fmt.Errorf("failed to update Deployment: %w", err)
 		}
 		log.Info("Updated Deployment", "name", deploymentName)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "DeploymentUpdated", "Updated Deployment %s", deploymentName)
 		}
+		return nil
 	}
-
-	return nil
+	return fmt.Errorf("failed to update Deployment after %d attempts", maxRetries)
 }
 
 // getResourceRequirements returns resource requirements from spec or default values.

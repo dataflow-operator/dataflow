@@ -215,6 +215,20 @@ type PostgreSQLSourceSpec struct {
 	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {table, id}}
 	// +optional
 	RawMode *bool `json:"rawMode,omitempty"`
+
+	// ReadBatchSize limits rows per poll to reduce DB load (0 = no limit)
+	// +optional
+	ReadBatchSize *int32 `json:"readBatchSize,omitempty"`
+
+	// ChangeTrackingColumn is the column used to track changes (default: updated_at).
+	// Not used when Query is specified.
+	// +optional
+	// +kubebuilder:default="updated_at"
+	ChangeTrackingColumn string `json:"changeTrackingColumn,omitempty"`
+
+	// AutoCreateTable creates the table if it doesn't exist before reading
+	// +optional
+	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
 }
 
 // TrinoSourceSpec defines Trino source configuration
@@ -525,8 +539,9 @@ type PostgreSQLSinkSpec struct {
 	// Table to write to
 	Table string `json:"table"`
 
-	// BatchSize for batch inserts
+	// BatchSize for batch inserts (default: 1)
 	// +optional
+	// +kubebuilder:default=1
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
 	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).
@@ -546,6 +561,15 @@ type PostgreSQLSinkSpec struct {
 	// If not specified, defaults to PRIMARY KEY
 	// +optional
 	ConflictKey *string `json:"conflictKey,omitempty"`
+
+	// SoftDeleteColumn specifies column for soft delete (e.g. "deleted_at"). If set, DELETE operations will UPDATE this column instead of physical delete.
+	// +optional
+	SoftDeleteColumn *string `json:"softDeleteColumn,omitempty"`
+
+	// RawMode when true, expects messages in format {"value": <data>, "_metadata": {...}}. Table is created with value JSONB and _metadata JSONB columns.
+	// When false, table structure is inferred from the first message (replicates source structure).
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
 
 	// ConnectionStringSecretRef references a Kubernetes secret for connection string
 	// +optional

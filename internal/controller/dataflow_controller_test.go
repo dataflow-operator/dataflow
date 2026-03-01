@@ -94,6 +94,38 @@ func (s *conflictSimulatingStatusWriter) Patch(ctx context.Context, obj client.O
 	return s.client.realStatus.Patch(ctx, obj, patch, opts...)
 }
 
+// deploymentUpdateConflictClient returns Conflict on the first N Update() calls for Deployments.
+type deploymentUpdateConflictClient struct {
+	client.Client
+	deploymentUpdateAttempts int
+	conflictsToSimulate      int
+	mu                       sync.Mutex
+}
+
+func newDeploymentUpdateConflictClient(real client.Client, conflictsToSimulate int) *deploymentUpdateConflictClient {
+	return &deploymentUpdateConflictClient{
+		Client:              real,
+		conflictsToSimulate: conflictsToSimulate,
+	}
+}
+
+func (c *deploymentUpdateConflictClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, isDeployment := obj.(*appsv1.Deployment); isDeployment {
+		c.mu.Lock()
+		c.deploymentUpdateAttempts++
+		n := c.deploymentUpdateAttempts
+		c.mu.Unlock()
+		if n <= c.conflictsToSimulate {
+			return apierrors.NewConflict(
+				schema.GroupResource{Group: "apps", Resource: "deployments"},
+				obj.GetName(),
+				fmt.Errorf("simulated deployment update conflict (attempt %d)", n),
+			)
+		}
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+
 func TestNewDataFlowReconciler(t *testing.T) {
 	tests := []struct {
 		name                 string
@@ -526,8 +558,8 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorImage(t *testin
 		Spec: dataflowv1.DataFlowSpec{
 			ProcessorImage: customImage,
 			Source: dataflowv1.SourceSpec{
-				Type:   "kafka",
-				Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+				Type:  "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
 			},
 			Sink: dataflowv1.SinkSpec{
 				Type:  "kafka",
@@ -559,8 +591,8 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorVersion(t *test
 		Spec: dataflowv1.DataFlowSpec{
 			ProcessorVersion: "v0.5.0",
 			Source: dataflowv1.SourceSpec{
-				Type:   "kafka",
-				Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+				Type:  "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
 			},
 			Sink: dataflowv1.SinkSpec{
 				Type:  "kafka",
@@ -596,8 +628,8 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesImagePullSecrets(t *testing.
 				{Name: "other-pull-secret"},
 			},
 			Source: dataflowv1.SourceSpec{
-				Type:   "kafka",
-				Kafka:  &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+				Type:  "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
 			},
 			Sink: dataflowv1.SinkSpec{
 				Type:  "kafka",
@@ -1105,6 +1137,127 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
 	assert.Equal(t, "compute", deployment.Spec.Template.Spec.NodeSelector["node-type"],
 		"Deployment NodeSelector should reflect updated DataFlow spec")
+}
+
+// TestCreateOrUpdateDeployment_RetryOnConflict verifies that when Deployment Update returns 409 Conflict,
+// the controller retries and succeeds on the next attempt (no extra rollout: spec comparison skips redundant Update).
+func TestCreateOrUpdateDeployment_RetryOnConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	// Simulate one conflict on first Deployment Update, then success
+	conflictClient := newDeploymentUpdateConflictClient(fakeClient, 1)
+	reconciler := NewDataFlowReconciler(conflictClient, scheme, nil)
+
+	ctx := context.Background()
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "output-topic",
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
+	}
+
+	// First reconcile — create Deployment (no Update yet)
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	// Change spec so next reconcile will call Update
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, dataflow))
+	dataflow.Spec.NodeSelector = map[string]string{"node-type": "compute"}
+	require.NoError(t, fakeClient.Update(ctx, dataflow))
+
+	// Second reconcile — first Update returns conflict, retry (re-Get + Update) succeeds
+	_, err = reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
+	assert.Equal(t, "compute", deployment.Spec.Template.Spec.NodeSelector["node-type"])
+}
+
+// TestCreateOrUpdateDeployment_ConflictAfterMaxRetries verifies that when Deployment Update always returns Conflict,
+// the controller returns error after maxRetries (reconcile will be requeued).
+func TestCreateOrUpdateDeployment_ConflictAfterMaxRetries(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	conflictClient := newDeploymentUpdateConflictClient(fakeClient, 20) // more than maxRetries (5)
+	reconciler := NewDataFlowReconciler(conflictClient, scheme, nil)
+
+	ctx := context.Background()
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{
+					Brokers: []string{"localhost:9092"},
+					Topic:   "output-topic",
+				},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
+	}
+
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, dataflow))
+	dataflow.Spec.NodeSelector = map[string]string{"node-type": "compute"}
+	require.NoError(t, fakeClient.Update(ctx, dataflow))
+
+	_, err := reconciler.Reconcile(ctx, req)
+	require.Error(t, err)
+	assert.True(t, apierrors.IsConflict(err) || strings.Contains(err.Error(), "conflict") || strings.Contains(err.Error(), "after 5 attempts"))
 }
 
 func drainRecorderEvents(r *record.FakeRecorder) {

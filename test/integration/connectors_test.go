@@ -412,6 +412,149 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 2, count)
 	})
+
+	t.Run("PostgreSQL Source CDC (insert/update detection)", func(t *testing.T) {
+		tableName := "cdc_source_table"
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+			CREATE TABLE IF NOT EXISTS %s (
+				id SERIAL PRIMARY KEY,
+				name VARCHAR(100),
+				value INTEGER,
+				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			)
+		`, tableName))
+		require.NoError(t, err)
+		_, err = conn.Exec(ctx, fmt.Sprintf("DELETE FROM %s", tableName))
+		require.NoError(t, err)
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %s (name, value) VALUES ('a', 1), ('b', 2)
+		`, tableName))
+		require.NoError(t, err)
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s SET name = 'a_updated', updated_at = CURRENT_TIMESTAMP WHERE id = 1
+		`, tableName))
+		require.NoError(t, err)
+
+		pollInterval := int32(1)
+		sourceSpec := &v1.PostgreSQLSourceSpec{
+			ConnectionString: connStr,
+			Table:            tableName,
+			PollInterval:     &pollInterval,
+		}
+		sourceConnector := connectors.NewPostgreSQLSourceConnector(sourceSpec)
+		err = sourceConnector.Connect(ctx)
+		require.NoError(t, err)
+		defer sourceConnector.Close()
+
+		msgChan, err := sourceConnector.Read(ctx)
+		require.NoError(t, err)
+
+		messages := make([]*types.Message, 0)
+		timeout := time.After(5 * time.Second)
+		for {
+			select {
+			case msg, ok := <-msgChan:
+				if !ok {
+					goto cdcDone
+				}
+				messages = append(messages, msg)
+			case <-timeout:
+				goto cdcDone
+			}
+		}
+	cdcDone:
+		require.GreaterOrEqual(t, len(messages), 2)
+		// First read: 2 inserts + 1 update (or order may vary)
+		hasInsert, hasUpdate := false, false
+		for _, m := range messages {
+			if op, ok := m.Metadata["operation"].(string); ok {
+				if op == "insert" {
+					hasInsert = true
+				}
+				if op == "update" {
+					hasUpdate = true
+				}
+			}
+		}
+		assert.True(t, hasInsert, "expected at least one insert")
+		assert.True(t, hasUpdate, "expected at least one update")
+	})
+
+	t.Run("PostgreSQL Source with autoCreateTable", func(t *testing.T) {
+		tableName := "auto_created_source_table"
+		_, err = conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
+		require.NoError(t, err)
+
+		pollInterval := int32(1)
+		autoCreate := true
+		sourceSpec := &v1.PostgreSQLSourceSpec{
+			ConnectionString: connStr,
+			Table:            tableName,
+			PollInterval:     &pollInterval,
+			AutoCreateTable:  &autoCreate,
+		}
+		sourceConnector := connectors.NewPostgreSQLSourceConnector(sourceSpec)
+		err = sourceConnector.Connect(ctx)
+		require.NoError(t, err)
+		defer sourceConnector.Close()
+
+		var exists bool
+		err = conn.QueryRow(ctx, `SELECT EXISTS (
+			SELECT FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = $1
+		)`, tableName).Scan(&exists)
+		require.NoError(t, err)
+		assert.True(t, exists, "table should be auto-created")
+	})
+
+	t.Run("PostgreSQL Sink with softDeleteColumn", func(t *testing.T) {
+		sinkTable := "soft_delete_sink_table"
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+			CREATE TABLE IF NOT EXISTS %s (
+				id INTEGER PRIMARY KEY,
+				name VARCHAR(100),
+				deleted_at TIMESTAMP
+			)
+		`, sinkTable))
+		require.NoError(t, err)
+		_, err = conn.Exec(ctx, fmt.Sprintf("DELETE FROM %s", sinkTable))
+		require.NoError(t, err)
+		_, err = conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s (id, name) VALUES (1, 'x'), (2, 'y')", sinkTable))
+		require.NoError(t, err)
+
+		softDeleteCol := "deleted_at"
+		sinkSpec := &v1.PostgreSQLSinkSpec{
+			ConnectionString: connStr,
+			Table:            sinkTable,
+			SoftDeleteColumn: &softDeleteCol,
+		}
+		sinkConnector := connectors.NewPostgreSQLSinkConnector(sinkSpec)
+		err = sinkConnector.Connect(ctx)
+		require.NoError(t, err)
+		defer sinkConnector.Close()
+
+		// Send delete for id=1
+		msg := types.NewMessage([]byte(`{"id": 1}`))
+		msg.Metadata["operation"] = "delete"
+		msg.Metadata["id"] = 1
+		msgChan := make(chan *types.Message, 1)
+		msgChan <- msg
+		close(msgChan)
+
+		err = sinkConnector.Write(ctx, msgChan)
+		require.NoError(t, err)
+
+		var deletedAt sql.NullTime
+		err = conn.QueryRow(ctx, fmt.Sprintf("SELECT deleted_at FROM %s WHERE id = 1", sinkTable)).Scan(&deletedAt)
+		require.NoError(t, err)
+		assert.True(t, deletedAt.Valid, "deleted_at should be set for soft-deleted row")
+
+		var count int
+		err = conn.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", sinkTable)).Scan(&count)
+		require.NoError(t, err)
+		assert.Equal(t, 2, count, "row should still exist (soft delete)")
+	})
 }
 
 // TestClickHouseConnectorIntegration tests ClickHouse source and sink connectors.
