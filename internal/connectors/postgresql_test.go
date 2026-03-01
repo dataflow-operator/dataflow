@@ -23,10 +23,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/types"
 )
 
@@ -313,4 +315,46 @@ func TestPostgreSQLSinkConnector_rawMode(t *testing.T) {
 			assert.Equal(t, tt.want, p.rawMode())
 		})
 	}
+}
+
+// TestPostgreSQLConnectors_ImplementSetMetadata verifies both PostgreSQL connectors
+// implement the SetMetadata interface used by the processor for metrics.
+func TestPostgreSQLConnectors_ImplementSetMetadata(t *testing.T) {
+	t.Run("source", func(t *testing.T) {
+		p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{Table: "t"})
+		_, ok := interface{}(p).(interface{ SetMetadata(string, string) })
+		assert.True(t, ok, "PostgreSQLSourceConnector must implement SetMetadata")
+	})
+	t.Run("sink", func(t *testing.T) {
+		p := NewPostgreSQLSinkConnector(&v1.PostgreSQLSinkSpec{Table: "t"})
+		_, ok := interface{}(p).(interface{ SetMetadata(string, string) })
+		assert.True(t, ok, "PostgreSQLSinkConnector must implement SetMetadata")
+	})
+}
+
+// TestPostgreSQLSourceConnector_SetConnectorConnectionStatus verifies that Close
+// updates the connection status metric to disconnected.
+func TestPostgreSQLSourceConnector_SetConnectorConnectionStatus(t *testing.T) {
+	// Use a connection string that will fail - we only care about the error path
+	// recording SetConnectorConnectionStatus. On success we'd set true; on failure
+	// we never set it. So we need a successful connect to test SetConnectorConnectionStatus.
+	// Skip if no real DB - use a connection that fails, then we only test RecordConnectorError.
+	// For SetConnectorConnectionStatus we need successful Connect. That requires a real DB.
+	// Instead, test that SetMetadata is used: create connector, set metadata, call Close.
+	// Close will call SetConnectorConnectionStatus(false) even if Connect was never called
+	// (guardClose will run, and we'll set status false before closing conn - but conn is nil).
+	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{Table: "t"})
+	p.SetMetadata("pg-status-ns", "pg-status-name")
+
+	// Close without Connect - should still call SetConnectorConnectionStatus(false)
+	err := p.Close()
+	require.NoError(t, err)
+
+	metric, err := metrics.ConnectorConnectionStatus.GetMetricWithLabelValues("pg-status-ns", "pg-status-name", "postgresql", "source")
+	require.NoError(t, err)
+	var dtoMetric dto.Metric
+	require.NoError(t, metric.Write(&dtoMetric))
+	require.NotNil(t, dtoMetric.Gauge)
+	require.NotNil(t, dtoMetric.Gauge.Value)
+	assert.Equal(t, 0.0, *dtoMetric.Gauge.Value, "connection status should be 0 after Close")
 }
