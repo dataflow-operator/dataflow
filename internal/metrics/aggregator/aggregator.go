@@ -189,9 +189,13 @@ func ListProcessorPods(ctx context.Context, c client.Client, namespace string) (
 func NewMetricsFilter(scraper *Scraper) func(log logr.Logger, handler http.Handler) (http.Handler, error) {
 	return func(log logr.Logger, handler http.Handler) (http.Handler, error) {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 1. Get operator metrics by invoking the default handler
+			// 1. Get operator metrics by invoking the default handler.
+			// Strip Accept-Encoding so we get uncompressed response — Prometheus expects plain text
+			// and does not decompress gzip (causes "expected a valid start token, got \"\x1f\"" error).
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, r)
+			r2 := r.Clone(r.Context())
+			r2.Header.Del("Accept-Encoding")
+			handler.ServeHTTP(rec, r2)
 			operatorMetrics := rec.Body.Bytes()
 
 			// 2. Scrape processor pods

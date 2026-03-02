@@ -17,8 +17,18 @@ limitations under the License.
 package aggregator
 
 import (
+	"compress/gzip"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 )
 
 func TestFilterDataflowMetrics(t *testing.T) {
@@ -90,5 +100,47 @@ func TestMergeWithOperatorMetrics_EmptyProcessor(t *testing.T) {
 	merged := MergeWithOperatorMetrics(operator, nil)
 	if string(merged) != string(operator) {
 		t.Errorf("MergeWithOperatorMetrics(nil) = %q, want %q", merged, operator)
+	}
+}
+
+// TestMetricsFilter_NoGzip verifies that the filter strips Accept-Encoding so Prometheus
+// receives plain text (gzip causes "expected a valid start token, got \"\x1f\"" error).
+func TestMetricsFilter_NoGzip(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dataflowv1.AddToScheme(scheme)
+	_ = clientgoscheme.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	scraper := NewScraper(fakeClient)
+
+	// Handler that returns gzip when Accept-Encoding: gzip is present
+	gzipHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := "# HELP dataflow_status Status\n# TYPE dataflow_status gauge\ndataflow_status 1\n"
+		if r.Header.Get("Accept-Encoding") == "gzip" {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write([]byte(plain))
+			_ = gz.Close()
+		} else {
+			w.Write([]byte(plain))
+		}
+	})
+
+	filterFn := NewMetricsFilter(scraper)
+	wrapped, err := filterFn(logr.Discard(), gzipHandler)
+	if err != nil {
+		t.Fatalf("NewMetricsFilter: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	body := rec.Body.Bytes()
+	if len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b {
+		t.Error("response is gzip-compressed; Prometheus expects plain text")
+	}
+	if !strings.Contains(string(body), "dataflow_status") {
+		t.Errorf("response should contain dataflow_status, got %q", string(body))
 	}
 }
