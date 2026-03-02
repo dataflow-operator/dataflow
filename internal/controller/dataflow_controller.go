@@ -28,6 +28,7 @@ import (
 	"time"
 
 	crand "crypto/rand"
+	"crypto/sha256"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -320,7 +321,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Create or update Deployment
-	if err := r.createOrUpdateDeployment(ctx, req, &dataflow); err != nil {
+	if err := r.createOrUpdateDeployment(ctx, req, &dataflow, resolvedSpec); err != nil {
 		log.Error(err, "failed to create or update Deployment")
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "DeploymentFailed", "Failed to create or update Deployment: %v", err)
@@ -478,12 +479,24 @@ func (r *DataFlowReconciler) processorImageFor(dataflow *dataflowv1.DataFlow) st
 	return r.processorImage
 }
 
+// specHashAnnotation is the pod template annotation key for spec content hash.
+// When spec changes, the hash changes, triggering a Deployment rollout.
+const specHashAnnotation = "dataflow.dataflow.io/spec-hash"
+
 // createOrUpdateDeployment creates or updates Deployment for the processor.
-func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
+func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	log := log.FromContext(ctx)
 
 	deploymentName := fmt.Sprintf("dataflow-%s", dataflow.Name)
 	configMapName := fmt.Sprintf("dataflow-%s-spec", dataflow.Name)
+
+	// Compute spec hash so pod template changes when ConfigMap content changes, triggering rollout.
+	specJSON, err := json.Marshal(resolvedSpec)
+	if err != nil {
+		return fmt.Errorf("failed to marshal spec for hash: %w", err)
+	}
+	hash := sha256.Sum256(specJSON)
+	specHash := hex.EncodeToString(hash[:])
 
 	labels := map[string]string{
 		"app":                        "dataflow-processor",
@@ -506,6 +519,9 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
+					Annotations: map[string]string{
+						specHashAnnotation: specHash,
+					},
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(int64(30)),
@@ -521,6 +537,9 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 							},
 							Env: []corev1.EnvVar{
 								{Name: "LOG_LEVEL", Value: processorLogLevel()},
+							},
+							Ports: []corev1.ContainerPort{
+								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 							},
 							Lifecycle: &corev1.Lifecycle{
 								PreStop: &corev1.LifecycleHandler{
@@ -567,7 +586,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 
 	// Check if Deployment exists
 	existing := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, existing)
+	err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, existing)
 	if err != nil && apierrors.IsNotFound(err) {
 		// Ensure finalizer before creating first child so deletion is coordinated
 		if err := r.ensureDataFlowFinalizer(ctx, req); err != nil {

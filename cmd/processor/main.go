@@ -20,19 +20,23 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	ctrl "sigs.k8s.io/controller-runtime"
 	zaprctrl "sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
+	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Register metrics
 	"github.com/dataflow-operator/dataflow/internal/processor"
 )
 
@@ -40,9 +44,11 @@ func main() {
 	var specPath string
 	var namespace string
 	var name string
+	var metricsPort string
 	flag.StringVar(&specPath, "spec-path", "/etc/dataflow/spec.json", "Path to DataFlow spec JSON file")
 	flag.StringVar(&namespace, "namespace", "", "Namespace of the DataFlow resource")
 	flag.StringVar(&name, "name", "", "Name of the DataFlow resource")
+	flag.StringVar(&metricsPort, "metrics-port", ":9090", "Address for the metrics HTTP server")
 	opts := zaprctrl.Options{
 		Development: true,
 	}
@@ -81,6 +87,16 @@ func main() {
 	// Create context with signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start metrics HTTP server (must be before proc.Start so /metrics is available from the start)
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
+	metricsServer := &http.Server{Addr: metricsPort, Handler: mux}
+	go func() {
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error(err, "Metrics server exited")
+		}
+	}()
 
 	// Signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, constants.DefaultSingleValueChannelBufferSize)

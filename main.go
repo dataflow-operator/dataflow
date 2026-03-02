@@ -35,8 +35,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	zaprctrl "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -46,6 +48,7 @@ import (
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/controller"
 	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Import for metrics registration
+	"github.com/dataflow-operator/dataflow/internal/metrics/aggregator"
 	"github.com/dataflow-operator/dataflow/internal/webhookenv"
 	//+kubebuilder:scaffold:imports
 )
@@ -167,11 +170,26 @@ func main() {
 	if renewDeadline >= leaseDuration {
 		renewDeadline = leaseDuration/2 + leaseDuration/4 // e.g. 45s if lease 60s
 	}
-	mgrOpts := ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
+
+	// Create a client for metrics aggregation (scraping processor pods). Used before manager exists.
+	config := ctrl.GetConfigOrDie()
+	metricsClient, err := client.New(config, client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "unable to create client for metrics aggregation")
+		os.Exit(1)
+	}
+
+	metricsOpts := metricsserver.Options{
+		BindAddress: metricsAddr,
+		FilterProvider: func(_ *rest.Config, _ *http.Client) (metricsserver.Filter, error) {
+			scraper := aggregator.NewScraper(metricsClient)
+			return aggregator.NewMetricsFilter(scraper), nil
 		},
+	}
+
+	mgrOpts := ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsOpts,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         true, // Always HA-ready: only one active controller across replicas
 		LeaderElectionID:       "dataflow-operator.dataflow.io",

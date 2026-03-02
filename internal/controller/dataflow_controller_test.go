@@ -520,6 +520,10 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	err = fakeClient.Get(ctx, deploymentName, &deployment)
 	assert.NoError(t, err, "Deployment should be created")
 	assert.Equal(t, "dataflow-test-dataflow", deployment.Name)
+	assert.Contains(t, deployment.Spec.Template.Annotations, specHashAnnotation,
+		"Deployment pod template should have spec-hash annotation for ConfigMap change detection")
+	assert.NotEmpty(t, deployment.Spec.Template.Annotations[specHashAnnotation],
+		"spec-hash annotation should be non-empty")
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 	assert.Equal(t, version.DefaultProcessorImage(), deployment.Spec.Template.Spec.Containers[0].Image, "default processor image should match controller")
 	var hasLogLevel bool
@@ -1137,6 +1141,88 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
 	assert.Equal(t, "compute", deployment.Spec.Template.Spec.NodeSelector["node-type"],
 		"Deployment NodeSelector should reflect updated DataFlow spec")
+}
+
+// TestCreateOrUpdateDeployment_UpdateWhenSpecContentChanged verifies that when DataFlow spec content
+// changes (e.g. Kafka brokers, SecretRef), the spec-hash annotation changes and Deployment is updated,
+// triggering a pod restart for the new config.
+func TestCreateOrUpdateDeployment_UpdateWhenSpecContentChanged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	fakeRecorder := record.NewFakeRecorder(10)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, fakeRecorder)
+
+	ctx := context.Background()
+	dataflow := &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dataflow.dataflow.io/v1",
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dataflow",
+			Namespace: "default",
+		},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type: "kafka",
+				Kafka: &dataflowv1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				},
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type:  "kafka",
+				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"},
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"},
+	}
+
+	// First reconcile — Deployment created
+	_, _ = reconciler.Reconcile(ctx, req)
+	drainRecorderEvents(fakeRecorder)
+
+	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
+	hashBefore := deployment.Spec.Template.Annotations[specHashAnnotation]
+	require.NotEmpty(t, hashBefore, "initial Deployment should have spec-hash annotation")
+
+	// Change DataFlow spec content (Kafka brokers) — same ConfigMap name, but content changes
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, dataflow))
+	dataflow.Spec.Source.Kafka.Brokers = []string{"kafka-1:9092", "kafka-2:9092"}
+	require.NoError(t, fakeClient.Update(ctx, dataflow))
+
+	// Second reconcile — Deployment should be updated (spec-hash changed)
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	var deploymentUpdatedCount int
+	for {
+		select {
+		case e := <-fakeRecorder.Events:
+			if strings.Contains(e, "DeploymentUpdated") {
+				deploymentUpdatedCount++
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	assert.Equal(t, 1, deploymentUpdatedCount,
+		"expected DeploymentUpdated event when spec content (Kafka brokers) changed")
+
+	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
+	hashAfter := deployment.Spec.Template.Annotations[specHashAnnotation]
+	assert.NotEqual(t, hashBefore, hashAfter,
+		"spec-hash should change when Kafka brokers change, triggering pod restart")
 }
 
 // TestCreateOrUpdateDeployment_RetryOnConflict verifies that when Deployment Update returns 409 Conflict,

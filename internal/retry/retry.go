@@ -49,7 +49,7 @@ func IsTransientTrinoError(err error) bool {
 		strings.Contains(lower, "retry your query") ||
 		strings.Contains(lower, "too many errors") ||
 		strings.Contains(lower, "connect timeout") ||
-		strings.Contains(lower, "connection refused") ||
+		(strings.Contains(lower, "connection") && strings.Contains(lower, "refused")) ||
 		strings.Contains(lower, "under too much load") ||
 		strings.Contains(lower, "the node may have crashed") ||
 		strings.Contains(lower, "status 503") ||
