@@ -128,6 +128,10 @@ func TestIsTransientTrinoError(t *testing.T) {
 		{"node may have crashed", errors.New("The node may have crashed or be under load"), true},
 		{"status 503", errors.New("Trino query failed with status 503: <html>503 Service Temporarily Unavailable</html>"), true},
 		{"status 502", errors.New("Trino query failed with status 502: Bad Gateway"), true},
+		{"connection refused", errors.New("Connection to c-xxx.rw.mdb.yandexcloud.net:6432 refused"), true},
+		{"internal server error", errors.New("Internal Server Error (HTTP/500): java.lang.RuntimeException"), true},
+		{"http/500", errors.New("Trino query failed: Internal Server Error (HTTP/500)"), true},
+		{"generic_internal_error", errors.New("Error: GENERIC_INTERNAL_ERROR, Code: 65536"), true},
 		{"service temporarily unavailable", errors.New("503 Service Temporarily Unavailable"), true},
 		{"bad gateway", errors.New("502 bad gateway"), true},
 		{"permanent error", errors.New("syntax error at line 1"), false},
@@ -213,5 +217,24 @@ func TestOnRetryableTrino_503ThenSuccess(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Errorf("expected 3 calls (503 twice then success), got %d", calls)
+	}
+}
+
+func TestOnRetryableTrino_ConnectionRefusedThenSuccess(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	connRefused := errors.New("Connection to c-xxx.rw.mdb.yandexcloud.net:6432 refused. Check that the hostname and port are correct")
+	err := OnRetryableTrino(ctx, 5, 5*time.Millisecond, func() error {
+		calls++
+		if calls < 2 {
+			return connRefused
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("OnRetryableTrino() err = %v, want nil", err)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 calls (connection refused then success), got %d", calls)
 	}
 }

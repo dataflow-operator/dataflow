@@ -29,6 +29,7 @@ import (
 	errclass "github.com/dataflow-operator/dataflow/internal/errors"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
+	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/transformers"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
@@ -163,8 +164,8 @@ func (p *Processor) Start(ctx context.Context) error {
 	defer p.source.Close()
 	p.logger.Info("Connected to source")
 
-	// Connect to main sink
-	if err := p.sink.Connect(ctx); err != nil {
+	// Connect to main sink with retry on transient errors (connection refused, HTTP 500, etc.)
+	if err := p.connectSinkWithRetry(ctx); err != nil {
 		p.logger.Error(err, "Failed to connect to sink")
 		return fmt.Errorf("failed to connect to sink: %w", err)
 	}
@@ -198,6 +199,39 @@ func (p *Processor) Start(ctx context.Context) error {
 	// Write messages to sink(s)
 	p.logger.Info("Starting to write messages to sink")
 	return p.writeMessages(ctx, processedChan)
+}
+
+// connectSinkWithRetry connects to sink, retrying on transient errors (connection refused,
+// HTTP 500, etc.) until success or context cancellation. Prevents pod restart on temporary backend unavailability.
+func (p *Processor) connectSinkWithRetry(ctx context.Context) error {
+	const (
+		initialBackoff = 30 * time.Second
+		maxBackoff     = 5 * time.Minute
+	)
+	backoff := initialBackoff
+	for {
+		err := p.sink.Connect(ctx)
+		if err == nil {
+			return nil
+		}
+		if !retry.IsRetryableForTrino(err) {
+			return err
+		}
+		p.logger.Info("Transient sink connection error, retrying later",
+			"error", err.Error(),
+			"backoff", backoff.String())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			if backoff < maxBackoff {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+		}
+	}
 }
 
 // processMessages applies transformations to messages
