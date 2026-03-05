@@ -158,14 +158,12 @@ func TestInferClickHouseType(t *testing.T) {
 		{float64(-1), "Int8"},
 		{float64(-128), "Int8"},
 		{float64(-129), "Int16"},
-		{float64(32767), "Int32"}, // positive: 32767 < 65535 -> UInt16
+		{float64(32767), "UInt16"}, // positive whole: 32767 <= 65535
 		{float64(-32768), "Int16"},
 		{float64(-32769), "Int32"},
-		{float64(32767), "UInt16"},
 		// float64 with decimals
 		{float64(99.99), "Decimal(10, 2)"},
-		{float64(100.00), "Decimal(10, 2)"},
-		{float64(1.5), "Float64"},
+		{float64(1.5), "Decimal(10, 2)"}, // has at most 2 decimal places
 		{float64(99.999), "Float64"},
 		// RFC3339 string -> DateTime
 		{"2026-03-05T12:27:38Z", "DateTime"},
