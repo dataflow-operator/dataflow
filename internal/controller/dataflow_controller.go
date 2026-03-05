@@ -59,6 +59,21 @@ import (
 // then removes this finalizer so deletion can complete.
 const DataFlowFinalizer = "dataflow.dataflow.io/finalizer"
 
+// dataflowRefForEvent returns a minimal DataFlow object for use as involvedObject in events
+// when the full object is unavailable (e.g. FailedGet). Implements runtime.Object for EventRecorder.
+func dataflowRefForEvent(namespace, name string) *dataflowv1.DataFlow {
+	return &dataflowv1.DataFlow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: dataflowv1.GroupVersion.String(),
+			Kind:       "DataFlow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+		},
+	}
+}
+
 // DataFlowReconciler reconciles a DataFlow object
 type DataFlowReconciler struct {
 	client.Client
@@ -72,6 +87,9 @@ type DataFlowReconciler struct {
 }
 
 func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder) *DataFlowReconciler {
+	if recorder == nil {
+		ctrl.Log.WithName("dataflow-controller").Info("EventRecorder is nil, Kubernetes events will not be emitted")
+	}
 	// Processor image: from env or same image and version as operator (set at build time via ldflags).
 	processorImage := version.DefaultProcessorImage()
 	if img := os.Getenv("PROCESSOR_IMAGE"); img != "" {
@@ -236,12 +254,10 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Get(ctx, req.NamespacedName, &dataflow); err != nil {
 		log.Error(err, "unable to fetch DataFlow")
 		if r.Recorder != nil && !apierrors.IsNotFound(err) {
-			ref := &dataflowv1.DataFlow{}
-			ref.APIVersion = dataflowv1.GroupVersion.String()
-			ref.Kind = "DataFlow"
-			ref.Namespace = req.Namespace
-			ref.Name = req.Name
+			// Use minimal object reference for event (we don't have UID/ResourceVersion since Get failed)
+			ref := dataflowRefForEvent(req.Namespace, req.Name)
 			r.Recorder.Event(ref, corev1.EventTypeWarning, "FailedGet", "Unable to fetch DataFlow")
+			log.V(1).Info("Emitted Kubernetes event", "reason", "FailedGet", "object", req.NamespacedName)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -266,11 +282,13 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			log.Error(err, "failed to cleanup resources")
 			if r.Recorder != nil {
 				r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "CleanupFailed", "Failed to cleanup resources: %v", err)
+				log.V(1).Info("Emitted Kubernetes event", "reason", "CleanupFailed", "object", req.NamespacedName)
 			}
 			return ctrl.Result{}, err
 		}
 		if r.Recorder != nil {
 			r.Recorder.Event(&dataflow, corev1.EventTypeNormal, "ResourcesDeleted", "Deleted Deployment and ConfigMap")
+			log.V(1).Info("Emitted Kubernetes event", "reason", "ResourcesDeleted", "object", req.NamespacedName)
 		}
 
 		if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
@@ -293,6 +311,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		log.Error(err, "failed to resolve secrets")
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "SecretResolutionFailed", "Failed to resolve secrets: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "SecretResolutionFailed", "object", req.NamespacedName)
 		}
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
@@ -309,6 +328,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		log.Error(err, "failed to create or update ConfigMap")
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "ConfigMapFailed", "Failed to create or update ConfigMap: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "ConfigMapFailed", "object", req.NamespacedName)
 		}
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
@@ -325,6 +345,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		log.Error(err, "failed to create or update Deployment")
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "DeploymentFailed", "Failed to create or update Deployment: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "DeploymentFailed", "object", req.NamespacedName)
 		}
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
@@ -383,6 +404,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		log.Error(err, "unable to update DataFlow status")
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "StatusUpdateFailed", "Unable to update DataFlow status: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "StatusUpdateFailed", "object", req.NamespacedName)
 		}
 		// Don't return error if context was canceled or timed out, just requeue
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -449,6 +471,7 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 		log.Info("Created ConfigMap", "name", configMapName)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&df, corev1.EventTypeNormal, "ConfigMapCreated", "Created ConfigMap %s", configMapName)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "ConfigMapCreated", "object", configMapName)
 		}
 	} else if err != nil {
 		return fmt.Errorf("failed to get ConfigMap: %w", err)
@@ -461,6 +484,7 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 		log.Info("Updated ConfigMap", "name", configMapName)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&df, corev1.EventTypeNormal, "ConfigMapUpdated", "Updated ConfigMap %s", configMapName)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "ConfigMapUpdated", "object", configMapName)
 		}
 	}
 
@@ -599,6 +623,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 		log.Info("Created Deployment", "name", deploymentName)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "DeploymentCreated", "Created Deployment %s", deploymentName)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "DeploymentCreated", "object", deploymentName)
 		}
 		return nil
 	}
@@ -631,6 +656,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 		log.Info("Updated Deployment", "name", deploymentName)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "DeploymentUpdated", "Updated Deployment %s", deploymentName)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "DeploymentUpdated", "object", deploymentName)
 		}
 		return nil
 	}
