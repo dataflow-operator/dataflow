@@ -182,6 +182,35 @@ func TestSetDataFlowStatus(t *testing.T) {
 	if *dtoMetric.Gauge.Value != 0.0 {
 		t.Errorf("Expected gauge value 0.0 for Error, got %f", *dtoMetric.Gauge.Value)
 	}
+
+	// Verify only one phase exists: old phases must be removed (no duplicate time series)
+	metrics, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Failed to gather metrics: %v", err)
+	}
+	var dataflowStatusCount int
+	for _, mf := range metrics {
+		if mf.GetName() != "dataflow_status" {
+			continue
+		}
+		for _, m := range mf.Metric {
+			ns, name := "", ""
+			for _, lp := range m.Label {
+				switch lp.GetName() {
+				case "namespace":
+					ns = lp.GetValue()
+				case "name":
+					name = lp.GetValue()
+				}
+			}
+			if ns == "test-ns" && name == "test-name" {
+				dataflowStatusCount++
+			}
+		}
+	}
+	if dataflowStatusCount != 1 {
+		t.Errorf("Expected exactly 1 dataflow_status series for test-ns/test-name, got %d", dataflowStatusCount)
+	}
 }
 
 func TestFormatIndex(t *testing.T) {

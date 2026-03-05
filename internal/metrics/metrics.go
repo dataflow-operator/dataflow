@@ -337,8 +337,19 @@ func RecordTransformerMessagesOut(namespace, name, transformerType string, trans
 	TransformerMessagesOut.WithLabelValues(namespace, name, transformerType, formatIndex(transformerIndex)).Add(float64(count))
 }
 
+// dataflowPhases lists all possible DataFlow phases. Used to clean up old
+// time series when phase changes — Prometheus GaugeVec does not auto-delete
+// label combinations, so old phases would otherwise persist indefinitely.
+var dataflowPhases = []string{"Pending", "Running", "Error", "Stopped"}
+
 // SetDataFlowStatus sets DataFlow manifest status.
+// Removes previous phase time series for this dataflow to avoid multiple
+// phases being reported simultaneously (GaugeVec retains old label combos).
 func SetDataFlowStatus(namespace, name, phase string) {
+	// Delete old phase time series for this (namespace, name)
+	for _, p := range dataflowPhases {
+		DataFlowStatus.DeleteLabelValues(namespace, name, p)
+	}
 	// Set 1 for Running, 0 for others
 	status := 0.0
 	if phase == "Running" {
