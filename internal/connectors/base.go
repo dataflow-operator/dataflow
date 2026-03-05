@@ -18,7 +18,10 @@ package connectors
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
+
+	"github.com/go-logr/logr"
 )
 
 // buildRawModeJSON wraps value and metadata into JSON: {"value": ..., "_metadata": {...}}
@@ -134,4 +137,35 @@ func (b *baseConnectorRWMutex) RUnlock() {
 // Closed returns whether the connector is closed. Must be called while holding at least RLock.
 func (b *baseConnectorRWMutex) Closed() bool {
 	return b.closed
+}
+
+// connectorLogger provides SetLogger for connectors. Embed in connectors that need logging.
+type connectorLogger struct {
+	logger logr.Logger
+}
+
+// SetLogger sets the logger for the connector.
+func (c *connectorLogger) SetLogger(logger logr.Logger) {
+	c.logger = logger
+}
+
+// connectorMetadata provides SetMetadata for connectors. Embed in connectors that need metrics (namespace, name).
+type connectorMetadata struct {
+	namespace string
+	name      string
+}
+
+// SetMetadata sets the metadata for metrics.
+func (c *connectorMetadata) SetMetadata(namespace, name string) {
+	c.namespace = namespace
+	c.name = name
+}
+
+// ParseTableRef splits "schema.table" into schema and table name for information_schema queries.
+// If no dot is present, returns "public" as schema and the full string as table name.
+func ParseTableRef(table string) (schema, name string) {
+	if i := strings.LastIndex(table, "."); i >= 0 {
+		return table[:i], table[i+1:]
+	}
+	return "public", table
 }

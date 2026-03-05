@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,31 +37,19 @@ import (
 // PostgreSQLSourceConnector implements SourceConnector for PostgreSQL
 type PostgreSQLSourceConnector struct {
 	baseConnector
+	connectorLogger
+	connectorMetadata
 	config             *v1.PostgreSQLSourceSpec
 	conn               *pgx.Conn
-	logger             logr.Logger
-	namespace          string
-	name               string
 	lastReadChangeTime *time.Time // Track last change time for CDC (ChangeTrackingColumn or COALESCE(updated_at, created_at))
 }
 
 // NewPostgreSQLSourceConnector creates a new PostgreSQL source connector
 func NewPostgreSQLSourceConnector(config *v1.PostgreSQLSourceSpec) *PostgreSQLSourceConnector {
 	return &PostgreSQLSourceConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (p *PostgreSQLSourceConnector) SetLogger(logger logr.Logger) {
-	p.logger = logger
-}
-
-// SetMetadata sets the metadata for metrics
-func (p *PostgreSQLSourceConnector) SetMetadata(namespace, name string) {
-	p.namespace = namespace
-	p.name = name
 }
 
 // Connect establishes connection to PostgreSQL
@@ -106,7 +93,7 @@ func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
 // ensureSourceTable creates the table if it doesn't exist (CDC-friendly schema)
 func (p *PostgreSQLSourceConnector) ensureSourceTable(ctx context.Context) error {
 	var exists bool
-	schema, tableName := parseTableRef(p.config.Table)
+	schema, tableName := ParseTableRef(p.config.Table)
 	checkQuery := `SELECT EXISTS (
 		SELECT FROM information_schema.tables
 		WHERE table_schema = $1
@@ -379,34 +366,21 @@ func (p *PostgreSQLSourceConnector) Close() error {
 // PostgreSQLSinkConnector implements SinkConnector for PostgreSQL
 type PostgreSQLSinkConnector struct {
 	baseConnector
-	config         *v1.PostgreSQLSinkSpec
-	conn           *pgx.Conn
-	logger         logr.Logger
-	namespace      string
-	name           string
-	firstWriteOnce sync.Once
-	// Cache to avoid N queries per message (tableExists + hasJSONB check)
-	tableExistsCached *bool
+	connectorLogger
+	connectorMetadata
+	config            *v1.PostgreSQLSinkSpec
+	conn              *pgx.Conn
+	firstWriteOnce    sync.Once
+	tableExistsCached *bool // Cache to avoid N queries per message (tableExists + hasJSONB check)
 	hasJSONBCached    *bool
 }
 
 // NewPostgreSQLSinkConnector creates a new PostgreSQL sink connector
 func NewPostgreSQLSinkConnector(config *v1.PostgreSQLSinkSpec) *PostgreSQLSinkConnector {
 	return &PostgreSQLSinkConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (p *PostgreSQLSinkConnector) SetLogger(logger logr.Logger) {
-	p.logger = logger
-}
-
-// SetMetadata sets the metadata for metrics
-func (p *PostgreSQLSinkConnector) SetMetadata(namespace, name string) {
-	p.namespace = namespace
-	p.name = name
 }
 
 // Connect establishes connection to PostgreSQL
@@ -451,20 +425,12 @@ func (p *PostgreSQLSinkConnector) rawMode() bool {
 	return p.config.RawMode != nil && *p.config.RawMode
 }
 
-// parseTableRef splits "schema.table" into schema and table name for information_schema queries.
-func parseTableRef(table string) (schema, name string) {
-	if i := strings.LastIndex(table, "."); i >= 0 {
-		return table[:i], table[i+1:]
-	}
-	return "public", table
-}
-
 func (p *PostgreSQLSinkConnector) tableExists(ctx context.Context) (bool, error) {
 	if p.tableExistsCached != nil {
 		return *p.tableExistsCached, nil
 	}
 	var exists bool
-	schema, tableName := parseTableRef(p.config.Table)
+	schema, tableName := ParseTableRef(p.config.Table)
 	checkQuery := `SELECT EXISTS (
 		SELECT FROM information_schema.tables
 		WHERE table_schema = $1
@@ -481,7 +447,7 @@ func (p *PostgreSQLSinkConnector) hasJSONBColumn(ctx context.Context) (bool, err
 	if p.hasJSONBCached != nil {
 		return *p.hasJSONBCached, nil
 	}
-	schema, tableName := parseTableRef(p.config.Table)
+	schema, tableName := ParseTableRef(p.config.Table)
 	checkQuery := `SELECT EXISTS (
 		SELECT FROM information_schema.columns
 		WHERE table_schema = $1

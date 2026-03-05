@@ -49,14 +49,13 @@ import (
 // KafkaSourceConnector implements SourceConnector for Kafka
 type KafkaSourceConnector struct {
 	baseConnector
+	connectorLogger
+	connectorMetadata
 	config       *v1.KafkaSourceSpec
 	consumer     sarama.ConsumerGroup
-	logger       logr.Logger
 	avroSchema   avro.Schema           // Avro schema for deserialization (when not using Schema Registry)
 	schemaCache  *schemaCache          // Cache for schemas from Schema Registry
 	schemaClient *schemaRegistryClient // Client for Schema Registry
-	namespace    string                // Namespace for metrics
-	name         string                // Name for metrics
 }
 
 // schemaCache caches Avro schemas by ID
@@ -76,20 +75,9 @@ type schemaRegistryClient struct {
 // NewKafkaSourceConnector creates a new Kafka source connector
 func NewKafkaSourceConnector(config *v1.KafkaSourceSpec) *KafkaSourceConnector {
 	return &KafkaSourceConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (k *KafkaSourceConnector) SetLogger(logger logr.Logger) {
-	k.logger = logger
-}
-
-// SetMetadata sets the metadata for metrics
-func (k *KafkaSourceConnector) SetMetadata(namespace, name string) {
-	k.namespace = namespace
-	k.name = name
 }
 
 // Connect establishes connection to Kafka
@@ -112,90 +100,11 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 	saramaConfig.Metadata.Full = true           // Required for Yandex Cloud Kafka
 	saramaConfig.ClientID = "dataflow-operator" // Required for SASL authentication
 
-	// Configure TLS if provided
-	if k.config.TLS != nil {
-		// If CA certificate is provided, use it for verification (recommended by Yandex Cloud)
-		// This overrides insecureSkipVerify to ensure proper certificate validation
-		useInsecureSkipVerify := k.config.TLS.InsecureSkipVerify
-		if k.config.TLS.CAFile != "" {
-			useInsecureSkipVerify = false // Use CA certificate for verification
-		}
-
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: useInsecureSkipVerify,
-			MinVersion:         tls.VersionTLS12, // Require TLS 1.2 or higher
-		}
-
-		if k.config.TLS.CAFile != "" {
-			caCert, err := os.ReadFile(k.config.TLS.CAFile)
-			if err != nil {
-				k.logger.Error(err, "Failed to read CA file", "caFile", k.config.TLS.CAFile)
-				return fmt.Errorf("failed to read CA file %s: %w", k.config.TLS.CAFile, err)
-			}
-			caCertPool := x509.NewCertPool()
-			if !caCertPool.AppendCertsFromPEM(caCert) {
-				k.logger.Error(nil, "Failed to parse CA certificate", "caFile", k.config.TLS.CAFile)
-				return fmt.Errorf("failed to parse CA certificate from file %s", k.config.TLS.CAFile)
-			}
-			tlsConfig.RootCAs = caCertPool
-		} else if !k.config.TLS.InsecureSkipVerify {
-			// If no CA file is provided and we're not skipping verification,
-			// use system CA certificates
-			caCertPool, err := x509.SystemCertPool()
-			if err != nil {
-				k.logger.Error(err, "Failed to load system CA certificates")
-				return fmt.Errorf("failed to load system CA certificates: %w", err)
-			}
-			tlsConfig.RootCAs = caCertPool
-		}
-
-		if k.config.TLS.CertFile != "" && k.config.TLS.KeyFile != "" {
-			cert, err := tls.LoadX509KeyPair(k.config.TLS.CertFile, k.config.TLS.KeyFile)
-			if err != nil {
-				k.logger.Error(err, "Failed to load certificate", "certFile", k.config.TLS.CertFile, "keyFile", k.config.TLS.KeyFile)
-				return fmt.Errorf("failed to load certificate (cert: %s, key: %s): %w", k.config.TLS.CertFile, k.config.TLS.KeyFile, err)
-			}
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
-
-		saramaConfig.Net.TLS.Enable = true
-		saramaConfig.Net.TLS.Config = tlsConfig
+	if err := applyKafkaTLS(k.config.TLS, saramaConfig, k.logger); err != nil {
+		return err
 	}
-
-	// Configure SASL if provided
-	if k.config.SASL != nil {
-		// Validate SASL configuration
-		if k.config.SASL.Username == "" {
-			return fmt.Errorf("SASL username is required but not provided")
-		}
-		if k.config.SASL.Password == "" {
-			k.logger.Error(nil, "SASL password is empty", "username", k.config.SASL.Username)
-			return fmt.Errorf("SASL password is required but not provided (check if passwordSecretRef is correctly configured)")
-		}
-
-		saramaConfig.Net.SASL.Enable = true
-		saramaConfig.Net.SASL.Handshake = true // Required for Yandex Cloud Kafka
-		saramaConfig.Net.SASL.User = k.config.SASL.Username
-		saramaConfig.Net.SASL.Password = k.config.SASL.Password
-
-		// Set SASL mechanism based on configuration
-		switch k.config.SASL.Mechanism {
-		case "scram-sha-256":
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
-			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
-				return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
-			}
-		case "scram-sha-512":
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
-			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
-				return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
-			}
-		case "plain", "":
-			// Default to plaintext if not specified or explicitly set to plain
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypePlaintext
-		default:
-			return fmt.Errorf("unsupported SASL mechanism: %s (supported: plain, scram-sha-256, scram-sha-512)", k.config.SASL.Mechanism)
-		}
+	if err := applyKafkaSASL(k.config.SASL, saramaConfig, k.logger); err != nil {
+		return err
 	}
 
 	// Validate brokers
@@ -775,30 +684,18 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 // KafkaSinkConnector implements SinkConnector for Kafka
 type KafkaSinkConnector struct {
 	baseConnector
-	config    *v1.KafkaSinkSpec
-	producer  sarama.SyncProducer
-	logger    logr.Logger
-	namespace string // Namespace for metrics
-	name      string // Name for metrics
+	connectorLogger
+	connectorMetadata
+	config   *v1.KafkaSinkSpec
+	producer sarama.SyncProducer
 }
 
 // NewKafkaSinkConnector creates a new Kafka sink connector
 func NewKafkaSinkConnector(config *v1.KafkaSinkSpec) *KafkaSinkConnector {
 	return &KafkaSinkConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (k *KafkaSinkConnector) SetLogger(logger logr.Logger) {
-	k.logger = logger
-}
-
-// SetMetadata sets the metadata for metrics
-func (k *KafkaSinkConnector) SetMetadata(namespace, name string) {
-	k.namespace = namespace
-	k.name = name
 }
 
 // Connect establishes connection to Kafka
@@ -814,112 +711,11 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 	saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
 	saramaConfig.ClientID = "dataflow-operator" // Required for SASL authentication
 
-	// Configure TLS if provided
-	if k.config.TLS != nil {
-		k.logger.Info("Configuring TLS", "insecureSkipVerify", k.config.TLS.InsecureSkipVerify, "caFile", k.config.TLS.CAFile)
-
-		// If CA certificate is provided, use it for verification (recommended by Yandex Cloud)
-		// This overrides insecureSkipVerify to ensure proper certificate validation
-		useInsecureSkipVerify := k.config.TLS.InsecureSkipVerify
-		if k.config.TLS.CAFile != "" {
-			// When CA certificate is provided, prefer using it for verification
-			// This matches Yandex Cloud documentation recommendations
-			if k.config.TLS.InsecureSkipVerify {
-				k.logger.Info("CA certificate provided but insecureSkipVerify is true. Using CA certificate for verification (recommended).")
-			}
-			useInsecureSkipVerify = false // Use CA certificate for verification
-		}
-
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: useInsecureSkipVerify,
-			MinVersion:         tls.VersionTLS12, // Require TLS 1.2 or higher
-		}
-
-		if k.config.TLS.CAFile != "" {
-			caCert, err := os.ReadFile(k.config.TLS.CAFile)
-			if err != nil {
-				k.logger.Error(err, "Failed to read CA file", "caFile", k.config.TLS.CAFile)
-				return fmt.Errorf("failed to read CA file %s: %w", k.config.TLS.CAFile, err)
-			}
-			k.logger.Info("Read CA certificate", "caFile", k.config.TLS.CAFile, "size", len(caCert))
-			caCertPool := x509.NewCertPool()
-			if !caCertPool.AppendCertsFromPEM(caCert) {
-				k.logger.Error(nil, "Failed to parse CA certificate", "caFile", k.config.TLS.CAFile)
-				return fmt.Errorf("failed to parse CA certificate from file %s", k.config.TLS.CAFile)
-			}
-			tlsConfig.RootCAs = caCertPool
-			k.logger.Info("Successfully loaded CA certificate", "usingForVerification", !useInsecureSkipVerify)
-		} else if !k.config.TLS.InsecureSkipVerify {
-			// If no CA file is provided and we're not skipping verification,
-			// use system CA certificates
-			k.logger.Info("Using system CA certificates")
-			caCertPool, err := x509.SystemCertPool()
-			if err != nil {
-				k.logger.Error(err, "Failed to load system CA certificates")
-				return fmt.Errorf("failed to load system CA certificates: %w", err)
-			}
-			tlsConfig.RootCAs = caCertPool
-		}
-
-		if k.config.TLS.CertFile != "" && k.config.TLS.KeyFile != "" {
-			k.logger.Info("Loading client certificate", "certFile", k.config.TLS.CertFile, "keyFile", k.config.TLS.KeyFile)
-			cert, err := tls.LoadX509KeyPair(k.config.TLS.CertFile, k.config.TLS.KeyFile)
-			if err != nil {
-				k.logger.Error(err, "Failed to load certificate", "certFile", k.config.TLS.CertFile, "keyFile", k.config.TLS.KeyFile)
-				return fmt.Errorf("failed to load certificate (cert: %s, key: %s): %w", k.config.TLS.CertFile, k.config.TLS.KeyFile, err)
-			}
-			tlsConfig.Certificates = []tls.Certificate{cert}
-			k.logger.Info("Successfully loaded client certificate")
-		}
-
-		saramaConfig.Net.TLS.Enable = true
-		saramaConfig.Net.TLS.Config = tlsConfig
-		k.logger.Info("TLS enabled")
-	} else {
-		k.logger.Info("TLS not configured")
+	if err := applyKafkaTLS(k.config.TLS, saramaConfig, k.logger); err != nil {
+		return err
 	}
-
-	// Configure SASL if provided
-	if k.config.SASL != nil {
-		k.logger.Info("Configuring SASL", "mechanism", k.config.SASL.Mechanism, "username", k.config.SASL.Username)
-		// Validate SASL configuration
-		if k.config.SASL.Username == "" {
-			return fmt.Errorf("SASL username is required but not provided")
-		}
-		if k.config.SASL.Password == "" {
-			k.logger.Error(nil, "SASL password is empty", "username", k.config.SASL.Username)
-			return fmt.Errorf("SASL password is required but not provided (check if passwordSecretRef is correctly configured)")
-		}
-		k.logger.Info("SASL password loaded", "passwordLength", len(k.config.SASL.Password))
-
-		saramaConfig.Net.SASL.Enable = true
-		saramaConfig.Net.SASL.Handshake = true // Required for Yandex Cloud Kafka
-		saramaConfig.Net.SASL.User = k.config.SASL.Username
-		saramaConfig.Net.SASL.Password = k.config.SASL.Password
-
-		// Set SASL mechanism based on configuration
-		switch k.config.SASL.Mechanism {
-		case "scram-sha-256":
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
-			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
-				return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
-			}
-			k.logger.Info("Using SCRAM-SHA-256")
-		case "scram-sha-512":
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
-			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
-				return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
-			}
-			k.logger.Info("Using SCRAM-SHA-512")
-		case "plain", "":
-			// Default to plaintext if not specified or explicitly set to plain
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypePlaintext
-			k.logger.Info("Using PLAIN")
-		default:
-			return fmt.Errorf("unsupported SASL mechanism: %s (supported: plain, scram-sha-256, scram-sha-512)", k.config.SASL.Mechanism)
-		}
-	} else {
-		k.logger.Info("SASL not configured")
+	if err := applyKafkaSASL(k.config.SASL, saramaConfig, k.logger); err != nil {
+		return err
 	}
 
 	// Validate brokers
@@ -1081,4 +877,85 @@ func getRouteFromMessage(msg *types.Message) string {
 		return route
 	}
 	return "default"
+}
+
+// applyKafkaTLS configures TLS on sarama config from TLSConfig.
+func applyKafkaTLS(tlsConfig *v1.TLSConfig, saramaConfig *sarama.Config, logger logr.Logger) error {
+	if tlsConfig == nil {
+		return nil
+	}
+	useInsecureSkipVerify := tlsConfig.InsecureSkipVerify
+	if tlsConfig.CAFile != "" {
+		useInsecureSkipVerify = false
+	}
+	config := &tls.Config{
+		InsecureSkipVerify: useInsecureSkipVerify,
+		MinVersion:         tls.VersionTLS12,
+	}
+	if tlsConfig.CAFile != "" {
+		caCert, err := os.ReadFile(tlsConfig.CAFile)
+		if err != nil {
+			logger.Error(err, "Failed to read CA file", "caFile", tlsConfig.CAFile)
+			return fmt.Errorf("failed to read CA file %s: %w", tlsConfig.CAFile, err)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			logger.Error(nil, "Failed to parse CA certificate", "caFile", tlsConfig.CAFile)
+			return fmt.Errorf("failed to parse CA certificate from file %s", tlsConfig.CAFile)
+		}
+		config.RootCAs = caCertPool
+	} else if !tlsConfig.InsecureSkipVerify {
+		caCertPool, err := x509.SystemCertPool()
+		if err != nil {
+			logger.Error(err, "Failed to load system CA certificates")
+			return fmt.Errorf("failed to load system CA certificates: %w", err)
+		}
+		config.RootCAs = caCertPool
+	}
+	if tlsConfig.CertFile != "" && tlsConfig.KeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(tlsConfig.CertFile, tlsConfig.KeyFile)
+		if err != nil {
+			logger.Error(err, "Failed to load certificate", "certFile", tlsConfig.CertFile, "keyFile", tlsConfig.KeyFile)
+			return fmt.Errorf("failed to load certificate (cert: %s, key: %s): %w", tlsConfig.CertFile, tlsConfig.KeyFile, err)
+		}
+		config.Certificates = []tls.Certificate{cert}
+	}
+	saramaConfig.Net.TLS.Enable = true
+	saramaConfig.Net.TLS.Config = config
+	return nil
+}
+
+// applyKafkaSASL configures SASL on sarama config from SASLConfig.
+func applyKafkaSASL(saslConfig *v1.SASLConfig, saramaConfig *sarama.Config, logger logr.Logger) error {
+	if saslConfig == nil {
+		return nil
+	}
+	if saslConfig.Username == "" {
+		return fmt.Errorf("SASL username is required but not provided")
+	}
+	if saslConfig.Password == "" {
+		logger.Error(nil, "SASL password is empty", "username", saslConfig.Username)
+		return fmt.Errorf("SASL password is required but not provided (check if passwordSecretRef is correctly configured)")
+	}
+	saramaConfig.Net.SASL.Enable = true
+	saramaConfig.Net.SASL.Handshake = true
+	saramaConfig.Net.SASL.User = saslConfig.Username
+	saramaConfig.Net.SASL.Password = saslConfig.Password
+	switch saslConfig.Mechanism {
+	case "scram-sha-256":
+		saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+		saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+			return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
+		}
+	case "scram-sha-512":
+		saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+		saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+			return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
+		}
+	case "plain", "":
+		saramaConfig.Net.SASL.Mechanism = sarama.SASLTypePlaintext
+	default:
+		return fmt.Errorf("unsupported SASL mechanism: %s (supported: plain, scram-sha-256, scram-sha-512)", saslConfig.Mechanism)
+	}
+	return nil
 }

@@ -32,33 +32,23 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
 )
 
 // TrinoSourceConnector implements SourceConnector for Trino
 type TrinoSourceConnector struct {
 	baseConnector
-	config      *v1.TrinoSourceSpec
-	httpClient  *http.Client
-	token       string
-	tokenMu     sync.RWMutex
-	logger      logr.Logger
-	oauthConfig *oauth2.Config
-	tokenSource oauth2.TokenSource
+	connectorLogger
+	config       *v1.TrinoSourceSpec
+	httpClient   *http.Client
+	keycloakAuth *KeycloakAuth
 }
 
 // NewTrinoSourceConnector creates a new Trino source connector
 func NewTrinoSourceConnector(config *v1.TrinoSourceSpec) *TrinoSourceConnector {
 	return &TrinoSourceConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (t *TrinoSourceConnector) SetLogger(logger logr.Logger) {
-	t.logger = logger
 }
 
 // Connect establishes connection to Trino
@@ -81,7 +71,12 @@ func (t *TrinoSourceConnector) Connect(ctx context.Context) error {
 
 	// Setup OAuth2/Keycloak authentication if configured
 	if t.config.Keycloak != nil {
-		if err := t.setupKeycloakAuth(ctx); err != nil {
+		t.keycloakAuth = &KeycloakAuth{
+			config:     t.config.Keycloak,
+			httpClient: t.httpClient,
+			logger:     t.logger,
+		}
+		if err := SetupKeycloakAuth(ctx, t.keycloakAuth); err != nil {
 			return fmt.Errorf("failed to setup Keycloak authentication: %w", err)
 		}
 	}
@@ -94,193 +89,6 @@ func (t *TrinoSourceConnector) Connect(ctx context.Context) error {
 
 	t.logger.Info("Successfully connected to Trino")
 	return nil
-}
-
-// setupKeycloakAuth configures OAuth2 authentication with Keycloak
-func (t *TrinoSourceConnector) setupKeycloakAuth(ctx context.Context) error {
-	keycloak := t.config.Keycloak
-
-	// If token is provided directly, use it without OAuth2 flow
-	if keycloak.Token != "" {
-		t.tokenMu.Lock()
-		t.token = keycloak.Token
-		t.tokenMu.Unlock()
-		t.logger.Info("Keycloak authentication configured", "grantType", "direct_token")
-		return nil
-	}
-
-	// Determine token endpoint
-	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token",
-		strings.TrimSuffix(keycloak.ServerURL, "/"),
-		keycloak.Realm)
-
-	// Check if we have username/password (password grant) or only client credentials
-	if keycloak.Username != "" && keycloak.Password != "" {
-		// Use password grant flow with direct HTTP request
-		// OAuth2 library doesn't support password grant directly, so we do it manually
-		reqBody := fmt.Sprintf("grant_type=password&client_id=%s&client_secret=%s&username=%s&password=%s",
-			keycloak.ClientID, keycloak.ClientSecret, keycloak.Username, keycloak.Password)
-
-		req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(reqBody))
-		if err != nil {
-			return fmt.Errorf("failed to create token request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-		resp, err := t.httpClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to get token from Keycloak: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("Keycloak token request failed with status %d: %s", resp.StatusCode, string(body))
-		}
-
-		var tokenResp struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			ExpiresIn    int    `json:"expires_in"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-			return fmt.Errorf("failed to decode token response: %w", err)
-		}
-
-		t.tokenMu.Lock()
-		t.token = tokenResp.AccessToken
-		t.tokenMu.Unlock()
-
-		// Start token refresh goroutine
-		go t.refreshTokenPasswordGrant(ctx, tokenURL, keycloak, tokenResp.RefreshToken, tokenResp.ExpiresIn)
-
-		t.logger.Info("Keycloak authentication configured", "grantType", "password")
-	} else if keycloak.ClientSecret != "" {
-		// Use client credentials flow
-		config := &clientcredentials.Config{
-			ClientID:     keycloak.ClientID,
-			ClientSecret: keycloak.ClientSecret,
-			TokenURL:     tokenURL,
-		}
-
-		tokenSource := config.TokenSource(ctx)
-		t.tokenSource = tokenSource
-
-		// Get initial token
-		token, err := tokenSource.Token()
-		if err != nil {
-			return fmt.Errorf("failed to get token from Keycloak: %w", err)
-		}
-
-		t.tokenMu.Lock()
-		t.token = token.AccessToken
-		t.tokenMu.Unlock()
-
-		// Start token refresh goroutine
-		go t.refreshToken(ctx, tokenSource)
-
-		t.logger.Info("Keycloak authentication configured", "grantType", "client_credentials")
-	} else {
-		return fmt.Errorf("Keycloak authentication requires either token, username/password, or client secret")
-	}
-
-	return nil
-}
-
-// refreshToken periodically refreshes the OAuth2 token (for client credentials)
-func (t *TrinoSourceConnector) refreshToken(ctx context.Context, tokenSource oauth2.TokenSource) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			token, err := tokenSource.Token()
-			if err != nil {
-				t.logger.Error(err, "Failed to refresh token")
-				continue
-			}
-
-			t.tokenMu.Lock()
-			t.token = token.AccessToken
-			t.tokenMu.Unlock()
-
-			t.logger.Info("Token refreshed successfully")
-		}
-	}
-}
-
-// refreshTokenPasswordGrant periodically refreshes the OAuth2 token using refresh token
-func (t *TrinoSourceConnector) refreshTokenPasswordGrant(ctx context.Context, tokenURL string, keycloak *v1.KeycloakConfig, refreshToken string, expiresIn int) {
-	// Refresh token before it expires (refresh at 80% of expiry time)
-	refreshInterval := time.Duration(expiresIn*80/100) * time.Second
-	if refreshInterval < 1*time.Minute {
-		refreshInterval = 1 * time.Minute
-	}
-
-	ticker := time.NewTicker(refreshInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			reqBody := fmt.Sprintf("grant_type=refresh_token&client_id=%s&client_secret=%s&refresh_token=%s",
-				keycloak.ClientID, keycloak.ClientSecret, refreshToken)
-
-			req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(reqBody))
-			if err != nil {
-				t.logger.Error(err, "Failed to create refresh token request")
-				continue
-			}
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-			resp, err := t.httpClient.Do(req)
-			if err != nil {
-				t.logger.Error(err, "Failed to refresh token")
-				continue
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
-				t.logger.Error(nil, "Token refresh failed", "status", resp.StatusCode, "body", string(body))
-				continue
-			}
-
-			var tokenResp struct {
-				AccessToken  string `json:"access_token"`
-				RefreshToken string `json:"refresh_token"`
-				ExpiresIn    int    `json:"expires_in"`
-			}
-
-			if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-				t.logger.Error(err, "Failed to decode refresh token response")
-				continue
-			}
-
-			t.tokenMu.Lock()
-			t.token = tokenResp.AccessToken
-			if tokenResp.RefreshToken != "" {
-				refreshToken = tokenResp.RefreshToken
-			}
-			if tokenResp.ExpiresIn > 0 {
-				expiresIn = tokenResp.ExpiresIn
-				refreshInterval = time.Duration(expiresIn*80/100) * time.Second
-				if refreshInterval < 1*time.Minute {
-					refreshInterval = 1 * time.Minute
-				}
-				ticker.Reset(refreshInterval)
-			}
-			t.tokenMu.Unlock()
-
-			t.logger.Info("Token refreshed successfully")
-		}
-	}
 }
 
 // testConnection tests the connection to Trino
@@ -310,11 +118,11 @@ func (t *TrinoSourceConnector) executeQuery(ctx context.Context, query string) (
 	req.Header.Set("X-Trino-Schema", t.config.Schema)
 
 	// Add OAuth token if available
-	t.tokenMu.RLock()
-	if t.token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", t.token))
+	if t.keycloakAuth != nil {
+		if token := t.keycloakAuth.GetToken(); token != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		}
 	}
-	t.tokenMu.RUnlock()
 
 	// Execute request
 	resp, err := t.httpClient.Do(req)
@@ -636,13 +444,10 @@ func (t *TrinoSourceConnector) Close() error {
 // TrinoSinkConnector implements SinkConnector for Trino
 type TrinoSinkConnector struct {
 	baseConnector
+	connectorLogger
 	config       *v1.TrinoSinkSpec
 	httpClient   *http.Client
-	token        string
-	tokenMu      sync.RWMutex
-	logger       logr.Logger
-	oauthConfig  *oauth2.Config
-	tokenSource  oauth2.TokenSource
+	keycloakAuth *KeycloakAuth
 	tableColumns []TableColumnInfo // Cached table columns with types
 	columnsMu    sync.RWMutex
 }
@@ -650,14 +455,9 @@ type TrinoSinkConnector struct {
 // NewTrinoSinkConnector creates a new Trino sink connector
 func NewTrinoSinkConnector(config *v1.TrinoSinkSpec) *TrinoSinkConnector {
 	return &TrinoSinkConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (t *TrinoSinkConnector) SetLogger(logger logr.Logger) {
-	t.logger = logger
 }
 
 // Connect establishes connection to Trino
@@ -680,7 +480,12 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 
 	// Setup OAuth2/Keycloak authentication if configured
 	if t.config.Keycloak != nil {
-		if err := t.setupKeycloakAuth(ctx); err != nil {
+		t.keycloakAuth = &KeycloakAuth{
+			config:     t.config.Keycloak,
+			httpClient: t.httpClient,
+			logger:     t.logger,
+		}
+		if err := SetupKeycloakAuth(ctx, t.keycloakAuth); err != nil {
 			return fmt.Errorf("failed to setup Keycloak authentication: %w", err)
 		}
 	}
@@ -713,193 +518,6 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 	return nil
 }
 
-// setupKeycloakAuth configures OAuth2 authentication with Keycloak
-func (t *TrinoSinkConnector) setupKeycloakAuth(ctx context.Context) error {
-	keycloak := t.config.Keycloak
-
-	// If token is provided directly, use it without OAuth2 flow
-	if keycloak.Token != "" {
-		t.tokenMu.Lock()
-		t.token = keycloak.Token
-		t.tokenMu.Unlock()
-		t.logger.Info("Keycloak authentication configured", "grantType", "direct_token")
-		return nil
-	}
-
-	// Determine token endpoint
-	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token",
-		strings.TrimSuffix(keycloak.ServerURL, "/"),
-		keycloak.Realm)
-
-	// Check if we have username/password (password grant) or only client credentials
-	if keycloak.Username != "" && keycloak.Password != "" {
-		// Use password grant flow with direct HTTP request
-		// OAuth2 library doesn't support password grant directly, so we do it manually
-		reqBody := fmt.Sprintf("grant_type=password&client_id=%s&client_secret=%s&username=%s&password=%s",
-			keycloak.ClientID, keycloak.ClientSecret, keycloak.Username, keycloak.Password)
-
-		req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(reqBody))
-		if err != nil {
-			return fmt.Errorf("failed to create token request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-		resp, err := t.httpClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to get token from Keycloak: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("Keycloak token request failed with status %d: %s", resp.StatusCode, string(body))
-		}
-
-		var tokenResp struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			ExpiresIn    int    `json:"expires_in"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-			return fmt.Errorf("failed to decode token response: %w", err)
-		}
-
-		t.tokenMu.Lock()
-		t.token = tokenResp.AccessToken
-		t.tokenMu.Unlock()
-
-		// Start token refresh goroutine
-		go t.refreshTokenPasswordGrant(ctx, tokenURL, keycloak, tokenResp.RefreshToken, tokenResp.ExpiresIn)
-
-		t.logger.Info("Keycloak authentication configured", "grantType", "password")
-	} else if keycloak.ClientSecret != "" {
-		// Use client credentials flow
-		config := &clientcredentials.Config{
-			ClientID:     keycloak.ClientID,
-			ClientSecret: keycloak.ClientSecret,
-			TokenURL:     tokenURL,
-		}
-
-		tokenSource := config.TokenSource(ctx)
-		t.tokenSource = tokenSource
-
-		// Get initial token
-		token, err := tokenSource.Token()
-		if err != nil {
-			return fmt.Errorf("failed to get token from Keycloak: %w", err)
-		}
-
-		t.tokenMu.Lock()
-		t.token = token.AccessToken
-		t.tokenMu.Unlock()
-
-		// Start token refresh goroutine
-		go t.refreshToken(ctx, tokenSource)
-
-		t.logger.Info("Keycloak authentication configured", "grantType", "client_credentials")
-	} else {
-		return fmt.Errorf("Keycloak authentication requires either token, username/password, or client secret")
-	}
-
-	return nil
-}
-
-// refreshToken periodically refreshes the OAuth2 token (for client credentials)
-func (t *TrinoSinkConnector) refreshToken(ctx context.Context, tokenSource oauth2.TokenSource) {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			token, err := tokenSource.Token()
-			if err != nil {
-				t.logger.Error(err, "Failed to refresh token")
-				continue
-			}
-
-			t.tokenMu.Lock()
-			t.token = token.AccessToken
-			t.tokenMu.Unlock()
-
-			t.logger.Info("Token refreshed successfully")
-		}
-	}
-}
-
-// refreshTokenPasswordGrant periodically refreshes the OAuth2 token using refresh token
-func (t *TrinoSinkConnector) refreshTokenPasswordGrant(ctx context.Context, tokenURL string, keycloak *v1.KeycloakConfig, refreshToken string, expiresIn int) {
-	// Refresh token before it expires (refresh at 80% of expiry time)
-	refreshInterval := time.Duration(expiresIn*80/100) * time.Second
-	if refreshInterval < 1*time.Minute {
-		refreshInterval = 1 * time.Minute
-	}
-
-	ticker := time.NewTicker(refreshInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			reqBody := fmt.Sprintf("grant_type=refresh_token&client_id=%s&client_secret=%s&refresh_token=%s",
-				keycloak.ClientID, keycloak.ClientSecret, refreshToken)
-
-			req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(reqBody))
-			if err != nil {
-				t.logger.Error(err, "Failed to create refresh token request")
-				continue
-			}
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-			resp, err := t.httpClient.Do(req)
-			if err != nil {
-				t.logger.Error(err, "Failed to refresh token")
-				continue
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
-				t.logger.Error(nil, "Token refresh failed", "status", resp.StatusCode, "body", string(body))
-				continue
-			}
-
-			var tokenResp struct {
-				AccessToken  string `json:"access_token"`
-				RefreshToken string `json:"refresh_token"`
-				ExpiresIn    int    `json:"expires_in"`
-			}
-
-			if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-				t.logger.Error(err, "Failed to decode refresh token response")
-				continue
-			}
-
-			t.tokenMu.Lock()
-			t.token = tokenResp.AccessToken
-			if tokenResp.RefreshToken != "" {
-				refreshToken = tokenResp.RefreshToken
-			}
-			if tokenResp.ExpiresIn > 0 {
-				expiresIn = tokenResp.ExpiresIn
-				refreshInterval = time.Duration(expiresIn*80/100) * time.Second
-				if refreshInterval < 1*time.Minute {
-					refreshInterval = 1 * time.Minute
-				}
-				ticker.Reset(refreshInterval)
-			}
-			t.tokenMu.Unlock()
-
-			t.logger.Info("Token refreshed successfully")
-		}
-	}
-}
-
 // testConnection tests the connection to Trino
 func (t *TrinoSinkConnector) testConnection(ctx context.Context, query string) error {
 	_, err := t.executeQuery(ctx, query)
@@ -927,11 +545,11 @@ func (t *TrinoSinkConnector) executeQuery(ctx context.Context, query string) ([]
 	req.Header.Set("X-Trino-Schema", t.config.Schema)
 
 	// Add OAuth token if available
-	t.tokenMu.RLock()
-	if t.token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", t.token))
+	if t.keycloakAuth != nil {
+		if token := t.keycloakAuth.GetToken(); token != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		}
 	}
-	t.tokenMu.RUnlock()
 
 	// Execute request
 	resp, err := t.httpClient.Do(req)

@@ -994,6 +994,11 @@ spec:
                         - key
                         - name
                         type: object
+                      rawMode:
+                        description: |-
+                          RawMode when true, creates table with data String and created_at columns (JSON storage).
+                          When false (default), creates table from message structure (columnar, replicates source schema).
+                        type: boolean
                       table:
                         description: Table to write to
                         type: string
@@ -1855,6 +1860,11 @@ spec:
                         - key
                         - name
                         type: object
+                      rawMode:
+                        description: |-
+                          RawMode when true, creates table with data String and created_at columns (JSON storage).
+                          When false (default), creates table from message structure (columnar, replicates source schema).
+                        type: boolean
                       table:
                         description: Table to write to
                         type: string
@@ -3701,6 +3711,11 @@ spec:
                                         - key
                                         - name
                                         type: object
+                                      rawMode:
+                                        description: |-
+                                          RawMode when true, creates table with data String and created_at columns (JSON storage).
+                                          When false (default), creates table from message structure (columnar, replicates source schema).
+                                        type: boolean
                                       table:
                                         description: Table to write to
                                         type: string

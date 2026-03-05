@@ -83,6 +83,11 @@ func (in *ClickHouseSinkSpec) DeepCopyInto(out *ClickHouseSinkSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.RawMode != nil {
+		in, out := &in.RawMode, &out.RawMode
+		*out = new(bool)
+		**out = **in
+	}
 	if in.ConnectionStringSecretRef != nil {
 		in, out := &in.ConnectionStringSecretRef, &out.ConnectionStringSecretRef
 		*out = new(SecretRef)

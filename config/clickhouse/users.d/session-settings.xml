@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!--
+  Настройки для уменьшения ошибок SESSION_IS_LOCKED.
+  Увеличиваем лимиты сессий и конкурентных запросов.
+  Важно: ошибка чаще всего возникает из-за переиспользования session_id в SQL-клиенте.
+  Настройте клиент: отдельное соединение для каждой вкладки или отключите session_id.
+  Примечание: секция <default> убрана — при CLICKHOUSE_USER=dataflow пользователь default
+  может отсутствовать в конфиге Docker-образа.
+-->
+<clickhouse>
+    <profiles>
+        <default>
+            <max_concurrent_queries_for_user>50</max_concurrent_queries_for_user>
+        </default>
+    </profiles>
+    <users>
+        <dataflow>
+            <max_sessions_for_user>50</max_sessions_for_user>
+        </dataflow>
+    </users>
+</clickhouse>

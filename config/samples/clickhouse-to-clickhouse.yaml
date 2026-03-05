@@ -1,0 +1,18 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: clickhouse-to-clickhouse
+spec:
+  source:
+    type: clickhouse
+    clickhouse:
+      connectionString: "clickhouse://dataflow:dataflow@localhost:9000/dataflow?dial_timeout=10s"
+      table: products
+      pollInterval: 5
+  sink:
+    type: clickhouse
+    clickhouse:
+      connectionString: "clickhouse://dataflow:dataflow@localhost:9000/dataflow?dial_timeout=10s"
+      table: products_clone
+      batchSize: 100
+      autoCreateTable: true

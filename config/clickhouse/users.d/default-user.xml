@@ -1,0 +1,18 @@
+    <clickhouse>
+      <!-- Docs: <https://clickhouse.com/docs/en/operations/settings/settings_users/> -->
+      <users>
+        <!-- Remove default user -->
+        <default remove="remove">
+        </default>
+
+        <dataflow>
+          <profile>default</profile>
+          <networks>
+            <ip>::/0</ip>
+          </networks>
+          <password><![CDATA[dataflow]]></password>
+          <quota>default</quota>
+          <access_management>1</access_management>
+        </dataflow>
+      </users>
+    </clickhouse>

@@ -54,25 +54,13 @@ func buildNessieIcebergURI(baseURL, branch, warehouse string) string {
 	return path
 }
 
-func nessieAuthOptions(c *v1.NessieSourceSpec) []rest.Option {
+func nessieAuthOptions(bearerToken string, basicAuth *v1.BasicAuthConfig) []rest.Option {
 	var opts []rest.Option
-	if c.BearerToken != "" {
-		opts = append(opts, rest.WithOAuthToken(c.BearerToken))
+	if bearerToken != "" {
+		opts = append(opts, rest.WithOAuthToken(bearerToken))
 	}
-	if c.BasicAuth != nil && c.BasicAuth.Username != "" && c.BasicAuth.Password != "" {
-		basic := "Basic " + base64.StdEncoding.EncodeToString([]byte(c.BasicAuth.Username+":"+c.BasicAuth.Password))
-		opts = append(opts, rest.WithCustomTransport(&basicAuthTransport{base: http.DefaultTransport, auth: basic}))
-	}
-	return opts
-}
-
-func nessieSinkAuthOptions(c *v1.NessieSinkSpec) []rest.Option {
-	var opts []rest.Option
-	if c.BearerToken != "" {
-		opts = append(opts, rest.WithOAuthToken(c.BearerToken))
-	}
-	if c.BasicAuth != nil && c.BasicAuth.Username != "" && c.BasicAuth.Password != "" {
-		basic := "Basic " + base64.StdEncoding.EncodeToString([]byte(c.BasicAuth.Username+":"+c.BasicAuth.Password))
+	if basicAuth != nil && basicAuth.Username != "" && basicAuth.Password != "" {
+		basic := "Basic " + base64.StdEncoding.EncodeToString([]byte(basicAuth.Username+":"+basicAuth.Password))
 		opts = append(opts, rest.WithCustomTransport(&basicAuthTransport{base: http.DefaultTransport, auth: basic}))
 	}
 	return opts
@@ -96,23 +84,18 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 // NessieSourceConnector implements SourceConnector for Nessie (Iceberg REST catalog).
 type NessieSourceConnector struct {
 	baseConnectorRWMutex
+	connectorLogger
 	config *v1.NessieSourceSpec
 	cat    *rest.Catalog
 	tbl    *table.Table
-	logger logr.Logger
 }
 
 // NewNessieSourceConnector creates a new Nessie source connector.
 func NewNessieSourceConnector(config *v1.NessieSourceSpec) *NessieSourceConnector {
 	return &NessieSourceConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector.
-func (c *NessieSourceConnector) SetLogger(logger logr.Logger) {
-	c.logger = logger
 }
 
 // Connect establishes connection to Nessie and loads the Iceberg table.
@@ -129,7 +112,7 @@ func (c *NessieSourceConnector) Connect(ctx context.Context) error {
 	uri := buildNessieIcebergURI(c.config.BaseURL, branch, c.config.Warehouse)
 	c.logger.Info("Connecting to Nessie", "uri", uri, "namespace", c.config.Namespace, "table", c.config.Table)
 
-	opts := nessieAuthOptions(c.config)
+	opts := nessieAuthOptions(c.config.BearerToken, c.config.BasicAuth)
 	if c.config.Warehouse != "" {
 		opts = append(opts, rest.WithWarehouseLocation(c.config.Warehouse))
 	}
@@ -230,23 +213,18 @@ func (c *NessieSourceConnector) Close() error {
 // NessieSinkConnector implements SinkConnector for Nessie (Iceberg REST catalog).
 type NessieSinkConnector struct {
 	baseConnector
+	connectorLogger
 	config *v1.NessieSinkSpec
 	cat    *rest.Catalog
 	tbl    *table.Table
-	logger logr.Logger
 }
 
 // NewNessieSinkConnector creates a new Nessie sink connector.
 func NewNessieSinkConnector(config *v1.NessieSinkSpec) *NessieSinkConnector {
 	return &NessieSinkConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector.
-func (c *NessieSinkConnector) SetLogger(logger logr.Logger) {
-	c.logger = logger
 }
 
 // Connect establishes connection to Nessie and loads or creates the Iceberg table.
@@ -263,7 +241,7 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 	uri := buildNessieIcebergURI(c.config.BaseURL, branch, c.config.Warehouse)
 	c.logger.Info("Connecting to Nessie sink", "uri", uri, "namespace", c.config.Namespace, "table", c.config.Table)
 
-	opts := nessieSinkAuthOptions(c.config)
+	opts := nessieAuthOptions(c.config.BearerToken, c.config.BasicAuth)
 	if c.config.Warehouse != "" {
 		opts = append(opts, rest.WithWarehouseLocation(c.config.Warehouse))
 	}

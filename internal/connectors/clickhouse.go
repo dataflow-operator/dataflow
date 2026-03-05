@@ -21,6 +21,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,9 +39,9 @@ import (
 // ClickHouseSourceConnector implements SourceConnector for ClickHouse
 type ClickHouseSourceConnector struct {
 	baseConnectorRWMutex
+	connectorLogger
 	config       *v1.ClickHouseSourceSpec
 	conn         *sql.DB
-	logger       logr.Logger
 	lastReadID   int64      // Track last read ID to avoid duplicates
 	lastReadTime *time.Time // Track last read time to avoid duplicates
 	readStateMu  sync.Mutex // protects lastReadID, lastReadTime (separate from conn to avoid blocking Connect/Close)
@@ -48,14 +50,9 @@ type ClickHouseSourceConnector struct {
 // NewClickHouseSourceConnector creates a new ClickHouse source connector
 func NewClickHouseSourceConnector(config *v1.ClickHouseSourceSpec) *ClickHouseSourceConnector {
 	return &ClickHouseSourceConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (c *ClickHouseSourceConnector) SetLogger(logger logr.Logger) {
-	c.logger = logger
 }
 
 // Connect establishes connection to ClickHouse
@@ -294,23 +291,18 @@ func (c *ClickHouseSourceConnector) Close() error {
 // ClickHouseSinkConnector implements SinkConnector for ClickHouse
 type ClickHouseSinkConnector struct {
 	baseConnector
+	connectorLogger
 	config         *v1.ClickHouseSinkSpec
 	conn           *sql.DB
-	logger         logr.Logger
 	firstWriteOnce sync.Once
 }
 
 // NewClickHouseSinkConnector creates a new ClickHouse sink connector
 func NewClickHouseSinkConnector(config *v1.ClickHouseSinkSpec) *ClickHouseSinkConnector {
 	return &ClickHouseSinkConnector{
-		config: config,
-		logger: logr.Discard(),
+		config:          config,
+		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
-}
-
-// SetLogger sets the logger for the connector
-func (c *ClickHouseSinkConnector) SetLogger(logger logr.Logger) {
-	c.logger = logger
 }
 
 // Connect establishes connection to ClickHouse
@@ -336,7 +328,8 @@ func (c *ClickHouseSinkConnector) Connect(ctx context.Context) error {
 	c.conn = conn
 	c.logger.Info("Successfully connected to ClickHouse", "table", c.config.Table)
 
-	if c.config.AutoCreateTable != nil && *c.config.AutoCreateTable {
+	// Only create table in Connect when rawMode (structure known). Non-rawMode defers to first write.
+	if c.config.AutoCreateTable != nil && *c.config.AutoCreateTable && c.rawMode() {
 		if err := c.ensureTable(ctx); err != nil {
 			c.logger.Error(err, "Failed to ensure table exists", "table", c.config.Table)
 			return fmt.Errorf("failed to ensure table exists: %w", err)
@@ -346,20 +339,30 @@ func (c *ClickHouseSinkConnector) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (c *ClickHouseSinkConnector) ensureTable(ctx context.Context) error {
-	// Check if table exists
+func (c *ClickHouseSinkConnector) rawMode() bool {
+	return c.config.RawMode != nil && *c.config.RawMode
+}
+
+func (c *ClickHouseSinkConnector) tableExists(ctx context.Context) (bool, error) {
 	var count uint64
 	query := fmt.Sprintf("SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = '%s'", c.config.Table)
 	if err := c.conn.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (c *ClickHouseSinkConnector) ensureTable(ctx context.Context) error {
+	exists, err := c.tableExists(ctx)
+	if err != nil {
 		return fmt.Errorf("failed to check if table exists: %w", err)
 	}
-
-	if count > 0 {
+	if exists {
 		c.logger.V(1).Info("Table already exists", "table", c.config.Table)
 		return nil
 	}
 
-	c.logger.Info("Creating table", "table", c.config.Table)
+	c.logger.Info("Creating table (raw mode)", "table", c.config.Table)
 	createQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			data String,
@@ -373,6 +376,346 @@ func (c *ClickHouseSinkConnector) ensureTable(ctx context.Context) error {
 	}
 	c.logger.Info("Table created successfully", "table", c.config.Table)
 	return nil
+}
+
+// ensureTableFromMessage creates the table from the first message structure (replicates source schema).
+func (c *ClickHouseSinkConnector) ensureTableFromMessage(ctx context.Context, data map[string]interface{}) error {
+	exists, err := c.tableExists(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check if table exists: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
+	// Use "value" content if message is in raw format {"value": {...}, "_metadata": {...}}
+	rowData := data
+	if v, ok := data["value"].(map[string]interface{}); ok && len(data) <= 2 {
+		rowData = v
+	}
+
+	columns := make([]string, 0, len(rowData))
+	for k := range rowData {
+		columns = append(columns, k)
+	}
+	sort.Strings(columns)
+	if len(columns) == 0 {
+		return fmt.Errorf("cannot create table from empty message")
+	}
+
+	hasColumn := func(name string) bool {
+		for _, col := range columns {
+			if col == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	colDefs := make([]string, 0, len(columns)+1)
+	for _, col := range columns {
+		val := rowData[col]
+		chType := inferClickHouseType(val)
+		colDefs = append(colDefs, fmt.Sprintf("`%s` %s", col, chType))
+	}
+	if !hasColumn("created_at") {
+		colDefs = append(colDefs, "created_at DateTime DEFAULT now()")
+	}
+
+	// ORDER BY: use first column (MergeTree requires ORDER BY)
+	orderBy := fmt.Sprintf("`%s`", columns[0])
+
+	c.logger.Info("Creating table from message structure", "table", c.config.Table, "columns", columns, "orderBy", orderBy)
+	createQuery := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = MergeTree() ORDER BY %s`, c.config.Table, strings.Join(colDefs, ", "), orderBy)
+	if _, err := c.conn.ExecContext(ctx, createQuery); err != nil {
+		return fmt.Errorf("failed to create table from message: %w", err)
+	}
+	c.logger.Info("Table created successfully from message structure", "table", c.config.Table)
+	return nil
+}
+
+// isRFC3339 returns true if s looks like an RFC3339/ISO8601 timestamp.
+func isRFC3339(s string) bool {
+	if len(s) < 19 {
+		return false
+	}
+	// Accept formats: 2006-01-02T15:04:05Z, 2006-01-02T15:04:05.123Z, 2006-01-02 15:04:05
+	if s[4] == '-' && s[7] == '-' && (s[10] == 'T' || s[10] == ' ') && s[13] == ':' && s[16] == ':' {
+		return true
+	}
+	return false
+}
+
+// inferClickHouseType infers ClickHouse column type from value only (no column name heuristics).
+// Uses precise value analysis: numeric ranges, decimal places, RFC3339 strings.
+func inferClickHouseType(v interface{}) string {
+	switch val := v.(type) {
+	case nil:
+		return "Nullable(String)"
+	case bool:
+		return "UInt8"
+	case int:
+		return inferIntType(int64(val))
+	case int32:
+		return "Int32"
+	case int64:
+		return inferIntType(val)
+	case uint:
+		return inferUintType(uint64(val))
+	case uint32:
+		return "UInt32"
+	case uint64:
+		return inferUintType(val)
+	case float32:
+		return inferFloatType(float64(val))
+	case float64:
+		return inferFloatType(val)
+	case string:
+		if isRFC3339(val) {
+			return "DateTime"
+		}
+		return "String"
+	case map[string]interface{}, []interface{}:
+		return "String" // JSON as string
+	default:
+		return "String"
+	}
+}
+
+func inferIntType(v int64) string {
+	if v >= 0 && v <= 255 {
+		return "UInt8"
+	}
+	if v >= -128 && v <= 127 {
+		return "Int8"
+	}
+	if v >= -2147483648 && v <= 2147483647 {
+		return "Int32"
+	}
+	return "Int64"
+}
+
+func inferUintType(v uint64) string {
+	if v <= 255 {
+		return "UInt8"
+	}
+	if v <= 65535 {
+		return "UInt16"
+	}
+	if v <= 4294967295 {
+		return "UInt32"
+	}
+	return "UInt64"
+}
+
+func inferFloatType(f float64) string {
+	if isWholeNumber(f) {
+		if f >= 0 {
+			if f <= 255 {
+				return "UInt8"
+			}
+			if f <= 65535 {
+				return "UInt16"
+			}
+			if f <= 4294967295 {
+				return "UInt32"
+			}
+			return "UInt64"
+		} else {
+			if f >= -128 && f <= 127 {
+				return "Int8"
+			}
+			if f >= -32768 && f <= 32767 {
+				return "Int16"
+			}
+			if f >= -2147483648 && f <= 2147483647 {
+				return "Int32"
+			}
+			return "Int64"
+		}
+	}
+	// Has decimal part: check if 2 decimal places (typical for price/currency)
+	if hasAtMostTwoDecimalPlaces(f) {
+		return "Decimal(10, 2)"
+	}
+	return "Float64"
+}
+
+// hasAtMostTwoDecimalPlaces returns true if f has at most 2 decimal places (e.g. 99.99, 100.00).
+func hasAtMostTwoDecimalPlaces(f float64) bool {
+	scaled := f * 100
+	var rounded int64
+	if scaled >= 0 {
+		rounded = int64(scaled + 0.5)
+	} else {
+		rounded = int64(scaled - 0.5)
+	}
+	reconstructed := float64(rounded) / 100
+	diff := f - reconstructed
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff < 1e-9
+}
+
+func toFloat64(v interface{}) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	default:
+		return 0, false
+	}
+}
+
+func isWholeNumber(f float64) bool {
+	return f == float64(int64(f))
+}
+
+func (c *ClickHouseSinkConnector) flushBatchRaw(ctx context.Context, msgs []*types.Message) error {
+	insertQuery := fmt.Sprintf("INSERT INTO %s (data) VALUES (?)", c.config.Table)
+	tx, err := c.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, insertQuery)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+	for _, m := range msgs {
+		var data map[string]interface{}
+		if err := json.Unmarshal(m.Data, &data); err != nil {
+			tx.Rollback()
+			return err
+		}
+		jsonData, _ := json.Marshal(data)
+		if _, err := stmt.ExecContext(ctx, string(jsonData)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to exec: %w", err)
+		}
+		if m.Ack != nil {
+			m.Ack()
+		}
+	}
+	return tx.Commit()
+}
+
+func (c *ClickHouseSinkConnector) flushBatchColumnar(ctx context.Context, msgs []*types.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	var firstData map[string]interface{}
+	if err := json.Unmarshal(msgs[0].Data, &firstData); err != nil {
+		return err
+	}
+
+	// Auto-create table from first message if needed
+	if c.config.AutoCreateTable != nil && *c.config.AutoCreateTable {
+		exists, err := c.tableExists(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to check table: %w", err)
+		}
+		if !exists {
+			if err := c.ensureTableFromMessage(ctx, firstData); err != nil {
+				return err
+			}
+		}
+	}
+
+	rowData := firstData
+	if v, ok := firstData["value"].(map[string]interface{}); ok && len(firstData) <= 2 {
+		rowData = v
+	}
+	columns := make([]string, 0, len(rowData))
+	for k := range rowData {
+		columns = append(columns, k)
+	}
+	sort.Strings(columns)
+	if !contains(columns, "created_at") {
+		columns = append(columns, "created_at")
+	}
+
+	placeholders := make([]string, len(columns))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	colsQuoted := make([]string, len(columns))
+	for i, col := range columns {
+		colsQuoted[i] = fmt.Sprintf("`%s`", col)
+	}
+	insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", c.config.Table, strings.Join(colsQuoted, ", "), strings.Join(placeholders, ", "))
+
+	tx, err := c.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, insertQuery)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, m := range msgs {
+		var data map[string]interface{}
+		if err := json.Unmarshal(m.Data, &data); err != nil {
+			tx.Rollback()
+			return err
+		}
+		rowData := data
+		if v, ok := data["value"].(map[string]interface{}); ok && len(data) <= 2 {
+			rowData = v
+		}
+		values := buildInsertValues(columns, rowData, time.Now)
+		if _, err := stmt.ExecContext(ctx, values...); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to exec: %w", err)
+		}
+		if m.Ack != nil {
+			m.Ack()
+		}
+	}
+	return tx.Commit()
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// buildInsertValues constructs values for INSERT from rowData. For created_at, preserves
+// source value when present; otherwise uses nowFn() (for backward compatibility).
+func buildInsertValues(columns []string, rowData map[string]interface{}, nowFn func() time.Time) []interface{} {
+	values := make([]interface{}, len(columns))
+	for i, col := range columns {
+		if col == "created_at" {
+			if v, ok := rowData[col]; ok && v != nil {
+				values[i] = v
+			} else {
+				values[i] = nowFn()
+			}
+		} else if v, ok := rowData[col]; ok {
+			values[i] = v
+		} else {
+			values[i] = nil
+		}
+	}
+	return values
 }
 
 // Write writes messages to ClickHouse
@@ -401,7 +744,6 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 	messageCount := 0
 	var batch []*types.Message
 	var flushTimer *time.Timer
-	insertQuery := fmt.Sprintf("INSERT INTO %s (data) VALUES (?)", c.config.Table)
 
 	stopTimer := func() {
 		if flushTimer != nil {
@@ -410,42 +752,31 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		}
 	}
 
-	flushBatch := func(msgs []*types.Message) error {
+	flushBatch := func(batchCtx context.Context, msgs []*types.Message) error {
 		if len(msgs) == 0 {
 			return nil
 		}
-		tx, err := c.conn.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("failed to begin transaction: %w", err)
+		if c.rawMode() {
+			return c.flushBatchRaw(batchCtx, msgs)
 		}
-		stmt, err := tx.PrepareContext(ctx, insertQuery)
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to prepare statement: %w", err)
-		}
-		defer stmt.Close()
-		for _, m := range msgs {
-			var data map[string]interface{}
-			if err := json.Unmarshal(m.Data, &data); err != nil {
-				tx.Rollback()
-				return err
-			}
-			jsonData, _ := json.Marshal(data)
-			if _, err := stmt.ExecContext(ctx, string(jsonData)); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("failed to exec: %w", err)
-			}
-			if m.Ack != nil {
-				m.Ack()
-			}
-		}
-		return tx.Commit()
+		return c.flushBatchColumnar(batchCtx, msgs)
 	}
 
 	doFlush := func(toFlush []*types.Message) error {
 		stopTimer()
-		if err := retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
-			return flushBatch(toFlush)
+		if len(toFlush) == 0 {
+			return nil
+		}
+		// Use non-cancelled context for batch execution when ctx is done (e.g. Ctrl+C).
+		// Connection may close on context cancellation; a fresh context allows the flush to complete.
+		batchCtx := ctx
+		if batchCtx.Err() != nil {
+			var cancel context.CancelFunc
+			batchCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+		}
+		if err := retry.OnTimeout(batchCtx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+			return flushBatch(batchCtx, toFlush)
 		}); err != nil {
 			return err
 		}
@@ -462,6 +793,7 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			case <-ctx.Done():
 				stopTimer()
 				if len(batch) > 0 {
+					c.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch), "table", c.config.Table)
 					if err := doFlush(batch); err != nil {
 						return err
 					}
@@ -518,6 +850,7 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			case <-ctx.Done():
 				stopTimer()
 				if len(batch) > 0 {
+					c.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch), "table", c.config.Table)
 					if err := doFlush(batch); err != nil {
 						return err
 					}

@@ -134,3 +134,24 @@ func TestBaseConnectorRWMutex_ConcurrentRLock(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestParseTableRef(t *testing.T) {
+	tests := []struct {
+		table      string
+		wantSchema string
+		wantName   string
+	}{
+		{"public.users", "public", "users"},
+		{"myschema.mytable", "myschema", "mytable"},
+		{"a.b.c", "a.b", "c"},
+		{"users", "public", "users"},
+		{"", "public", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.table, func(t *testing.T) {
+			schema, name := ParseTableRef(tt.table)
+			assert.Equal(t, tt.wantSchema, schema)
+			assert.Equal(t, tt.wantName, name)
+		})
+	}
+}

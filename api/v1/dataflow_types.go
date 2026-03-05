@@ -647,6 +647,11 @@ type ClickHouseSinkSpec struct {
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
 
+	// RawMode when true, creates table with data String and created_at columns (JSON storage).
+	// When false (default), creates table from message structure (columnar, replicates source schema).
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
+
 	// ConnectionStringSecretRef references a Kubernetes secret for connection string
 	// +optional
 	ConnectionStringSecretRef *SecretRef `json:"connectionStringSecretRef,omitempty"`
