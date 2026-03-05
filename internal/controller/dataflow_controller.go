@@ -548,7 +548,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 					},
 				},
 				Spec: corev1.PodSpec{
-					TerminationGracePeriodSeconds: ptr.To(int64(30)),
+					TerminationGracePeriodSeconds: ptr.To(int64(600)),
 					Containers: []corev1.Container{
 						{
 							Name:  "processor",
