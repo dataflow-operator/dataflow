@@ -709,6 +709,8 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 	saramaConfig.Version = sarama.V2_8_0_0
 	saramaConfig.Producer.Return.Successes = true
 	saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
+	saramaConfig.Producer.Idempotent = true     // Prevents duplicate messages on retry
+	saramaConfig.Net.MaxOpenRequests = 1        // Required for idempotent producer ordering
 	saramaConfig.ClientID = "dataflow-operator" // Required for SASL authentication
 
 	if err := applyKafkaTLS(k.config.TLS, saramaConfig, k.logger); err != nil {

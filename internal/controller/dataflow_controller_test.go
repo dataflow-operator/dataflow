@@ -1004,7 +1004,7 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 
 	// Verify graceful shutdown: terminationGracePeriodSeconds and preStop
 	assert.NotNil(t, deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
-	assert.Equal(t, int64(30), *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	assert.Equal(t, int64(600), *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
 	require.NotNil(t, container.Lifecycle)
 	require.NotNil(t, container.Lifecycle.PreStop)
 	require.NotNil(t, container.Lifecycle.PreStop.Exec)

@@ -248,30 +248,54 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		if idIndex >= 0 && len(values) > idIndex {
 			msg.Metadata["id"] = values[idIndex]
 		}
+		// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
+		rowID, rowTime := c.extractRowCheckpoint(values, idIndex, createdAtIndex)
+		if rowID > 0 || rowTime != nil {
+			msg.Ack = func() { c.advanceCheckpoint(rowID, rowTime) }
+		}
 
 		select {
 		case msgChan <- msg:
 		case <-ctx.Done():
-			c.readStateMu.Lock()
-			if maxReadID > c.lastReadID {
-				c.lastReadID = maxReadID
-			}
-			if maxReadTime != nil && (c.lastReadTime == nil || maxReadTime.After(*c.lastReadTime)) {
-				c.lastReadTime = maxReadTime
-			}
-			c.readStateMu.Unlock()
 			return
 		}
 	}
+}
 
+// extractRowCheckpoint returns (id, created_at) for checkpoint advancement.
+func (c *ClickHouseSourceConnector) extractRowCheckpoint(values []interface{}, idIndex, createdAtIndex int) (int64, *time.Time) {
+	var rowID int64
+	if idIndex >= 0 && len(values) > idIndex {
+		switch v := values[idIndex].(type) {
+		case uint64:
+			rowID = int64(v)
+		case int64:
+			rowID = v
+		case int32:
+			rowID = int64(v)
+		}
+	}
+	var rowTime *time.Time
+	if createdAtIndex >= 0 && len(values) > createdAtIndex {
+		if ts, ok := values[createdAtIndex].(time.Time); ok {
+			rowTime = &ts
+		}
+	}
+	return rowID, rowTime
+}
+
+// advanceCheckpoint updates lastReadID/lastReadTime only after sink successfully wrote the message.
+// Called from Ack callback (different goroutine).
+func (c *ClickHouseSourceConnector) advanceCheckpoint(rowID int64, rowTime *time.Time) {
 	c.readStateMu.Lock()
-	if maxReadID > c.lastReadID {
-		c.lastReadID = maxReadID
+	defer c.readStateMu.Unlock()
+	if rowID > 0 && rowID > c.lastReadID {
+		c.lastReadID = rowID
 	}
-	if maxReadTime != nil && (c.lastReadTime == nil || maxReadTime.After(*c.lastReadTime)) {
-		c.lastReadTime = maxReadTime
+	if rowTime != nil && (c.lastReadTime == nil || rowTime.After(*c.lastReadTime)) {
+		t := *rowTime
+		c.lastReadTime = &t
 	}
-	c.readStateMu.Unlock()
 }
 
 // Close closes the ClickHouse connection

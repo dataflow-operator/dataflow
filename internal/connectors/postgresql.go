@@ -41,7 +41,8 @@ type PostgreSQLSourceConnector struct {
 	connectorMetadata
 	config             *v1.PostgreSQLSourceSpec
 	conn               *pgx.Conn
-	lastReadChangeTime *time.Time // Track last change time for CDC (ChangeTrackingColumn or COALESCE(updated_at, created_at))
+	lastReadChangeTime *time.Time // Track last change time for CDC; advanced only on Ack (after sink write)
+	checkpointMu       sync.Mutex // Protects lastReadChangeTime when advancing from Ack (different goroutine)
 }
 
 // NewPostgreSQLSourceConnector creates a new PostgreSQL source connector
@@ -239,8 +240,8 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				}
 			}
 
-			// Update last read state
-			p.updateLastReadState(values, createdAtIndex, updatedAtIndex, changeTrackingIndex)
+			// Extract change time for checkpoint; advance only on Ack (after sink write)
+			changeTime := p.extractChangeTime(values, createdAtIndex, updatedAtIndex, changeTrackingIndex)
 
 			jsonData, err := json.Marshal(rowMap)
 			if err != nil {
@@ -273,6 +274,11 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				msg.Metadata["id"] = values[idIndex]
 			}
 			msg.Metadata["operation"] = operation
+			// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
+			if changeTime != nil {
+				ct := *changeTime
+				msg.Ack = func() { p.advanceCheckpoint(&ct) }
+			}
 
 			select {
 			case msgChan <- msg:
@@ -312,37 +318,50 @@ func (p *PostgreSQLSourceConnector) buildReadQuery() string {
 	} else {
 		orderExpr = fmt.Sprintf(`"%s"`, changeCol)
 	}
-	if p.lastReadChangeTime != nil {
+	p.checkpointMu.Lock()
+	lastRead := p.lastReadChangeTime
+	p.checkpointMu.Unlock()
+	if lastRead != nil {
 		// RFC3339Nano preserves sub-second precision to avoid re-reading or skipping rows at boundaries
 		return fmt.Sprintf("SELECT * FROM %s WHERE %s > '%s' ORDER BY %s, id",
-			p.config.Table, orderExpr, p.lastReadChangeTime.UTC().Format(time.RFC3339Nano), orderExpr)
+			p.config.Table, orderExpr, lastRead.UTC().Format(time.RFC3339Nano), orderExpr)
 	}
 	return fmt.Sprintf("SELECT * FROM %s ORDER BY %s, id", p.config.Table, orderExpr)
 }
 
-func (p *PostgreSQLSourceConnector) updateLastReadState(values []interface{}, createdAtIndex, updatedAtIndex, changeTrackingIndex int) {
-	// Use change tracking column for lastReadChangeTime
-	var changeTime *time.Time
+// extractChangeTime returns the change tracking timestamp for the row (for checkpoint).
+func (p *PostgreSQLSourceConnector) extractChangeTime(values []interface{}, createdAtIndex, updatedAtIndex, changeTrackingIndex int) *time.Time {
 	if changeTrackingIndex >= 0 && len(values) > changeTrackingIndex {
 		if ts, ok := values[changeTrackingIndex].(time.Time); ok {
-			changeTime = &ts
+			return &ts
 		}
 	}
-	// Fallback to COALESCE(updated_at, created_at) when using default column
-	if changeTime == nil && p.getChangeTrackingColumn() == "updated_at" {
+	if p.getChangeTrackingColumn() == "updated_at" {
 		if updatedAtIndex >= 0 && len(values) > updatedAtIndex {
 			if ts, ok := values[updatedAtIndex].(time.Time); ok {
-				changeTime = &ts
+				return &ts
 			}
 		}
-		if changeTime == nil && createdAtIndex >= 0 && len(values) > createdAtIndex {
+		if createdAtIndex >= 0 && len(values) > createdAtIndex {
 			if ts, ok := values[createdAtIndex].(time.Time); ok {
-				changeTime = &ts
+				return &ts
 			}
 		}
 	}
-	if changeTime != nil && (p.lastReadChangeTime == nil || changeTime.After(*p.lastReadChangeTime)) {
-		p.lastReadChangeTime = changeTime
+	return nil
+}
+
+// advanceCheckpoint updates lastReadChangeTime only after sink successfully wrote the message.
+// Called from Ack callback (different goroutine); uses checkpointMu to avoid deadlock with readRows.
+func (p *PostgreSQLSourceConnector) advanceCheckpoint(changeTime *time.Time) {
+	if changeTime == nil {
+		return
+	}
+	p.checkpointMu.Lock()
+	defer p.checkpointMu.Unlock()
+	if p.lastReadChangeTime == nil || changeTime.After(*p.lastReadChangeTime) {
+		t := *changeTime
+		p.lastReadChangeTime = &t
 	}
 }
 

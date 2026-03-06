@@ -84,6 +84,44 @@ func TestClickHouseSourceConnector_Connect_WhenClosed(t *testing.T) {
 	assert.Contains(t, err.Error(), "closed")
 }
 
+func TestClickHouseSourceConnector_advanceCheckpoint(t *testing.T) {
+	c := NewClickHouseSourceConnector(&v1.ClickHouseSourceSpec{Table: "t"})
+	ts1 := time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+
+	c.advanceCheckpoint(100, &ts1)
+	assert.Equal(t, int64(100), c.lastReadID)
+	require.NotNil(t, c.lastReadTime)
+	assert.True(t, c.lastReadTime.Equal(ts1))
+
+	c.advanceCheckpoint(150, &ts2)
+	assert.Equal(t, int64(150), c.lastReadID)
+	assert.True(t, c.lastReadTime.Equal(ts2))
+
+	c.advanceCheckpoint(120, &ts1) // earlier id and time - no regression
+	assert.Equal(t, int64(150), c.lastReadID)
+	assert.True(t, c.lastReadTime.Equal(ts2))
+}
+
+func TestClickHouseSourceConnector_extractRowCheckpoint(t *testing.T) {
+	c := NewClickHouseSourceConnector(&v1.ClickHouseSourceSpec{Table: "t"})
+	ts := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	rowID, rowTime := c.extractRowCheckpoint([]interface{}{uint64(42), ts}, 0, 1)
+	assert.Equal(t, int64(42), rowID)
+	require.NotNil(t, rowTime)
+	assert.True(t, rowTime.Equal(ts))
+
+	rowID, rowTime = c.extractRowCheckpoint([]interface{}{int64(100)}, 0, -1)
+	assert.Equal(t, int64(100), rowID)
+	assert.Nil(t, rowTime)
+
+	rowID, rowTime = c.extractRowCheckpoint([]interface{}{ts}, -1, 0)
+	assert.Equal(t, int64(0), rowID)
+	require.NotNil(t, rowTime)
+	assert.True(t, rowTime.Equal(ts))
+}
+
 func TestNewClickHouseSinkConnector_WithBatchFlushInterval(t *testing.T) {
 	// Default: both batch size and timer
 	spec := &v1.ClickHouseSinkSpec{

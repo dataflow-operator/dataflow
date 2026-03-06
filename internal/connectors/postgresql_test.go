@@ -79,13 +79,66 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewPostgreSQLSourceConnector(tt.config)
-			p.lastReadChangeTime = tt.lastReadChangeTime
+			if tt.lastReadChangeTime != nil {
+				p.advanceCheckpoint(tt.lastReadChangeTime)
+			}
 			got := p.buildReadQuery()
 			for _, s := range tt.wantContains {
 				assert.Contains(t, got, s, "query should contain %q", s)
 			}
 			for _, s := range tt.wantNotContains {
 				assert.NotContains(t, got, s, "query should not contain %q", s)
+			}
+		})
+	}
+}
+
+func TestPostgreSQLSourceConnector_advanceCheckpoint(t *testing.T) {
+	// advanceCheckpoint updates lastReadChangeTime only when new time is after current
+	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{Table: "t"})
+
+	t1 := time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	t3 := time.Date(2024, 1, 12, 0, 0, 0, 0, time.UTC) // between t1 and t2
+
+	p.advanceCheckpoint(&t1)
+	got := p.buildReadQuery()
+	assert.Contains(t, got, "2024-01-10", "query should use t1 after first advance")
+
+	p.advanceCheckpoint(&t2)
+	got = p.buildReadQuery()
+	assert.Contains(t, got, "2024-01-15", "query should use t2 after advancing to later time")
+
+	p.advanceCheckpoint(&t3)
+	got = p.buildReadQuery()
+	assert.Contains(t, got, "2024-01-15", "query should still use t2 when advancing to earlier time (no regression)")
+}
+
+func TestPostgreSQLSourceConnector_extractChangeTime(t *testing.T) {
+	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{Table: "t"})
+	ts := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name              string
+		values            []interface{}
+		createdIdx        int
+		updatedIdx        int
+		changeTrackingIdx int
+		wantChangeTime    *time.Time
+	}{
+		{"change tracking column", []interface{}{nil, nil, ts}, -1, -1, 2, &ts},
+		{"updated_at fallback", []interface{}{nil, ts, nil}, -1, 1, -1, &ts},
+		{"created_at fallback", []interface{}{ts, nil, nil}, 0, -1, -1, &ts},
+		{"no time columns", []interface{}{1, "x"}, -1, -1, -1, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := p.extractChangeTime(tt.values, tt.createdIdx, tt.updatedIdx, tt.changeTrackingIdx)
+			if tt.wantChangeTime == nil {
+				assert.Nil(t, got)
+			} else {
+				require.NotNil(t, got)
+				assert.True(t, got.Equal(*tt.wantChangeTime))
 			}
 		})
 	}
