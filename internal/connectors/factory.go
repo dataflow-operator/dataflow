@@ -22,8 +22,14 @@ import (
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 )
 
-// CreateSourceConnector creates a source connector based on the source spec
-func CreateSourceConnector(source *v1.SourceSpec) (SourceConnector, error) {
+// CreateSourceConnector creates a source connector based on the source spec.
+// Options can include WithCheckpointStore for checkpoint persistence.
+func CreateSourceConnector(source *v1.SourceSpec, opts ...SourceConnectorOption) (SourceConnector, error) {
+	options := &SourceConnectorOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
 	switch source.Type {
 	case "kafka":
 		if source.Kafka == nil {
@@ -34,17 +40,17 @@ func CreateSourceConnector(source *v1.SourceSpec) (SourceConnector, error) {
 		if source.PostgreSQL == nil {
 			return nil, fmt.Errorf("postgresql source configuration is required")
 		}
-		return NewPostgreSQLSourceConnector(source.PostgreSQL), nil
+		return NewPostgreSQLSourceConnectorWithOptions(source.PostgreSQL, options), nil
 	case "trino":
 		if source.Trino == nil {
 			return nil, fmt.Errorf("trino source configuration is required")
 		}
-		return NewTrinoSourceConnector(source.Trino), nil
+		return NewTrinoSourceConnectorWithOptions(source.Trino, options), nil
 	case "clickhouse":
 		if source.ClickHouse == nil {
 			return nil, fmt.Errorf("clickhouse source configuration is required")
 		}
-		return NewClickHouseSourceConnector(source.ClickHouse), nil
+		return NewClickHouseSourceConnectorWithOptions(source.ClickHouse, options), nil
 	case "nessie":
 		if source.Nessie == nil {
 			return nil, fmt.Errorf("nessie source configuration is required")

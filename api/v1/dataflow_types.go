@@ -66,6 +66,12 @@ type DataFlowSpec struct {
 	// ImagePullSecrets is a list of references to secrets in the same namespace to use for pulling the processor image from a private registry.
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// CheckpointPersistence enables persisting source checkpoint (lastReadID, lastReadChangeTime) to a ConfigMap.
+	// When enabled, polling sources (PostgreSQL, ClickHouse, Trino) resume from the last committed position after restart, reducing duplicates.
+	// Default: true. Set to false to disable.
+	// +optional
+	CheckpointPersistence *bool `json:"checkpointPersistence,omitempty"`
 }
 
 // SourceSpec defines the source configuration

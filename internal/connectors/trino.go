@@ -27,6 +27,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -38,16 +39,51 @@ import (
 type TrinoSourceConnector struct {
 	baseConnector
 	connectorLogger
-	config       *v1.TrinoSourceSpec
-	httpClient   *http.Client
-	keycloakAuth *KeycloakAuth
+	config          *v1.TrinoSourceSpec
+	httpClient      *http.Client
+	keycloakAuth    *KeycloakAuth
+	lastReadID      interface{}   // advanced only on Ack (after sink write)
+	readStateMu     sync.Mutex    // protects lastReadID
+	checkpointStore checkpoint.Store
+	sourceType      string
 }
 
 // NewTrinoSourceConnector creates a new Trino source connector
 func NewTrinoSourceConnector(config *v1.TrinoSourceSpec) *TrinoSourceConnector {
-	return &TrinoSourceConnector{
+	return NewTrinoSourceConnectorWithOptions(config, nil)
+}
+
+// NewTrinoSourceConnectorWithOptions creates a Trino source connector with optional checkpoint persistence.
+func NewTrinoSourceConnectorWithOptions(config *v1.TrinoSourceSpec, opts *SourceConnectorOptions) *TrinoSourceConnector {
+	t := &TrinoSourceConnector{
 		config:          config,
 		connectorLogger: connectorLogger{logger: logr.Discard()},
+	}
+	if opts != nil {
+		t.checkpointStore = opts.CheckpointStore
+		t.sourceType = opts.SourceType
+		if t.sourceType == "" {
+			t.sourceType = "trino"
+		}
+		if len(opts.InitialCheckpoint) > 0 {
+			t.applyInitialCheckpoint(opts.InitialCheckpoint)
+		}
+	}
+	return t
+}
+
+// applyInitialCheckpoint restores lastReadID from persisted checkpoint.
+func (t *TrinoSourceConnector) applyInitialCheckpoint(data []byte) {
+	var m struct {
+		LastReadID interface{} `json:"lastReadID"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	if m.LastReadID != nil {
+		t.readStateMu.Lock()
+		t.lastReadID = m.LastReadID
+		t.readStateMu.Unlock()
 	}
 }
 
@@ -341,11 +377,8 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 
-		// Track last read row to avoid duplicates
-		var lastReadID interface{}
-
 		// Initial read
-		if err := t.readRows(ctx, msgChan, &lastReadID); err != nil {
+		if err := t.readRows(ctx, msgChan); err != nil {
 			t.logger.Error(err, "Failed to read initial rows")
 		}
 
@@ -354,7 +387,7 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := t.readRows(ctx, msgChan, &lastReadID); err != nil {
+				if err := t.readRows(ctx, msgChan); err != nil {
 					t.logger.Error(err, "Failed to read rows")
 				}
 			}
@@ -364,7 +397,11 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	return msgChan, nil
 }
 
-func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message, lastReadID *interface{}) error {
+func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
+	t.readStateMu.Lock()
+	lastReadID := t.lastReadID
+	t.readStateMu.Unlock()
+
 	var query string
 	if t.config.Query != "" {
 		query = t.config.Query
@@ -372,10 +409,10 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 	} else {
 		// Build query to read from table
 		query = fmt.Sprintf("SELECT * FROM %s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
-		if *lastReadID != nil {
+		if lastReadID != nil {
 			// Add WHERE clause to filter already read rows (assuming id column exists)
-			query = fmt.Sprintf("%s WHERE id > %v ORDER BY id", query, *lastReadID)
-			t.logger.Info("Built query with lastReadID filter", "query", query, "lastReadID", *lastReadID)
+			query = fmt.Sprintf("%s WHERE id > %v ORDER BY id", query, lastReadID)
+			t.logger.Info("Built query with lastReadID filter", "query", query, "lastReadID", lastReadID)
 		} else {
 			query = fmt.Sprintf("%s ORDER BY id", query)
 			t.logger.Info("Built query without filter", "query", query)
@@ -388,9 +425,10 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 	}
 
 	for _, row := range rows {
-		// Update lastReadID if id column exists
+		// Ack advances checkpoint only after sink successfully writes; prevents gaps on crash
+		var rowID interface{}
 		if id, ok := row["id"]; ok {
-			*lastReadID = id
+			rowID = id
 		}
 
 		jsonData, err := json.Marshal(row)
@@ -419,6 +457,10 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 		msg.Metadata["catalog"] = t.config.Catalog
 		msg.Metadata["schema"] = t.config.Schema
 		msg.Metadata["table"] = t.config.Table
+		if rowID != nil {
+			rid := rowID
+			msg.Ack = func() { t.advanceCheckpoint(rid) }
+		}
 
 		select {
 		case msgChan <- msg:
@@ -428,6 +470,19 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 	}
 
 	return nil
+}
+
+// advanceCheckpoint updates lastReadID only after sink successfully wrote the message.
+func (t *TrinoSourceConnector) advanceCheckpoint(rowID interface{}) {
+	t.readStateMu.Lock()
+	t.lastReadID = rowID
+	toSave := rowID
+	t.readStateMu.Unlock()
+
+	if t.checkpointStore != nil && toSave != nil {
+		data, _ := json.Marshal(map[string]interface{}{"lastReadID": toSave})
+		_ = t.checkpointStore.Save(context.Background(), t.sourceType, data)
+	}
 }
 
 // Close closes the Trino connection

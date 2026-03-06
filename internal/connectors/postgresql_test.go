@@ -114,6 +114,15 @@ func TestPostgreSQLSourceConnector_advanceCheckpoint(t *testing.T) {
 	assert.Contains(t, got, "2024-01-15", "query should still use t2 when advancing to earlier time (no regression)")
 }
 
+func TestPostgreSQLSourceConnector_applyInitialCheckpoint(t *testing.T) {
+	opts := &SourceConnectorOptions{
+		InitialCheckpoint: []byte(`{"lastReadChangeTime":"2024-01-15T10:30:00Z"}`),
+	}
+	p := NewPostgreSQLSourceConnectorWithOptions(&v1.PostgreSQLSourceSpec{Table: "t"}, opts)
+	got := p.buildReadQuery()
+	assert.Contains(t, got, "2024-01-15T10:30:00", "query should use restored checkpoint")
+}
+
 func TestPostgreSQLSourceConnector_extractChangeTime(t *testing.T) {
 	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{Table: "t"})
 	ts := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)

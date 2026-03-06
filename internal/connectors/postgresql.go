@@ -25,6 +25,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
@@ -43,14 +44,56 @@ type PostgreSQLSourceConnector struct {
 	conn               *pgx.Conn
 	lastReadChangeTime *time.Time // Track last change time for CDC; advanced only on Ack (after sink write)
 	checkpointMu       sync.Mutex // Protects lastReadChangeTime when advancing from Ack (different goroutine)
+	checkpointStore    checkpoint.Store
+	sourceType         string
 }
 
 // NewPostgreSQLSourceConnector creates a new PostgreSQL source connector
 func NewPostgreSQLSourceConnector(config *v1.PostgreSQLSourceSpec) *PostgreSQLSourceConnector {
-	return &PostgreSQLSourceConnector{
+	return NewPostgreSQLSourceConnectorWithOptions(config, nil)
+}
+
+// NewPostgreSQLSourceConnectorWithOptions creates a PostgreSQL source connector with optional checkpoint persistence.
+func NewPostgreSQLSourceConnectorWithOptions(config *v1.PostgreSQLSourceSpec, opts *SourceConnectorOptions) *PostgreSQLSourceConnector {
+	p := &PostgreSQLSourceConnector{
 		config:          config,
 		connectorLogger: connectorLogger{logger: logr.Discard()},
 	}
+	if opts != nil {
+		p.checkpointStore = opts.CheckpointStore
+		p.sourceType = opts.SourceType
+		if p.sourceType == "" {
+			p.sourceType = "postgresql"
+		}
+		if len(opts.InitialCheckpoint) > 0 {
+			p.applyInitialCheckpoint(opts.InitialCheckpoint)
+		}
+	}
+	return p
+}
+
+// applyInitialCheckpoint restores lastReadChangeTime from persisted checkpoint.
+func (p *PostgreSQLSourceConnector) applyInitialCheckpoint(data []byte) {
+	var m struct {
+		LastReadChangeTime string `json:"lastReadChangeTime"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	if m.LastReadChangeTime == "" {
+		return
+	}
+	t, err := time.Parse(time.RFC3339Nano, m.LastReadChangeTime)
+	if err != nil {
+		// try RFC3339
+		t, err = time.Parse(time.RFC3339, m.LastReadChangeTime)
+		if err != nil {
+			return
+		}
+	}
+	p.checkpointMu.Lock()
+	p.lastReadChangeTime = &t
+	p.checkpointMu.Unlock()
 }
 
 // Connect establishes connection to PostgreSQL
@@ -358,10 +401,18 @@ func (p *PostgreSQLSourceConnector) advanceCheckpoint(changeTime *time.Time) {
 		return
 	}
 	p.checkpointMu.Lock()
-	defer p.checkpointMu.Unlock()
 	if p.lastReadChangeTime == nil || changeTime.After(*p.lastReadChangeTime) {
 		t := *changeTime
 		p.lastReadChangeTime = &t
+	}
+	toSave := p.lastReadChangeTime
+	p.checkpointMu.Unlock()
+
+	if p.checkpointStore != nil && toSave != nil {
+		data, _ := json.Marshal(map[string]string{
+			"lastReadChangeTime": toSave.UTC().Format(time.RFC3339Nano),
+		})
+		_ = p.checkpointStore.Save(context.Background(), p.sourceType, data)
 	}
 }
 

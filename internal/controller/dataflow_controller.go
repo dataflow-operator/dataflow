@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -232,6 +233,9 @@ func genReconcileID() string {
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -340,7 +344,39 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Create or update Deployment
+	// Create checkpoint ConfigMap and RBAC when CheckpointPersistence is enabled (default: true)
+	if resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence {
+		if err := r.createOrUpdateCheckpointConfigMap(ctx, req, &dataflow); err != nil {
+			log.Error(err, "failed to create or update checkpoint ConfigMap")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "CheckpointConfigMapFailed", "Failed to create checkpoint ConfigMap: %v", err)
+			}
+			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+				df.Status.Phase = "Error"
+				df.Status.Message = fmt.Sprintf("Failed to create checkpoint ConfigMap: %v", err)
+			})
+			if updateErr != nil {
+				log.Error(updateErr, "unable to update DataFlow status")
+			}
+			return ctrl.Result{}, err
+		}
+		if err := r.createOrUpdateProcessorRBAC(ctx, req, &dataflow); err != nil {
+			log.Error(err, "failed to create or update processor RBAC")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "ProcessorRBACFailed", "Failed to create processor RBAC: %v", err)
+			}
+			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+				df.Status.Phase = "Error"
+				df.Status.Message = fmt.Sprintf("Failed to create processor RBAC: %v", err)
+			})
+			if updateErr != nil {
+				log.Error(updateErr, "unable to update DataFlow status")
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Create or update Deployment (pass resolvedSpec for checkpoint persistence)
 	if err := r.createOrUpdateDeployment(ctx, req, &dataflow, resolvedSpec); err != nil {
 		log.Error(err, "failed to create or update Deployment")
 		if r.Recorder != nil {
@@ -491,6 +527,149 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 	return nil
 }
 
+// createOrUpdateCheckpointConfigMap creates an empty ConfigMap for checkpoint persistence.
+func (r *DataFlowReconciler) createOrUpdateCheckpointConfigMap(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
+	log := log.FromContext(ctx)
+	configMapName := fmt.Sprintf("dataflow-%s-checkpoint", dataflow.Name)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: req.Namespace,
+		},
+		Data: map[string]string{},
+	}
+	if err := ctrl.SetControllerReference(dataflow, configMap, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	existing := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: req.Namespace}, existing)
+	if err != nil && apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, configMap); err != nil {
+			return fmt.Errorf("failed to create checkpoint ConfigMap: %w", err)
+		}
+		log.Info("Created checkpoint ConfigMap", "name", configMapName)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "CheckpointConfigMapCreated", "Created checkpoint ConfigMap %s", configMapName)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get checkpoint ConfigMap: %w", err)
+	}
+	return nil
+}
+
+// createOrUpdateProcessorRBAC creates ServiceAccount, Role, and RoleBinding for the processor pod to read/write checkpoint ConfigMap.
+func (r *DataFlowReconciler) createOrUpdateProcessorRBAC(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
+	log := log.FromContext(ctx)
+	saName := fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
+	roleName := saName
+	configMapName := fmt.Sprintf("dataflow-%s-checkpoint", dataflow.Name)
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: req.Namespace,
+		},
+	}
+	if err := ctrl.SetControllerReference(dataflow, sa, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on ServiceAccount: %w", err)
+	}
+	if err := r.Get(ctx, types.NamespacedName{Name: saName, Namespace: req.Namespace}, &corev1.ServiceAccount{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, sa); err != nil {
+				return fmt.Errorf("failed to create ServiceAccount: %w", err)
+			}
+			log.Info("Created processor ServiceAccount", "name", saName)
+		} else {
+			return err
+		}
+	}
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      roleName,
+			Namespace: req.Namespace,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"configmaps"},
+				ResourceNames: []string{configMapName},
+				Verbs:         []string{"get", "patch", "update"},
+			},
+		},
+	}
+	if err := ctrl.SetControllerReference(dataflow, role, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on Role: %w", err)
+	}
+	existingRole := &rbacv1.Role{}
+	if err := r.Get(ctx, types.NamespacedName{Name: roleName, Namespace: req.Namespace}, existingRole); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, role); err != nil {
+				return fmt.Errorf("failed to create Role: %w", err)
+			}
+			log.Info("Created processor Role", "name", roleName)
+		} else {
+			return err
+		}
+	} else {
+		existingRole.Rules = role.Rules
+		if err := r.Update(ctx, existingRole); err != nil {
+			return fmt.Errorf("failed to update Role: %w", err)
+		}
+	}
+
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      roleName,
+			Namespace: req.Namespace,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      saName,
+				Namespace: req.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     roleName,
+		},
+	}
+	if err := ctrl.SetControllerReference(dataflow, binding, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference on RoleBinding: %w", err)
+	}
+	existingBinding := &rbacv1.RoleBinding{}
+	if err := r.Get(ctx, types.NamespacedName{Name: roleName, Namespace: req.Namespace}, existingBinding); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, binding); err != nil {
+				return fmt.Errorf("failed to create RoleBinding: %w", err)
+			}
+			log.Info("Created processor RoleBinding", "name", roleName)
+		} else {
+			return err
+		}
+	} else {
+		existingBinding.Subjects = binding.Subjects
+		existingBinding.RoleRef = binding.RoleRef
+		if err := r.Update(ctx, existingBinding); err != nil {
+			return fmt.Errorf("failed to update RoleBinding: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// processorServiceAccountFor returns the ServiceAccount name for the processor pod when checkpoint persistence is enabled.
+func (r *DataFlowReconciler) processorServiceAccountFor(dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) string {
+	if resolvedSpec != nil && (resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence) {
+		return fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
+	}
+	return ""
+}
+
 // processorImageFor returns the container image to use for the dataflow processor.
 // Precedence: spec.ProcessorImage > spec.ProcessorVersion (repo+tag) > default (same as controller).
 func (r *DataFlowReconciler) processorImageFor(dataflow *dataflowv1.DataFlow) string {
@@ -508,6 +687,7 @@ func (r *DataFlowReconciler) processorImageFor(dataflow *dataflowv1.DataFlow) st
 const specHashAnnotation = "dataflow.dataflow.io/spec-hash"
 
 // createOrUpdateDeployment creates or updates Deployment for the processor.
+// When resolvedSpec.CheckpointPersistence is enabled, uses a dedicated ServiceAccount for checkpoint ConfigMap access.
 func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	log := log.FromContext(ctx)
 
@@ -549,6 +729,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(int64(600)),
+					ServiceAccountName:             r.processorServiceAccountFor(dataflow, resolvedSpec),
 					Containers: []corev1.Container{
 						{
 							Name:  "processor",
@@ -683,12 +864,14 @@ func (r *DataFlowReconciler) getResourceRequirements(dataflow *dataflowv1.DataFl
 	}
 }
 
-// cleanupResources deletes Deployment and ConfigMap.
+// cleanupResources deletes Deployment, ConfigMaps, and processor RBAC.
 func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Request) error {
 	log := log.FromContext(ctx)
 
 	deploymentName := fmt.Sprintf("dataflow-%s", req.Name)
 	configMapName := fmt.Sprintf("dataflow-%s-spec", req.Name)
+	checkpointConfigMapName := fmt.Sprintf("dataflow-%s-checkpoint", req.Name)
+	saName := fmt.Sprintf("dataflow-%s-processor", req.Name)
 
 	// Delete Deployment
 	deployment := &appsv1.Deployment{
@@ -703,7 +886,7 @@ func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Requ
 	}
 	log.Info("Deleted Deployment", "name", deploymentName)
 
-	// Delete ConfigMap
+	// Delete spec ConfigMap
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
@@ -715,6 +898,52 @@ func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Requ
 		return err
 	}
 	log.Info("Deleted ConfigMap", "name", configMapName)
+
+	// Delete checkpoint ConfigMap (if checkpoint persistence was enabled)
+	checkpointCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      checkpointConfigMapName,
+			Namespace: req.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, checkpointCM); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "failed to delete checkpoint ConfigMap", "name", checkpointConfigMapName)
+		return err
+	}
+	log.Info("Deleted checkpoint ConfigMap", "name", checkpointConfigMapName)
+
+	// Delete processor RBAC (RoleBinding, Role, ServiceAccount)
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: req.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, roleBinding); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "failed to delete RoleBinding", "name", saName)
+		return err
+	}
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: req.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, role); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "failed to delete Role", "name", saName)
+		return err
+	}
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: req.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "failed to delete ServiceAccount", "name", saName)
+		return err
+	}
+	log.Info("Deleted processor RBAC", "name", saName)
 
 	return nil
 }

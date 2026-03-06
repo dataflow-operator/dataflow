@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Register metrics
@@ -77,8 +79,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Setup checkpoint store if persistence is enabled
+	var procOpts []processor.ProcessorOption
+	// CheckpointPersistence defaults to true when nil
+	if (spec.CheckpointPersistence == nil || *spec.CheckpointPersistence) && name != "" && namespace != "" {
+		configMapName := "dataflow-" + name + "-checkpoint"
+		store, err := checkpoint.NewConfigMapStore(namespace, configMapName)
+		if err != nil {
+			logger.Error(err, "Failed to create checkpoint store, continuing without persistence")
+		} else {
+			ctx := context.Background()
+			store.Start(ctx)
+			defer store.Stop()
+			procOpts = append(procOpts, processor.WithCheckpointStore(store))
+		}
+	}
+
 	// Create processor
-	proc, err := processor.NewProcessorWithLoggerAndMetadata(&spec, logger, namespace, name)
+	proc, err := processor.NewProcessorWithOptions(&spec, logger, namespace, name, procOpts...)
 	if err != nil {
 		logger.Error(err, "Failed to create processor")
 		os.Exit(1)
@@ -110,22 +128,31 @@ func main() {
 	}()
 
 	// Wait for signal or error
+	var procErr error
 	select {
 	case sig := <-sigChan:
 		logger.Info("Received signal, shutting down", "signal", sig)
 		cancel()
-		// Wait for processor to finish
-		if err := <-errChan; err != nil {
-			logger.Error(err, "Processor exited with error")
-			os.Exit(1)
+		procErr = <-errChan
+		if procErr != nil {
+			logger.Error(procErr, "Processor exited with error")
 		}
-	case err := <-errChan:
-		if err != nil {
-			logger.Error(err, "Processor error")
+		// Flush checkpoint before exit
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := proc.FlushCheckpoint(flushCtx); err != nil {
+			logger.Error(err, "Failed to flush checkpoint")
+		}
+		flushCancel()
+	case procErr = <-errChan:
+		if procErr != nil {
+			logger.Error(procErr, "Processor error")
 			os.Exit(1)
 		}
 	}
 
+	if procErr != nil {
+		os.Exit(1)
+	}
 	logger.Info("Processor stopped successfully")
 }
 

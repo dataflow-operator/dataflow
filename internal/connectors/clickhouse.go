@@ -29,6 +29,7 @@ import (
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register clickhouse driver for database/sql
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -40,18 +41,64 @@ import (
 type ClickHouseSourceConnector struct {
 	baseConnectorRWMutex
 	connectorLogger
-	config       *v1.ClickHouseSourceSpec
-	conn         *sql.DB
-	lastReadID   int64      // Track last read ID to avoid duplicates
-	lastReadTime *time.Time // Track last read time to avoid duplicates
-	readStateMu  sync.Mutex // protects lastReadID, lastReadTime (separate from conn to avoid blocking Connect/Close)
+	config          *v1.ClickHouseSourceSpec
+	conn            *sql.DB
+	lastReadID      int64      // Track last read ID to avoid duplicates
+	lastReadTime    *time.Time // Track last read time to avoid duplicates
+	readStateMu     sync.Mutex // protects lastReadID, lastReadTime (separate from conn to avoid blocking Connect/Close)
+	checkpointStore checkpoint.Store
+	sourceType      string
 }
 
 // NewClickHouseSourceConnector creates a new ClickHouse source connector
 func NewClickHouseSourceConnector(config *v1.ClickHouseSourceSpec) *ClickHouseSourceConnector {
-	return &ClickHouseSourceConnector{
+	return NewClickHouseSourceConnectorWithOptions(config, nil)
+}
+
+// NewClickHouseSourceConnectorWithOptions creates a ClickHouse source connector with optional checkpoint persistence.
+func NewClickHouseSourceConnectorWithOptions(config *v1.ClickHouseSourceSpec, opts *SourceConnectorOptions) *ClickHouseSourceConnector {
+	c := &ClickHouseSourceConnector{
 		config:          config,
 		connectorLogger: connectorLogger{logger: logr.Discard()},
+	}
+	if opts != nil {
+		c.checkpointStore = opts.CheckpointStore
+		c.sourceType = opts.SourceType
+		if c.sourceType == "" {
+			c.sourceType = "clickhouse"
+		}
+		if len(opts.InitialCheckpoint) > 0 {
+			c.applyInitialCheckpoint(opts.InitialCheckpoint)
+		}
+	}
+	return c
+}
+
+// applyInitialCheckpoint restores lastReadID and lastReadTime from persisted checkpoint.
+func (c *ClickHouseSourceConnector) applyInitialCheckpoint(data []byte) {
+	var m struct {
+		LastReadID   int64  `json:"lastReadID"`
+		LastReadTime string `json:"lastReadTime"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	c.readStateMu.Lock()
+	defer c.readStateMu.Unlock()
+	if m.LastReadID > 0 && m.LastReadID > c.lastReadID {
+		c.lastReadID = m.LastReadID
+	}
+	if m.LastReadTime != "" {
+		t, err := time.Parse("2006-01-02 15:04:05", m.LastReadTime)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339, m.LastReadTime)
+			if err != nil {
+				return
+			}
+		}
+		if c.lastReadTime == nil || t.After(*c.lastReadTime) {
+			c.lastReadTime = &t
+		}
 	}
 }
 
@@ -293,13 +340,24 @@ func (c *ClickHouseSourceConnector) extractRowCheckpoint(values []interface{}, i
 // Called from Ack callback (different goroutine).
 func (c *ClickHouseSourceConnector) advanceCheckpoint(rowID int64, rowTime *time.Time) {
 	c.readStateMu.Lock()
-	defer c.readStateMu.Unlock()
 	if rowID > 0 && rowID > c.lastReadID {
 		c.lastReadID = rowID
 	}
 	if rowTime != nil && (c.lastReadTime == nil || rowTime.After(*c.lastReadTime)) {
 		t := *rowTime
 		c.lastReadTime = &t
+	}
+	lastID := c.lastReadID
+	lastTime := c.lastReadTime
+	c.readStateMu.Unlock()
+
+	if c.checkpointStore != nil {
+		m := map[string]interface{}{"lastReadID": lastID}
+		if lastTime != nil {
+			m["lastReadTime"] = lastTime.Format("2006-01-02 15:04:05")
+		}
+		data, _ := json.Marshal(m)
+		_ = c.checkpointStore.Save(context.Background(), c.sourceType, data)
 	}
 }
 

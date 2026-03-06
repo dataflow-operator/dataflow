@@ -24,6 +24,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/connectors"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	errclass "github.com/dataflow-operator/dataflow/internal/errors"
@@ -37,18 +38,19 @@ import (
 
 // Processor orchestrates data flow from source through transformations to sink
 type Processor struct {
-	source         connectors.SourceConnector
-	sink           connectors.SinkConnector
-	errorSink      connectors.SinkConnector
-	transformers   []transformers.Transformer
-	routerSinks    map[string]v1.SinkSpec
-	processedCount int64
-	errorCount     int64
-	mu             sync.RWMutex
-	logger         logr.Logger
-	namespace      string
-	name           string
-	spec           *v1.DataFlowSpec
+	source          connectors.SourceConnector
+	sink            connectors.SinkConnector
+	errorSink       connectors.SinkConnector
+	transformers    []transformers.Transformer
+	routerSinks     map[string]v1.SinkSpec
+	processedCount  int64
+	errorCount      int64
+	mu              sync.RWMutex
+	logger          logr.Logger
+	namespace       string
+	name            string
+	spec            *v1.DataFlowSpec
+	checkpointStore checkpoint.Store // for graceful shutdown flush
 }
 
 // NewProcessor creates a new processor
@@ -63,9 +65,21 @@ func NewProcessorWithLogger(spec *v1.DataFlowSpec, logger logr.Logger) (*Process
 
 // NewProcessorWithLoggerAndMetadata creates a new processor with logger and metadata
 func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger, namespace, name string) (*Processor, error) {
+	return NewProcessorWithOptions(spec, logger, namespace, name)
+}
+
+// NewProcessorWithOptions creates a new processor with optional checkpoint store
+func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespace, name string, opts ...ProcessorOption) (*Processor, error) {
+	options := &ProcessorOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	ctx := context.Background()
+	sourceOpts := buildSourceConnectorOptions(ctx, spec.Source.Type, options.CheckpointStore)
 
 	// Create source connector
-	source, err := connectors.CreateSourceConnector(&spec.Source)
+	source, err := connectors.CreateSourceConnector(&spec.Source, sourceOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create source connector: %w", err)
 	}
@@ -139,7 +153,7 @@ func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger
 		transformerList = append(transformerList, transformer)
 	}
 
-	return &Processor{
+	p := &Processor{
 		source:       source,
 		sink:         sink,
 		errorSink:    errorSink,
@@ -149,7 +163,19 @@ func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger
 		namespace:    namespace,
 		name:         name,
 		spec:         spec,
-	}, nil
+	}
+	if options.CheckpointStore != nil {
+		p.checkpointStore = options.CheckpointStore
+	}
+	return p, nil
+}
+
+// FlushCheckpoint persists any pending checkpoint to storage. Call before shutdown.
+func (p *Processor) FlushCheckpoint(ctx context.Context) error {
+	if p.checkpointStore != nil {
+		return p.checkpointStore.Flush(ctx)
+	}
+	return nil
 }
 
 // Start starts processing messages
