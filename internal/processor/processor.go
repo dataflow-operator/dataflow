@@ -156,8 +156,8 @@ func NewProcessorWithLoggerAndMetadata(spec *v1.DataFlowSpec, logger logr.Logger
 func (p *Processor) Start(ctx context.Context) error {
 	p.logger.Info("Starting processor")
 
-	// Connect to source
-	if err := p.source.Connect(ctx); err != nil {
+	// Connect to source with retry on transient errors (connection refused, etc.)
+	if err := p.connectSourceWithRetry(ctx); err != nil {
 		p.logger.Error(err, "Failed to connect to source")
 		return fmt.Errorf("failed to connect to source: %w", err)
 	}
@@ -172,9 +172,9 @@ func (p *Processor) Start(ctx context.Context) error {
 	defer p.sink.Close()
 	p.logger.Info("Connected to sink")
 
-	// Connect to error sink if specified
+	// Connect to error sink if specified (with retry on transient errors)
 	if p.errorSink != nil {
-		if err := p.errorSink.Connect(ctx); err != nil {
+		if err := p.connectConnectorWithRetry(ctx, p.errorSink); err != nil {
 			p.logger.Error(err, "Failed to connect to error sink")
 			return fmt.Errorf("failed to connect to error sink: %w", err)
 		}
@@ -201,23 +201,62 @@ func (p *Processor) Start(ctx context.Context) error {
 	return p.writeMessages(ctx, processedChan)
 }
 
-// connectSinkWithRetry connects to sink, retrying on transient errors (connection refused,
-// HTTP 500, etc.) until success or context cancellation. Prevents pod restart on temporary backend unavailability.
-func (p *Processor) connectSinkWithRetry(ctx context.Context) error {
+// connectSourceWithRetry connects to source, retrying on transient errors (connection refused,
+// timeout, etc.) until success or context cancellation. Prevents pod restart on temporary backend unavailability.
+func (p *Processor) connectSourceWithRetry(ctx context.Context) error {
 	const (
 		initialBackoff = 30 * time.Second
 		maxBackoff     = 5 * time.Minute
 	)
 	backoff := initialBackoff
 	for {
-		err := p.sink.Connect(ctx)
+		err := p.source.Connect(ctx)
 		if err == nil {
 			return nil
 		}
-		if !retry.IsRetryableForTrino(err) {
+		if !retry.IsRetryableTransient(err) {
 			return err
 		}
-		p.logger.Info("Transient sink connection error, retrying later",
+		p.logger.Info("Transient source connection error, retrying later",
+			"error", err.Error(),
+			"backoff", backoff.String())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			if backoff < maxBackoff {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+		}
+	}
+}
+
+// connectSinkWithRetry connects to sink, retrying on transient errors (connection refused,
+// HTTP 500, etc.) until success or context cancellation. Prevents pod restart on temporary backend unavailability.
+func (p *Processor) connectSinkWithRetry(ctx context.Context) error {
+	return p.connectConnectorWithRetry(ctx, p.sink)
+}
+
+// connectConnectorWithRetry connects a sink connector with retry on transient errors.
+// Used for main sink and router sinks.
+func (p *Processor) connectConnectorWithRetry(ctx context.Context, sink connectors.SinkConnector) error {
+	const (
+		initialBackoff = 30 * time.Second
+		maxBackoff     = 5 * time.Minute
+	)
+	backoff := initialBackoff
+	for {
+		err := sink.Connect(ctx)
+		if err == nil {
+			return nil
+		}
+		if !retry.IsRetryableTransient(err) {
+			return err
+		}
+		p.logger.Info("Transient connector connection error, retrying later",
 			"error", err.Error(),
 			"backoff", backoff.String())
 		select {
@@ -549,7 +588,7 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 						metadataConnector.SetMetadata(p.namespace, p.name)
 					}
 
-					if err := routeSink.Connect(ctx); err != nil {
+					if err := p.connectConnectorWithRetry(ctx, routeSink); err != nil {
 						p.logger.Error(err, "Failed to connect to route sink", "condition", cond)
 						return
 					}

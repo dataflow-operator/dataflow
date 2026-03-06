@@ -153,7 +153,12 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 	}
 
 	c.logger.V(1).Info("Executing ClickHouse query", "query", query, "table", c.config.Table)
-	rows, err := conn.QueryContext(ctx, query)
+	var rows *sql.Rows
+	err := retry.OnRetryableClickHouse(ctx, 3, 1*time.Second, func() error {
+		var qerr error
+		rows, qerr = conn.QueryContext(ctx, query)
+		return qerr
+	})
 	if err != nil {
 		c.logger.Error(err, "Failed to execute ClickHouse query", "query", query, "table", c.config.Table)
 		return
@@ -799,7 +804,7 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			batchCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 		}
-		if err := retry.OnTimeout(batchCtx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
+		if err := retry.OnRetryableClickHouse(batchCtx, retry.ClickHouseMaxAttempts, retry.ClickHouseInitialBackoff, func() error {
 			return flushBatch(batchCtx, toFlush)
 		}); err != nil {
 			return err

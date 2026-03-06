@@ -111,6 +111,34 @@ func TestOnTimeout_ContextCanceled(t *testing.T) {
 	}
 }
 
+func TestIsRetryableTransient(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"timeout", errors.New("i/o timeout"), true},
+		{"connection refused", errors.New("connection refused"), true},
+		{"connect timeout", errors.New("connect timeout"), true},
+		{"connection reset", errors.New("connection reset by peer"), true},
+		{"status 503", errors.New("status 503: Service Unavailable"), true},
+		{"status 502", errors.New("status 502: Bad Gateway"), true},
+		{"internal server error", errors.New("Internal Server Error"), true},
+		{"http/500", errors.New("HTTP/500"), true},
+		{"bad gateway", errors.New("502 bad gateway"), true},
+		{"service temporarily unavailable", errors.New("503 Service Temporarily Unavailable"), true},
+		{"permanent error", errors.New("syntax error"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRetryableTransient(tt.err); got != tt.want {
+				t.Errorf("IsRetryableTransient() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsTransientTrinoError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -236,5 +264,68 @@ func TestOnRetryableTrino_ConnectionRefusedThenSuccess(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("expected 2 calls (connection refused then success), got %d", calls)
+	}
+}
+
+func TestIsTransientClickHouseError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"connection refused", errors.New("connect: connection refused"), true},
+		{"connect timeout", errors.New("connect timeout"), true},
+		{"TOO_MANY_PARTS", errors.New("DB::Exception: Too many parts"), true},
+		{"too many parts", errors.New("too many parts in total"), true},
+		{"memory_limit_exceeded", errors.New("Memory limit exceeded"), true},
+		{"memory limit", errors.New("Memory limit: would use 1.00 GiB"), true},
+		{"connection reset", errors.New("connection reset by peer"), true},
+		{"status 503", errors.New("status 503: Service Unavailable"), true},
+		{"status 502", errors.New("status 502: Bad Gateway"), true},
+		{"timeout", errors.New("i/o timeout"), true},
+		{"permanent error", errors.New("syntax error at position 5"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsTransientClickHouseError(tt.err); got != tt.want {
+				t.Errorf("IsTransientClickHouseError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOnRetryableClickHouse_TransientThenSuccess(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	transientErr := errors.New("DB::Exception: Too many parts")
+	err := OnRetryableClickHouse(ctx, 3, 5*time.Millisecond, func() error {
+		calls++
+		if calls < 2 {
+			return transientErr
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("OnRetryableClickHouse() err = %v, want nil", err)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 calls (retry then success), got %d", calls)
+	}
+}
+
+func TestOnRetryableClickHouse_PermanentErrorNoRetry(t *testing.T) {
+	ctx := context.Background()
+	wantErr := errors.New("syntax error at position 5")
+	calls := 0
+	err := OnRetryableClickHouse(ctx, 3, 10*time.Millisecond, func() error {
+		calls++
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Errorf("OnRetryableClickHouse() err = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call (no retry on permanent error), got %d", calls)
 	}
 }

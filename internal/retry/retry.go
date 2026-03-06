@@ -19,6 +19,12 @@ const TrinoMaxAttempts = 5
 // TrinoInitialBackoff is the initial backoff for Trino retries (worker may need time to recover).
 const TrinoInitialBackoff = 2 * time.Second
 
+// ClickHouseMaxAttempts is the number of retry attempts for ClickHouse batch writes.
+const ClickHouseMaxAttempts = 5
+
+// ClickHouseInitialBackoff is the initial backoff for ClickHouse retries.
+const ClickHouseInitialBackoff = 2 * time.Second
+
 // IsTimeoutError returns true if err is or wraps context.DeadlineExceeded,
 // or if the error message indicates a timeout (e.g. from drivers).
 func IsTimeoutError(err error) bool {
@@ -32,6 +38,76 @@ func IsTimeoutError(err error) bool {
 	return strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "deadline exceeded") ||
 		strings.Contains(msg, "i/o timeout")
+}
+
+// IsRetryableTransient returns true for generic transient errors (connection refused, timeout, HTTP 5xx).
+// Used by connectSourceWithRetry and connectSinkWithRetry for all connector types.
+func IsRetryableTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsTimeoutError(err) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "connect timeout") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "status 503") ||
+		strings.Contains(lower, "status 502") ||
+		strings.Contains(lower, "internal server error") ||
+		strings.Contains(lower, "http/500") ||
+		strings.Contains(lower, "bad gateway") ||
+		strings.Contains(lower, "service temporarily unavailable") ||
+		(strings.Contains(lower, "temporary") && strings.Contains(lower, "unavailable"))
+}
+
+// IsTransientClickHouseError returns true if err looks like a transient ClickHouse error
+// (TOO_MANY_PARTS, memory limit, connection refused, etc.).
+func IsTransientClickHouseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsRetryableTransient(err) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "too_many_parts") ||
+		strings.Contains(lower, "too many parts") ||
+		strings.Contains(lower, "memory_limit_exceeded") ||
+		strings.Contains(lower, "memory limit") ||
+		strings.Contains(lower, "connection reset") ||
+		(strings.Contains(lower, "temporary") && strings.Contains(lower, "unavailable"))
+}
+
+// IsRetryableForClickHouse returns true if the error is retryable for ClickHouse batch writes.
+func IsRetryableForClickHouse(err error) bool {
+	return IsTransientClickHouseError(err)
+}
+
+// OnRetryableClickHouse runs op and retries when it returns a transient ClickHouse error.
+func OnRetryableClickHouse(ctx context.Context, maxAttempts int, initialBackoff time.Duration, op func() error) error {
+	var lastErr error
+	backoff := initialBackoff
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		lastErr = op()
+		if lastErr == nil {
+			return nil
+		}
+		if !IsRetryableForClickHouse(lastErr) {
+			return lastErr
+		}
+		if attempt == maxAttempts-1 {
+			return lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			backoff *= 2
+		}
+	}
+	return lastErr
 }
 
 // IsTransientTrinoError returns true if err looks like a transient Trino error
