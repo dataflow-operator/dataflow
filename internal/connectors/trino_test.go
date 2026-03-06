@@ -347,3 +347,22 @@ func TestTrinoSinkConnector_formatValueForType_ROW_ARRAY_invalidValReturnsNULL(t
 	result := connector.formatValueForType(make(chan int), "row(a int)")
 	assert.Equal(t, "NULL", result)
 }
+
+func TestTrinoSinkConnector_rawMode(t *testing.T) {
+	ptrBool := func(v bool) *bool { return &v }
+	tests := []struct {
+		name   string
+		config *v1.TrinoSinkSpec
+		want   bool
+	}{
+		{"nil", &v1.TrinoSinkSpec{}, false},
+		{"false", &v1.TrinoSinkSpec{RawMode: ptrBool(false)}, false},
+		{"true", &v1.TrinoSinkSpec{RawMode: ptrBool(true)}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewTrinoSinkConnector(tt.config)
+			assert.Equal(t, tt.want, c.rawMode())
+		})
+	}
+}

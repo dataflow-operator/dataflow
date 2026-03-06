@@ -41,7 +41,7 @@ const (
 // NoopStore is a no-op implementation for when checkpoint persistence is disabled.
 type NoopStore struct{}
 
-func (NoopStore) Load(context.Context, string) ([]byte, error)  { return nil, nil }
+func (NoopStore) Load(context.Context, string) ([]byte, error) { return nil, nil }
 func (NoopStore) Save(context.Context, string, []byte) error   { return nil }
 func (NoopStore) Flush(context.Context) error                  { return nil }
 
@@ -98,13 +98,13 @@ func NewConfigMapStore(namespace, configMapName string, opts ...ConfigMapStoreOp
 	}
 
 	s := &ConfigMapStore{
-		client:        client,
-		namespace:     namespace,
-		name:          configMapName,
-		pending:       make(map[string][]byte),
-		saveInterval:  defaultSaveInterval,
-		lastSave:      time.Time{},
-		stopCh:        make(chan struct{}),
+		client:       client,
+		namespace:    namespace,
+		name:         configMapName,
+		pending:      make(map[string][]byte),
+		saveInterval: defaultSaveInterval,
+		lastSave:     time.Time{},
+		stopCh:       make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)

@@ -1652,6 +1652,11 @@ spec:
                         - realm
                         - serverURL
                         type: object
+                      rawMode:
+                        description: |-
+                          RawMode when true, creates table with data VARCHAR column (JSON storage).
+                          When false (default), uses columnar format matching message keys to table columns.
+                        type: boolean
                       schema:
                         description: Schema to use
                         type: string
@@ -2518,6 +2523,11 @@ spec:
                         - realm
                         - serverURL
                         type: object
+                      rawMode:
+                        description: |-
+                          RawMode when true, creates table with data VARCHAR column (JSON storage).
+                          When false (default), uses columnar format matching message keys to table columns.
+                        type: boolean
                       schema:
                         description: Schema to use
                         type: string
@@ -4425,6 +4435,11 @@ spec:
                                         - realm
                                         - serverURL
                                         type: object
+                                      rawMode:
+                                        description: |-
+                                          RawMode when true, creates table with data VARCHAR column (JSON storage).
+                                          When false (default), uses columnar format matching message keys to table columns.
+                                        type: boolean
                                       schema:
                                         description: Schema to use
                                         type: string

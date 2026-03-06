@@ -32,6 +32,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -39,7 +40,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -729,7 +729,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(int64(600)),
-					ServiceAccountName:             r.processorServiceAccountFor(dataflow, resolvedSpec),
+					ServiceAccountName:            r.processorServiceAccountFor(dataflow, resolvedSpec),
 					Containers: []corev1.Container{
 						{
 							Name:  "processor",

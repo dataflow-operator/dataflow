@@ -612,6 +612,11 @@ type TrinoSinkSpec struct {
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
 
+	// RawMode when true, creates table with data VARCHAR column (JSON storage).
+	// When false (default), uses columnar format matching message keys to table columns.
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
+
 	// Keycloak authentication configuration
 	// +optional
 	Keycloak *KeycloakConfig `json:"keycloak,omitempty"`

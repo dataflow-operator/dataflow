@@ -42,8 +42,8 @@ type TrinoSourceConnector struct {
 	config          *v1.TrinoSourceSpec
 	httpClient      *http.Client
 	keycloakAuth    *KeycloakAuth
-	lastReadID      interface{}   // advanced only on Ack (after sink write)
-	readStateMu     sync.Mutex    // protects lastReadID
+	lastReadID      interface{} // advanced only on Ack (after sink write)
+	readStateMu     sync.Mutex  // protects lastReadID
 	checkpointStore checkpoint.Store
 	sourceType      string
 }
@@ -547,7 +547,8 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 
 	// Connect with retry on transient errors (503/502 from proxy, Trino overload, timeouts)
 	err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
-		if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable {
+		// Only create table in Connect when rawMode (structure known). Non-rawMode defers to first write or table must exist.
+		if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable && t.rawMode() {
 			if err := t.ensureTable(ctx); err != nil {
 				return fmt.Errorf("failed to ensure table exists: %w", err)
 			}
@@ -571,6 +572,10 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 
 	t.logger.Info("Successfully connected to Trino", "tableColumns", t.tableColumns)
 	return nil
+}
+
+func (t *TrinoSinkConnector) rawMode() bool {
+	return t.config.RawMode != nil && *t.config.RawMode
 }
 
 // testConnection tests the connection to Trino
@@ -885,6 +890,34 @@ func (t *TrinoSinkConnector) ensureTable(ctx context.Context) error {
 	return nil
 }
 
+// executeBatchRaw inserts messages as JSON strings into the data column (rawMode).
+func (t *TrinoSinkConnector) executeBatchRaw(ctx context.Context, batch []*types.Message) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	valueRows := make([]string, 0, len(batch))
+	for _, msg := range batch {
+		// Use message data as-is (already JSON); escape single quotes for SQL
+		jsonStr := string(msg.Data)
+		escaped := strings.ReplaceAll(jsonStr, "'", "''")
+		valueRows = append(valueRows, fmt.Sprintf("('%s')", escaped))
+	}
+	query := fmt.Sprintf(
+		"INSERT INTO %s.%s.%s (\"data\") VALUES %s",
+		t.config.Catalog,
+		t.config.Schema,
+		t.config.Table,
+		strings.Join(valueRows, ", "),
+	)
+	t.logger.Info("Executing batch insert (raw mode)", "batchSize", len(batch), "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
+	_, err := t.executeQuery(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to execute batch insert: %w", err)
+	}
+	t.logger.Info("Batch inserted successfully", "count", len(batch))
+	return nil
+}
+
 // Write writes messages to Trino
 func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {
 	if t.httpClient == nil {
@@ -1041,6 +1074,9 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Message) error {
 	if len(batch) == 0 {
 		return nil
+	}
+	if t.rawMode() {
+		return t.executeBatchRaw(ctx, batch)
 	}
 
 	// Get table columns (use cached if available, otherwise fetch)
