@@ -2639,10 +2639,6 @@ spec:
                         description: Query for custom SQL query (optional, if not
                           provided, reads from table)
                         type: string
-                      rawMode:
-                        description: 'RawMode when true, wraps each row as JSON: {"value":
-                          <row data>, "_metadata": {table, id}}'
-                        type: boolean
                       table:
                         description: Table to read from
                         type: string
@@ -2745,11 +2741,6 @@ spec:
                         description: 'Format specifies the message format: "json"
                           (default) or "avro"'
                         type: string
-                      rawMode:
-                        description: 'RawMode when true, wraps each message as JSON:
-                          {"value": <message value>, "_metadata": {offset, partition,
-                          timestamp, key, topic}}'
-                        type: boolean
                       sasl:
                         description: SASL configuration
                         properties:
@@ -3162,10 +3153,6 @@ spec:
                         description: Query for custom filter (optional). If empty,
                           full table scan.
                         type: string
-                      rawMode:
-                        description: 'RawMode when true, wraps each row as JSON: {"value":
-                          <row data>, "_metadata": {namespace, table}}'
-                        type: boolean
                       table:
                         description: Table is the Iceberg table name.
                         type: string
@@ -3256,10 +3243,6 @@ spec:
                         description: Query for custom SQL query (optional, if not
                           provided, reads from table)
                         type: string
-                      rawMode:
-                        description: 'RawMode when true, wraps each row as JSON: {"value":
-                          <row data>, "_metadata": {table, id}}'
-                        type: boolean
                       readBatchSize:
                         description: ReadBatchSize limits rows per poll to reduce
                           DB load (0 = no limit)
@@ -3484,10 +3467,6 @@ spec:
                         description: Query for custom SQL query (optional, if not
                           provided, reads from table)
                         type: string
-                      rawMode:
-                        description: 'RawMode when true, wraps each row as JSON: {"value":
-                          <row data>, "_metadata": {catalog, schema, table}}'
-                        type: boolean
                       schema:
                         description: Schema to use
                         type: string

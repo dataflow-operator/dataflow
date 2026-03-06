@@ -588,35 +588,6 @@ func (h *kafkaConsumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
 	return nil
 }
 
-// buildRawModeMessage wraps value and Kafka metadata into JSON: {"value": ..., "_metadata": {...}}
-func (k *KafkaSourceConnector) buildRawModeMessage(value []byte, msg *sarama.ConsumerMessage) ([]byte, error) {
-	var valueData interface{}
-	if json.Valid(value) {
-		if err := json.Unmarshal(value, &valueData); err != nil {
-			valueData = string(value)
-		}
-	} else {
-		valueData = string(value)
-	}
-
-	timestampMs := int64(0)
-	if !msg.Timestamp.IsZero() {
-		timestampMs = msg.Timestamp.UnixMilli()
-	}
-
-	raw := map[string]interface{}{
-		"value": valueData,
-		"_metadata": map[string]interface{}{
-			"offset":    msg.Offset,
-			"partition": msg.Partition,
-			"timestamp": timestampMs,
-			"key":       string(msg.Key),
-			"topic":     msg.Topic,
-		},
-	}
-	return json.Marshal(raw)
-}
-
 func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for {
 		select {
@@ -644,18 +615,6 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 			} else {
 				// Default: use message value as-is (JSON or other format)
 				msgData = message.Value
-			}
-
-			// RawMode: wrap in {"value": ..., "_metadata": {offset, partition, timestamp, key, topic}}
-			if h.connector.config.RawMode != nil && *h.connector.config.RawMode {
-				msgData, err = h.connector.buildRawModeMessage(msgData, message)
-				if err != nil {
-					h.connector.logger.Error(err, "Failed to build raw mode message",
-						logkeys.MessageID, fmt.Sprintf("%d/%d", message.Partition, message.Offset),
-						"topic", message.Topic)
-					session.MarkMessage(message, "")
-					continue
-				}
 			}
 
 			msg := types.NewMessage(msgData)

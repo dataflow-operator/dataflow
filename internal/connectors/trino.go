@@ -437,22 +437,6 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 			continue
 		}
 
-		if t.config.RawMode != nil && *t.config.RawMode {
-			metadata := map[string]interface{}{
-				"catalog": t.config.Catalog,
-				"schema":  t.config.Schema,
-				"table":   t.config.Table,
-			}
-			if id, ok := row["id"]; ok {
-				metadata["id"] = id
-			}
-			jsonData, err = buildRawModeJSON(row, metadata)
-			if err != nil {
-				t.logger.Error(err, "Failed to build raw mode message")
-				continue
-			}
-		}
-
 		msg := types.NewMessage(jsonData)
 		msg.Metadata["catalog"] = t.config.Catalog
 		msg.Metadata["schema"] = t.config.Schema
@@ -852,13 +836,15 @@ func (t *TrinoSinkConnector) getTableColumns(ctx context.Context) ([]TableColumn
 	return columns, nil
 }
 
-// ensureTable creates the table if it doesn't exist
+// ensureTable creates the table if it doesn't exist (rawMode: single data column for JSON storage).
 func (t *TrinoSinkConnector) ensureTable(ctx context.Context) error {
-	// Check if table exists
+	// Check if table exists (escape single quotes for SQL safety)
+	escapedSchema := strings.ReplaceAll(t.config.Schema, "'", "''")
+	escapedTable := strings.ReplaceAll(t.config.Table, "'", "''")
 	checkQuery := fmt.Sprintf(
 		"SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' AND table_name = '%s'",
-		t.config.Schema,
-		t.config.Table,
+		escapedSchema,
+		escapedTable,
 	)
 
 	rows, err := t.executeQuery(ctx, checkQuery)
@@ -871,14 +857,17 @@ func (t *TrinoSinkConnector) ensureTable(ctx context.Context) error {
 		return nil
 	}
 
-	// Create table with flexible schema for JSON-like data
-	// Note: Trino table creation depends on the catalog type
-	// This is a simplified example - in production, you'd want to infer schema from messages
+	// Create table for rawMode: "data" and "_metadata" columns for JSON strings.
+	// VARCHAR(1048576) - sufficient for typical JSON messages; Hive uses STRING via connector mapping.
+	// WITH (format = 'ORC') - explicit format for Hive; Iceberg also supports ORC.
+	quotedCatalog := quoteTrinoIdentifier(t.config.Catalog)
+	quotedSchema := quoteTrinoIdentifier(t.config.Schema)
+	quotedTable := quoteTrinoIdentifier(t.config.Table)
 	createQuery := fmt.Sprintf(
-		"CREATE TABLE IF NOT EXISTS %s.%s.%s (data VARCHAR)",
-		t.config.Catalog,
-		t.config.Schema,
-		t.config.Table,
+		"CREATE TABLE IF NOT EXISTS %s.%s.%s (\"data\" VARCHAR(1048576), \"_metadata\" VARCHAR(1048576)) WITH (format = 'ORC')",
+		quotedCatalog,
+		quotedSchema,
+		quotedTable,
 	)
 
 	_, err = t.executeQuery(ctx, createQuery)
@@ -890,20 +879,63 @@ func (t *TrinoSinkConnector) ensureTable(ctx context.Context) error {
 	return nil
 }
 
-// executeBatchRaw inserts messages as JSON strings into the data column (rawMode).
+// quoteTrinoIdentifier quotes identifier for Trino SQL if it contains special characters.
+func quoteTrinoIdentifier(name string) string {
+	if name == "" {
+		return `""`
+	}
+	// Quote if contains non-alphanumeric (except underscore)
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+		}
+	}
+	return name
+}
+
+// extractDataAndMetadata extracts data and _metadata from a rawMode message.
+// If msg.Data is {"value": ..., "_metadata": ...}, uses those; otherwise uses whole data and msg.Metadata.
+func extractDataAndMetadata(msg *types.Message) (dataStr, metaStr string) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(msg.Data, &parsed); err == nil {
+		if v, ok := parsed["value"]; ok && len(parsed) <= 2 {
+			// Raw format: {"value": ..., "_metadata": ...}
+			dataJSON, _ := json.Marshal(v)
+			dataStr = string(dataJSON)
+			if m, ok := parsed["_metadata"]; ok {
+				metaJSON, _ := json.Marshal(m)
+				metaStr = string(metaJSON)
+			}
+			return dataStr, metaStr
+		}
+	}
+	// Plain format: use whole msg.Data as data, msg.Metadata as _metadata
+	dataStr = string(msg.Data)
+	meta := map[string]interface{}{}
+	if msg.Metadata != nil {
+		for k, v := range msg.Metadata {
+			meta[k] = v
+		}
+	}
+	metaJSON, _ := json.Marshal(meta)
+	metaStr = string(metaJSON)
+	return dataStr, metaStr
+}
+
+// executeBatchRaw inserts messages as JSON strings into data and _metadata columns (rawMode).
 func (t *TrinoSinkConnector) executeBatchRaw(ctx context.Context, batch []*types.Message) error {
 	if len(batch) == 0 {
 		return nil
 	}
 	valueRows := make([]string, 0, len(batch))
 	for _, msg := range batch {
-		// Use message data as-is (already JSON); escape single quotes for SQL
-		jsonStr := string(msg.Data)
-		escaped := strings.ReplaceAll(jsonStr, "'", "''")
-		valueRows = append(valueRows, fmt.Sprintf("('%s')", escaped))
+		dataStr, metaStr := extractDataAndMetadata(msg)
+		dataEscaped := strings.ReplaceAll(dataStr, "'", "''")
+		metaEscaped := strings.ReplaceAll(metaStr, "'", "''")
+		valueRows = append(valueRows, fmt.Sprintf("('%s', '%s')", dataEscaped, metaEscaped))
 	}
 	query := fmt.Sprintf(
-		"INSERT INTO %s.%s.%s (\"data\") VALUES %s",
+		"INSERT INTO %s.%s.%s (\"data\", \"_metadata\") VALUES %s",
 		t.config.Catalog,
 		t.config.Schema,
 		t.config.Table,

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -363,6 +364,64 @@ func TestTrinoSinkConnector_rawMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := NewTrinoSinkConnector(tt.config)
 			assert.Equal(t, tt.want, c.rawMode())
+		})
+	}
+}
+
+func TestExtractDataAndMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      *types.Message
+		wantData string
+		wantMeta string
+	}{
+		{
+			name: "raw_format",
+			msg: &types.Message{
+				Data: []byte(`{"value":{"id":1,"name":"foo"},"_metadata":{"offset":10,"topic":"t1"}}`),
+			},
+			wantData: `{"id":1,"name":"foo"}`,
+			wantMeta: `{"offset":10,"topic":"t1"}`,
+		},
+		{
+			name: "plain_format",
+			msg: &types.Message{
+				Data:     []byte(`{"id":2,"name":"bar"}`),
+				Metadata: map[string]interface{}{"table": "products", "id": float64(2)},
+			},
+			wantData: `{"id":2,"name":"bar"}`,
+			wantMeta: `{"id":2,"table":"products"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotData, gotMeta := extractDataAndMetadata(tt.msg)
+			assert.JSONEq(t, tt.wantData, gotData)
+			assert.JSONEq(t, tt.wantMeta, gotMeta)
+		})
+	}
+}
+
+func TestQuoteTrinoIdentifier(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"simple", "default", "default"},
+		{"catalog", "hive", "hive"},
+		{"with_dash", "my-schema", `"my-schema"`},
+		{"with_dot", "my.schema", `"my.schema"`},
+		{"with_space", "my schema", `"my schema"`},
+		{"with_quotes", `say"hello`, `"say""hello"`},
+		{"empty", "", `""`},
+		{"underscore_ok", "my_table", "my_table"},
+		{"mixed_alnum", "table123", "table123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := quoteTrinoIdentifier(tt.in)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

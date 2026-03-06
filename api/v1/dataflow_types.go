@@ -136,10 +136,6 @@ type KafkaSourceSpec struct {
 	// +optional
 	Format string `json:"format,omitempty"`
 
-	// RawMode when true, wraps each message as JSON: {"value": <message value>, "_metadata": {offset, partition, timestamp, key, topic}}
-	// +optional
-	RawMode *bool `json:"rawMode,omitempty"`
-
 	// AvroSchema is the Avro schema as JSON string (required if format is "avro")
 	// +optional
 	AvroSchema string `json:"avroSchema,omitempty"`
@@ -218,10 +214,6 @@ type PostgreSQLSourceSpec struct {
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
 
-	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {table, id}}
-	// +optional
-	RawMode *bool `json:"rawMode,omitempty"`
-
 	// ReadBatchSize limits rows per poll to reduce DB load (0 = no limit)
 	// +optional
 	ReadBatchSize *int32 `json:"readBatchSize,omitempty"`
@@ -278,10 +270,6 @@ type TrinoSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
-
-	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {catalog, schema, table}}
-	// +optional
-	RawMode *bool `json:"rawMode,omitempty"`
 }
 
 // ClickHouseSourceSpec defines ClickHouse source configuration
@@ -307,10 +295,6 @@ type ClickHouseSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
-
-	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {table, id}}
-	// +optional
-	RawMode *bool `json:"rawMode,omitempty"`
 }
 
 // NessieSourceSpec defines Nessie (Iceberg REST catalog) source configuration.
@@ -341,10 +325,6 @@ type NessieSourceSpec struct {
 	// PollInterval in seconds for polling mode.
 	// +optional
 	PollInterval *int32 `json:"pollInterval,omitempty"`
-
-	// RawMode when true, wraps each row as JSON: {"value": <row data>, "_metadata": {namespace, table}}
-	// +optional
-	RawMode *bool `json:"rawMode,omitempty"`
 
 	// BasicAuth for Nessie/Iceberg REST.
 	// +optional

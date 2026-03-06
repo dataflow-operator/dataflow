@@ -295,22 +295,6 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				continue
 			}
 
-			if p.config.RawMode != nil && *p.config.RawMode {
-				metadata := map[string]interface{}{"table": p.config.Table}
-				if idIndex >= 0 && len(values) > idIndex {
-					metadata["id"] = values[idIndex]
-				}
-				metadata["operation"] = operation
-				jsonData, err = buildRawModeJSON(rowMap, metadata)
-				if err != nil {
-					if p.namespace != "" && p.name != "" {
-						metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "source", "read", "marshal_error")
-					}
-					p.logger.Error(err, "Failed to build raw mode message", "table", p.config.Table)
-					continue
-				}
-			}
-
 			msg := types.NewMessage(jsonData)
 			msg.Metadata["table"] = p.config.Table
 			if idIndex >= 0 && len(values) > idIndex {
