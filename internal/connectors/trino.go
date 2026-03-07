@@ -893,6 +893,16 @@ func quoteTrinoIdentifier(name string) string {
 	return name
 }
 
+// unwrapMessageDataForColumns returns the map to use for column lookups.
+// If msgData is {"value": {...}, "_metadata": {...}}, returns the inner value map.
+// Otherwise returns msgData as-is (plain columnar format).
+func unwrapMessageDataForColumns(msgData map[string]interface{}) map[string]interface{} {
+	if v, ok := msgData["value"].(map[string]interface{}); ok && len(msgData) <= 2 {
+		return v
+	}
+	return msgData
+}
+
 // extractDataAndMetadata extracts data and _metadata from a rawMode message.
 // If msg.Data is {"value": ..., "_metadata": ...}, uses those; otherwise uses whole data and msg.Metadata.
 func extractDataAndMetadata(msg *types.Message) (dataStr, metaStr string) {
@@ -1103,12 +1113,23 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 	}
 }
 
+// hasRawModeColumns checks if the table has data and _metadata columns (required for raw mode).
+func (t *TrinoSinkConnector) hasRawModeColumns(columns []TableColumnInfo) bool {
+	hasData, hasMeta := false, false
+	for _, col := range columns {
+		if col.Name == "data" {
+			hasData = true
+		}
+		if col.Name == "_metadata" {
+			hasMeta = true
+		}
+	}
+	return hasData && hasMeta
+}
+
 func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Message) error {
 	if len(batch) == 0 {
 		return nil
-	}
-	if t.rawMode() {
-		return t.executeBatchRaw(ctx, batch)
 	}
 
 	// Get table columns (use cached if available, otherwise fetch)
@@ -1126,6 +1147,16 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 		t.columnsMu.Lock()
 		t.tableColumns = tableColumns
 		t.columnsMu.Unlock()
+	}
+
+	// Use raw mode only when configured AND table has data/_metadata columns.
+	// If rawMode is true but table has different schema (e.g. columnar), fall back to schema-based insert.
+	if t.rawMode() && t.hasRawModeColumns(tableColumns) {
+		return t.executeBatchRaw(ctx, batch)
+	}
+	if t.rawMode() && !t.hasRawModeColumns(tableColumns) {
+		t.logger.Info("rawMode is true but target table does not have data/_metadata columns, using schema-based insert",
+			"table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
 	}
 
 	// Create a map for fast lookup of table columns by name
@@ -1146,8 +1177,9 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 			return fmt.Errorf("failed to parse message JSON at index %d: %w", i, err)
 		}
 
-		// Collect all keys from all messages
-		for k := range msgData {
+		// Collect all keys from all messages (unwrap {"value": {...}} format if present)
+		dataForColumns := unwrapMessageDataForColumns(msgData)
+		for k := range dataForColumns {
 			allMessageKeys[k] = true
 		}
 	}
@@ -1167,13 +1199,14 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 		var firstMsgData map[string]interface{}
 		if err := json.Unmarshal(batch[0].Data, &firstMsgData); err == nil {
 			// Log first message structure (limit size to avoid huge logs)
-			firstMsgJSON, _ := json.Marshal(firstMsgData)
+			dataForPreview := unwrapMessageDataForColumns(firstMsgData)
+			firstMsgJSON, _ := json.Marshal(dataForPreview)
 			msgPreview := string(firstMsgJSON)
 			if len(msgPreview) > 500 {
 				msgPreview = msgPreview[:500] + "..."
 			}
-			firstMsgKeys := make([]string, 0, len(firstMsgData))
-			for k := range firstMsgData {
+			firstMsgKeys := make([]string, 0, len(dataForPreview))
+			for k := range dataForPreview {
 				firstMsgKeys = append(firstMsgKeys, k)
 			}
 			t.logger.Info("First message in batch (preview)",
@@ -1243,6 +1276,9 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 			t.logger.Error(err, "Failed to parse message JSON", logkeys.MessageID, types.MessageID(msg), "messageIndex", i, "message", string(msg.Data))
 			return fmt.Errorf("failed to parse message JSON: %w", err)
 		}
+
+		// Unwrap {"value": {...}} format if present (e.g. from Kafka with rawMode source)
+		data = unwrapMessageDataForColumns(data)
 
 		// Build values for this row - use values from message or NULL
 		values := make([]string, len(columnsToUse))

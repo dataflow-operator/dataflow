@@ -17,6 +17,7 @@ limitations under the License.
 package connectors
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -398,6 +399,94 @@ func TestExtractDataAndMetadata(t *testing.T) {
 			gotData, gotMeta := extractDataAndMetadata(tt.msg)
 			assert.JSONEq(t, tt.wantData, gotData)
 			assert.JSONEq(t, tt.wantMeta, gotMeta)
+		})
+	}
+}
+
+func TestUnwrapMessageDataForColumns(t *testing.T) {
+	tests := []struct {
+		name     string
+		msgData  string
+		wantKeys []string
+	}{
+		{
+			name:     "wrapped_value_format",
+			msgData:  `{"value":{"id":1,"name":"foo"},"_metadata":{"offset":10}}`,
+			wantKeys: []string{"id", "name"},
+		},
+		{
+			name:     "plain_columnar_format",
+			msgData:  `{"id":2,"name":"bar","amount":100}`,
+			wantKeys: []string{"id", "name", "amount"},
+		},
+		{
+			name:     "value_not_map_returns_as_is",
+			msgData:  `{"value":"string","_metadata":{}}`,
+			wantKeys: []string{"value", "_metadata"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(tt.msgData), &m))
+			got := unwrapMessageDataForColumns(m)
+			gotKeys := make([]string, 0, len(got))
+			for k := range got {
+				gotKeys = append(gotKeys, k)
+			}
+			assert.ElementsMatch(t, tt.wantKeys, gotKeys)
+		})
+	}
+}
+
+func TestTrinoSinkConnector_hasRawModeColumns(t *testing.T) {
+	connector := NewTrinoSinkConnector(&v1.TrinoSinkSpec{
+		ServerURL: "http://localhost:8080",
+		Catalog:   "test",
+		Schema:    "test",
+		Table:     "test",
+	})
+	tests := []struct {
+		name    string
+		columns []TableColumnInfo
+		want    bool
+	}{
+		{
+			name: "has_both",
+			columns: []TableColumnInfo{
+				{Name: "data", Type: "varchar"},
+				{Name: "_metadata", Type: "varchar"},
+			},
+			want: true,
+		},
+		{
+			name: "missing_data",
+			columns: []TableColumnInfo{
+				{Name: "_metadata", Type: "varchar"},
+			},
+			want: false,
+		},
+		{
+			name: "missing_metadata",
+			columns: []TableColumnInfo{
+				{Name: "data", Type: "varchar"},
+			},
+			want: false,
+		},
+		{
+			name: "columnar_schema",
+			columns: []TableColumnInfo{
+				{Name: "id", Type: "bigint"},
+				{Name: "name", Type: "varchar"},
+				{Name: "amount", Type: "double"},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := connector.hasRawModeColumns(tt.columns)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
