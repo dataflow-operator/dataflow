@@ -2,23 +2,7 @@
 
 Kubernetes operator for streaming data between different sources (Kafka, PostgreSQL, Trino) with support for message transformations.
 
-## Features
-
-- **Multiple Data Sources**: Kafka, PostgreSQL, Trino
-- **Message Transformations**:
-  - Timestamp - add timestamp to messages
-  - Flatten - expand arrays into separate messages
-  - Filter - filter by conditions
-  - Mask - mask sensitive data
-  - Router - route to different sinks
-  - Select - select specific fields
-  - Remove - remove fields
-  - SnakeCase - convert field names to snake_case
-  - CamelCase - convert field names to CamelCase
-- **Kubernetes Secrets Support**: Configure connectors using `SecretRef` for secure credential management
-- **Per-Resource Pod Deployment**: Each DataFlow resource creates a separate pod (Deployment) for processing
-- **Resource Management**: Configure CPU and memory resources for processor pods
-- **Pod Placement Control**: Configure nodeSelector, affinity, and tolerations for fine-grained pod placement
+**[Online documentation](https://dataflow-operator.github.io/docs/)**
 
 ## Quick Start
 
@@ -30,71 +14,11 @@ Kubernetes operator for streaming data between different sources (Kafka, Postgre
 - Go 1.21+ (for local development)
 - Docker and docker-compose (for local development)
 
-### Installation
-
-#### Installing CRD
-
-Before installing the operator, you need to install the Custom Resource Definition (CRD):
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/dataflow-operator/dataflow/refs/heads/main/config/crd/bases/dataflow.dataflow.io_dataflows.yaml
-```
-
-Or use a local file:
-
-```bash
-kubectl apply -f config/crd/bases/dataflow.dataflow.io_dataflows.yaml
-```
-
-#### Installation via Helm (Recommended)
-
-1. Install the operator from OCI registry:
-```bash
-helm install dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator
-```
-
-2. For installation with custom settings:
-```bash
-helm install dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator \
-  --set image.repository=your-registry/controller \
-  --set image.tag=v1.0.0 \
-  --set replicaCount=2
-```
-
-3. For installation in a specific namespace:
-```bash
-helm install dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator \
-  --namespace dataflow-system \
-  --create-namespace
-```
-
-4. Check installation status:
-```bash
-kubectl get pods -l app.kubernetes.io/name=dataflow-operator
-```
-
-**Note**: For local development, you can also use the local chart:
-```bash
-helm install dataflow-operator ./helm-charts/dataflow-operator
-```
-
-#### Updating
-
-```bash
-helm upgrade dataflow-operator oci://ghcr.io/dataflow-operator/helm-charts/dataflow-operator
-```
-
-#### Uninstallation
-
-```bash
-helm uninstall dataflow-operator
-```
-
 #### Local Development
 
 For local development, you can run the operator locally:
 ```bash
-make run
+task run
 ```
 
 Or use the script:
@@ -115,92 +39,33 @@ Available UIs:
 
 2. Run the operator:
 ```bash
-make run
+task run
 ```
-
-### Usage Examples
-
-See `config/samples/` for CRD manifest examples.
-
-#### Example with Kubernetes Secrets
-
-For secure credential storage, use Kubernetes Secrets:
-
-```bash
-kubectl apply -f config/samples/kafka-to-postgres-secrets.yaml
-```
-
-This example demonstrates using `SecretRef` for connector configuration. All connectors support configuration from Kubernetes Secrets.
-
-## Project Structure
-
-```
-dataflow/
-├── api/v1/              # CRD definitions
-├── internal/
-│   ├── connectors/      # Connectors for sources/sinks
-│   ├── transformers/    # Message transformations
-│   ├── processor/       # Message processor
-│   └── controller/      # Kubernetes controller
-├── config/samples/      # CRD examples
-├── docs/                # MkDocs documentation
-├── test/                # Tests and utilities
-└── scripts/             # Helper scripts
-```
-
-## Documentation
-
-Full documentation is available in `docs/`. To view:
-
-```bash
-mkdocs serve
-```
-
-Or from the project root:
-
-```bash
-cd docs && mkdocs serve
-```
-
-Documentation is available in two languages:
-- **English**: Default language
-- **Russian**: Available in the navigation menu
 
 ## Development
 
 ### Code Generation
 
-If you encounter issues with `make generate`, try:
+If you encounter issues with `task generate`, try:
 
 ```bash
 # Update controller-gen
 go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
 
 # Then
-make generate
+task generate
 ```
 
 ### Testing
 
 ```bash
 # Unit tests
-make test
+task test
 
 # Integration tests (requires kind)
 ./scripts/setup-kind.sh
-make test-integration
+task test-integration
 ```
-
-## Security
-
-DataFlow Operator supports configuring connectors from Kubernetes Secrets through `SecretRef` fields. This allows:
-
-- Secure storage of sensitive data (passwords, tokens, connection strings)
-- Centralized credential management
-- Secret rotation without changing DataFlow resources
-- Access control through Kubernetes RBAC
-
-See the [Connectors documentation](docs/en/connectors.md#using-kubernetes-secrets) for details.
 
 ## License
 
