@@ -932,8 +932,9 @@ func extractDataAndMetadata(msg *types.Message) (dataStr, metaStr string) {
 	return dataStr, metaStr
 }
 
-// executeBatchRaw inserts messages as JSON strings into data and _metadata columns (rawMode).
-func (t *TrinoSinkConnector) executeBatchRaw(ctx context.Context, batch []*types.Message) error {
+// executeBatchRaw inserts messages as JSON strings into dataColumnName and _metadata columns (rawMode).
+// dataColumnName is "data" or "value" depending on table schema.
+func (t *TrinoSinkConnector) executeBatchRaw(ctx context.Context, batch []*types.Message, dataColumnName string) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -945,10 +946,11 @@ func (t *TrinoSinkConnector) executeBatchRaw(ctx context.Context, batch []*types
 		valueRows = append(valueRows, fmt.Sprintf("('%s', '%s')", dataEscaped, metaEscaped))
 	}
 	query := fmt.Sprintf(
-		"INSERT INTO %s.%s.%s (\"data\", \"_metadata\") VALUES %s",
+		"INSERT INTO %s.%s.%s (\"%s\", \"_metadata\") VALUES %s",
 		t.config.Catalog,
 		t.config.Schema,
 		t.config.Table,
+		dataColumnName,
 		strings.Join(valueRows, ", "),
 	)
 	t.logger.Info("Executing batch insert (raw mode)", "batchSize", len(batch), "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
@@ -1113,18 +1115,30 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 	}
 }
 
-// hasRawModeColumns checks if the table has data and _metadata columns (required for raw mode).
-func (t *TrinoSinkConnector) hasRawModeColumns(columns []TableColumnInfo) bool {
-	hasData, hasMeta := false, false
+// hasRawModeColumns checks if the table has (data or value) and _metadata columns (required for raw mode).
+// Returns (ok, dataColumnName) where dataColumnName is "data" or "value" (prefers "data" when both exist).
+func (t *TrinoSinkConnector) hasRawModeColumns(columns []TableColumnInfo) (bool, string) {
+	hasData, hasValue, hasMeta := false, false, false
 	for _, col := range columns {
-		if col.Name == "data" {
+		switch col.Name {
+		case "data":
 			hasData = true
-		}
-		if col.Name == "_metadata" {
+		case "value":
+			hasValue = true
+		case "_metadata":
 			hasMeta = true
 		}
 	}
-	return hasData && hasMeta
+	if !hasMeta {
+		return false, ""
+	}
+	if hasData {
+		return true, "data"
+	}
+	if hasValue {
+		return true, "value"
+	}
+	return false, ""
 }
 
 func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Message) error {
@@ -1149,12 +1163,13 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 		t.columnsMu.Unlock()
 	}
 
-	// Use raw mode only when configured AND table has data/_metadata columns.
+	// Use raw mode only when configured AND table has (data or value)/_metadata columns.
 	// If rawMode is true but table has different schema (e.g. columnar), fall back to schema-based insert.
-	if t.rawMode() && t.hasRawModeColumns(tableColumns) {
-		return t.executeBatchRaw(ctx, batch)
-	}
-	if t.rawMode() && !t.hasRawModeColumns(tableColumns) {
+	if t.rawMode() {
+		ok, dataCol := t.hasRawModeColumns(tableColumns)
+		if ok {
+			return t.executeBatchRaw(ctx, batch, dataCol)
+		}
 		t.logger.Info("rawMode is true but target table does not have data/_metadata columns, using schema-based insert",
 			"table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
 	}

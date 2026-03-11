@@ -17,8 +17,13 @@ limitations under the License.
 package connectors
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -447,31 +452,62 @@ func TestTrinoSinkConnector_hasRawModeColumns(t *testing.T) {
 		Table:     "test",
 	})
 	tests := []struct {
-		name    string
-		columns []TableColumnInfo
-		want    bool
+		name         string
+		columns      []TableColumnInfo
+		wantOk       bool
+		wantDataCol  string
 	}{
 		{
-			name: "has_both",
+			name: "data_and_metadata",
 			columns: []TableColumnInfo{
 				{Name: "data", Type: "varchar"},
 				{Name: "_metadata", Type: "varchar"},
 			},
-			want: true,
+			wantOk:      true,
+			wantDataCol: "data",
+		},
+		{
+			name: "value_and_metadata",
+			columns: []TableColumnInfo{
+				{Name: "value", Type: "varchar"},
+				{Name: "_metadata", Type: "varchar"},
+			},
+			wantOk:      true,
+			wantDataCol: "value",
+		},
+		{
+			name: "data_value_and_metadata_prefers_data",
+			columns: []TableColumnInfo{
+				{Name: "data", Type: "varchar"},
+				{Name: "value", Type: "varchar"},
+				{Name: "_metadata", Type: "varchar"},
+			},
+			wantOk:      true,
+			wantDataCol: "data",
 		},
 		{
 			name: "missing_data",
 			columns: []TableColumnInfo{
 				{Name: "_metadata", Type: "varchar"},
 			},
-			want: false,
+			wantOk:      false,
+			wantDataCol: "",
 		},
 		{
 			name: "missing_metadata",
 			columns: []TableColumnInfo{
 				{Name: "data", Type: "varchar"},
 			},
-			want: false,
+			wantOk:      false,
+			wantDataCol: "",
+		},
+		{
+			name: "missing_metadata_value_only",
+			columns: []TableColumnInfo{
+				{Name: "value", Type: "varchar"},
+			},
+			wantOk:      false,
+			wantDataCol: "",
 		},
 		{
 			name: "columnar_schema",
@@ -480,15 +516,62 @@ func TestTrinoSinkConnector_hasRawModeColumns(t *testing.T) {
 				{Name: "name", Type: "varchar"},
 				{Name: "amount", Type: "double"},
 			},
-			want: false,
+			wantOk:      false,
+			wantDataCol: "",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := connector.hasRawModeColumns(tt.columns)
-			assert.Equal(t, tt.want, got)
+			gotOk, gotDataCol := connector.hasRawModeColumns(tt.columns)
+			assert.Equal(t, tt.wantOk, gotOk)
+			assert.Equal(t, tt.wantDataCol, gotDataCol)
 		})
 	}
+}
+
+func TestTrinoSinkConnector_executeBatchRaw_valueColumn(t *testing.T) {
+	var capturedQuery string
+	var captureMu sync.Mutex
+	trinoResponse := map[string]interface{}{
+		"id":      "test-query-id",
+		"nextUri": "",
+		"stats":   map[string]interface{}{"state": "FINISHED"},
+		"columns": []interface{}{},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/v1/statement") {
+			body, _ := io.ReadAll(r.Body)
+			captureMu.Lock()
+			capturedQuery = string(body)
+			captureMu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(trinoResponse)
+	}))
+	defer server.Close()
+
+	connector := NewTrinoSinkConnector(&v1.TrinoSinkSpec{
+		ServerURL: server.URL,
+		Catalog:   "test",
+		Schema:    "test",
+		Table:     "tbl",
+	})
+	connector.SetLogger(logr.Discard())
+	connector.httpClient = server.Client()
+
+	msg := &types.Message{
+		Data:     []byte(`{"requestBody":{"id":1},"requestHeader":{"type":"EVENT"}}`),
+		Metadata: map[string]interface{}{"topic": "t1", "partition": 0},
+	}
+	err := connector.executeBatchRaw(context.Background(), []*types.Message{msg}, "value")
+	require.NoError(t, err)
+
+	captureMu.Lock()
+	query := capturedQuery
+	captureMu.Unlock()
+	assert.Contains(t, query, `"value"`, "INSERT should use value column")
+	assert.Contains(t, query, `"_metadata"`, "INSERT should use _metadata column")
+	assert.NotContains(t, query, `"data"`, "INSERT should not use data column when value is specified")
 }
 
 func TestQuoteTrinoIdentifier(t *testing.T) {
