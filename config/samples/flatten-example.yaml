@@ -5,22 +5,21 @@ metadata:
 spec:
   source:
     type: kafka
-    kafka:
+    config:
       brokers:
         - localhost:9092
       topic: stock-topic
       consumerGroup: dataflow-group
   sink:
     type: postgresql
-    postgresql:
+    config:
       connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
       table: stock_items
       autoCreateTable: true
   transformations:
     - type: flatten
-      flatten:
+      config:
         field: rowsStock
     - type: timestamp
-      timestamp:
+      config:
         fieldName: created_at
-

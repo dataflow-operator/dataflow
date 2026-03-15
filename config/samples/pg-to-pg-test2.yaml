@@ -6,13 +6,13 @@ metadata:
 spec:
   source:
     type: postgresql
-    postgresql:
+    config:
       connectionString: "postgres://dataflow:dataflow@localhost:5432/dataflow?sslmode=disable"
       table: public.products
       pollInterval: 5
   sink:
     type: postgresql
-    postgresql:
+    config:
       connectionString: "postgres://dataflow:dataflow@localhost:5432/dataflow?sslmode=disable"
       table: public.products_raw_clone
       autoCreateTable: true

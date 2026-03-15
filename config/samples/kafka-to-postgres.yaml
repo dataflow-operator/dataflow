@@ -5,16 +5,13 @@ metadata:
 spec:
   source:
     type: kafka
-    kafka:
+    config:
       brokers:
         - localhost:9092
       topic: input-topic
       consumerGroup: dataflow-group
   sink:
     type: postgresql
-    postgresql:
+    config:
       connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
       table: output_table
-
-
-

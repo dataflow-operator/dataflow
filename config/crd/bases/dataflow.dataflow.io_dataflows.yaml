@@ -1149,9 +1149,8 @@ spec:
                 description: Transformations is a list of transformations to apply
                   to messages
                 items:
-                  description: |-
-                    TransformationSpec defines a transformation to apply (type + config).
-                    Supports both generic format (type+config) and legacy format (type+timestamp/flatten/etc) when unmarshaling.
+                  description: TransformationSpec defines a transformation to apply
+                    (type + config).
                   properties:
                     config:
                       description: Config holds transformation configuration. Structure
@@ -1171,7 +1170,6 @@ spec:
             - sink
             - source
             type: object
-            x-kubernetes-preserve-unknown-fields: true
           status:
             description: DataFlowStatus defines the observed state of DataFlow
             properties:

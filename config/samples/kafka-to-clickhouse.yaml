@@ -5,14 +5,14 @@ metadata:
 spec:
   source:
     type: kafka
-    kafka:
+    config:
       brokers:
         - localhost:9092
       topic: input-topic
       consumerGroup: dataflow-group
   sink:
     type: clickhouse
-    clickhouse:
+    config:
       connectionString: "clickhouse://default@clickhouse:9000/default?dial_timeout=10s"
       table: output_table
       batchSize: 100

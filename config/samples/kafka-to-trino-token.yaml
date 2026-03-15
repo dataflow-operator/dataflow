@@ -5,14 +5,14 @@ metadata:
 spec:
   source:
     type: kafka
-    kafka:
+    config:
       brokers:
         - localhost:9092
       topic: input-topic
       consumerGroup: dataflow-group
   sink:
     type: trino
-    trino:
+    config:
       serverURL: "http://trino:8080"
       catalog: hive
       schema: default

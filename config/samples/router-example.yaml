@@ -5,34 +5,31 @@ metadata:
 spec:
   source:
     type: kafka
-    kafka:
+    config:
       brokers:
         - localhost:9092
       topic: events
       consumerGroup: dataflow-group
   sink:
     type: kafka
-    kafka:
+    config:
       brokers:
         - localhost:9092
       topic: default-events
   transformations:
     - type: router
-      router:
+      config:
         routes:
           - condition: "$.level == 'error'"
             sink:
               type: kafka
-              kafka:
+              config:
                 brokers:
                   - localhost:9092
                 topic: error-events
           - condition: "$.level == 'warning'"
             sink:
               type: postgresql
-              postgresql:
+              config:
                 connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
                 table: warnings
-
-
-

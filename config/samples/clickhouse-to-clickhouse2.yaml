@@ -5,13 +5,13 @@ metadata:
 spec:
   source:
     type: clickhouse
-    clickhouse:
+    config:
       connectionString: "clickhouse://dataflow:dataflow@localhost:9000/dataflow?dial_timeout=10s"
       table: products
       pollInterval: 5
   sink:
     type: clickhouse
-    clickhouse:
+    config:
       connectionString: "clickhouse://dataflow:dataflow@localhost:9000/dataflow?dial_timeout=10s"
       table: products_row
       batchSize: 100

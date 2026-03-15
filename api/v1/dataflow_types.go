@@ -78,7 +78,6 @@ type DataFlowSpec struct {
 }
 
 // SourceSpec defines the source configuration (type + config).
-// Supports both generic format (type+config) and legacy format (type+kafka/postgresql/etc) when unmarshaling.
 // +kubebuilder:pruning:PreserveUnknownFields
 type SourceSpec struct {
 	// Type of source: kafka, postgresql, trino, clickhouse, nessie, or plugin type
@@ -89,50 +88,6 @@ type SourceSpec struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Config *runtime.RawExtension `json:"config,omitempty"`
-}
-
-// sourceSpecRaw is used for unmarshaling legacy format (type + kafka/postgresql/etc).
-type sourceSpecRaw struct {
-	Type       string                `json:"type"`
-	Config     *runtime.RawExtension `json:"config,omitempty"`
-	Kafka      *KafkaSourceSpec      `json:"kafka,omitempty"`
-	PostgreSQL *PostgreSQLSourceSpec `json:"postgresql,omitempty"`
-	Trino      *TrinoSourceSpec      `json:"trino,omitempty"`
-	ClickHouse *ClickHouseSourceSpec `json:"clickhouse,omitempty"`
-	Nessie     *NessieSourceSpec     `json:"nessie,omitempty"`
-}
-
-// UnmarshalJSON supports both generic (type+config) and legacy (type+kafka/etc) formats.
-func (s *SourceSpec) UnmarshalJSON(data []byte) error {
-	var r sourceSpecRaw
-	if err := json.Unmarshal(data, &r); err != nil {
-		return err
-	}
-	s.Type = r.Type
-	s.Config = r.Config
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		var cfg interface{}
-		switch r.Type {
-		case "kafka":
-			cfg = r.Kafka
-		case "postgresql":
-			cfg = r.PostgreSQL
-		case "trino":
-			cfg = r.Trino
-		case "clickhouse":
-			cfg = r.ClickHouse
-		case "nessie":
-			cfg = r.Nessie
-		}
-		if cfg != nil {
-			b, err := json.Marshal(cfg)
-			if err != nil {
-				return err
-			}
-			s.Config = &runtime.RawExtension{Raw: b}
-		}
-	}
-	return nil
 }
 
 // GetKafkaConfig returns Kafka config from Config.
@@ -505,7 +460,6 @@ type KeycloakConfig struct {
 }
 
 // SinkSpec defines the sink configuration (type + config).
-// Supports both generic format (type+config) and legacy format (type+kafka/postgresql/etc) when unmarshaling.
 // +kubebuilder:pruning:PreserveUnknownFields
 type SinkSpec struct {
 	// Type of sink: kafka, postgresql, trino, clickhouse, nessie, or plugin type
@@ -515,50 +469,6 @@ type SinkSpec struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Config *runtime.RawExtension `json:"config,omitempty"`
-}
-
-// sinkSpecRaw is used for unmarshaling legacy format.
-type sinkSpecRaw struct {
-	Type       string                `json:"type"`
-	Config     *runtime.RawExtension `json:"config,omitempty"`
-	Kafka      *KafkaSinkSpec        `json:"kafka,omitempty"`
-	PostgreSQL *PostgreSQLSinkSpec   `json:"postgresql,omitempty"`
-	Trino      *TrinoSinkSpec        `json:"trino,omitempty"`
-	ClickHouse *ClickHouseSinkSpec   `json:"clickhouse,omitempty"`
-	Nessie     *NessieSinkSpec       `json:"nessie,omitempty"`
-}
-
-// UnmarshalJSON supports both generic and legacy formats.
-func (s *SinkSpec) UnmarshalJSON(data []byte) error {
-	var r sinkSpecRaw
-	if err := json.Unmarshal(data, &r); err != nil {
-		return err
-	}
-	s.Type = r.Type
-	s.Config = r.Config
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		var cfg interface{}
-		switch r.Type {
-		case "kafka":
-			cfg = r.Kafka
-		case "postgresql":
-			cfg = r.PostgreSQL
-		case "trino":
-			cfg = r.Trino
-		case "clickhouse":
-			cfg = r.ClickHouse
-		case "nessie":
-			cfg = r.Nessie
-		}
-		if cfg != nil {
-			b, err := json.Marshal(cfg)
-			if err != nil {
-				return err
-			}
-			s.Config = &runtime.RawExtension{Raw: b}
-		}
-	}
-	return nil
 }
 
 // GetKafkaConfig returns Kafka sink config.
@@ -905,7 +815,6 @@ type SASLConfig struct {
 }
 
 // TransformationSpec defines a transformation to apply (type + config).
-// Supports both generic format (type+config) and legacy format (type+timestamp/flatten/etc) when unmarshaling.
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
 	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase
@@ -915,62 +824,6 @@ type TransformationSpec struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Config *runtime.RawExtension `json:"config,omitempty"`
-}
-
-// transformationSpecRaw is used for unmarshaling legacy format.
-type transformationSpecRaw struct {
-	Type      string                   `json:"type"`
-	Config    *runtime.RawExtension    `json:"config,omitempty"`
-	Timestamp *TimestampTransformation `json:"timestamp,omitempty"`
-	Flatten   *FlattenTransformation   `json:"flatten,omitempty"`
-	Filter    *FilterTransformation    `json:"filter,omitempty"`
-	Mask      *MaskTransformation      `json:"mask,omitempty"`
-	Router    *RouterTransformation    `json:"router,omitempty"`
-	Select    *SelectTransformation    `json:"select,omitempty"`
-	Remove    *RemoveTransformation    `json:"remove,omitempty"`
-	SnakeCase *SnakeCaseTransformation `json:"snakeCase,omitempty"`
-	CamelCase *CamelCaseTransformation `json:"camelCase,omitempty"`
-}
-
-// UnmarshalJSON supports both generic and legacy formats.
-func (t *TransformationSpec) UnmarshalJSON(data []byte) error {
-	var r transformationSpecRaw
-	if err := json.Unmarshal(data, &r); err != nil {
-		return err
-	}
-	t.Type = r.Type
-	t.Config = r.Config
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		var cfg interface{}
-		switch r.Type {
-		case "timestamp":
-			cfg = r.Timestamp
-		case "flatten":
-			cfg = r.Flatten
-		case "filter":
-			cfg = r.Filter
-		case "mask":
-			cfg = r.Mask
-		case "router":
-			cfg = r.Router
-		case "select":
-			cfg = r.Select
-		case "remove":
-			cfg = r.Remove
-		case "snakeCase":
-			cfg = r.SnakeCase
-		case "camelCase":
-			cfg = r.CamelCase
-		}
-		if cfg != nil {
-			b, err := json.Marshal(cfg)
-			if err != nil {
-				return err
-			}
-			t.Config = &runtime.RawExtension{Raw: b}
-		}
-	}
-	return nil
 }
 
 // GetTimestampConfig returns Timestamp transformation config.
