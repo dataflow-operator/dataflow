@@ -18,17 +18,38 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 )
+
+func unmarshalConfig(cfg *runtime.RawExtension, dst interface{}) error {
+	if cfg == nil || len(cfg.Raw) == 0 {
+		return nil
+	}
+	return json.Unmarshal(cfg.Raw, dst)
+}
+
+func marshalConfig(cfg *runtime.RawExtension, src interface{}) error {
+	if cfg == nil {
+		return nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		return err
+	}
+	cfg.Raw = b
+	return nil
+}
 
 // SecretResolver resolves values from Kubernetes secrets
 type SecretResolver struct {
@@ -88,107 +109,271 @@ func (r *SecretResolver) ResolveDataFlowSpec(ctx context.Context, namespace stri
 		return nil, fmt.Errorf("failed to resolve sink secrets: %w", err)
 	}
 
+	// Resolve errors sink secrets if specified
+	if resolved.Errors != nil {
+		if err := r.resolveSinkSpecRecursive(ctx, namespace, resolved.Errors); err != nil {
+			return nil, fmt.Errorf("failed to resolve errors sink secrets: %w", err)
+		}
+	}
+
 	return resolved, nil
+}
+
+func (r *SecretResolver) resolveSinkSpecRecursive(ctx context.Context, namespace string, sink *dataflowv1.SinkSpec) error {
+	// Resolve main sink config
+	if sink.Config != nil && len(sink.Config.Raw) > 0 {
+		switch sink.Type {
+		case "kafka":
+			var cfg dataflowv1.KafkaSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveKafkaSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(sink.Config, &cfg)
+		case "postgresql":
+			var cfg dataflowv1.PostgreSQLSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolvePostgreSQLSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(sink.Config, &cfg)
+		case "trino":
+			var cfg dataflowv1.TrinoSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveTrinoSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(sink.Config, &cfg)
+		case "clickhouse":
+			var cfg dataflowv1.ClickHouseSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveClickHouseSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(sink.Config, &cfg)
+		case "nessie":
+			var cfg dataflowv1.NessieSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveNessieSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(sink.Config, &cfg)
+		}
+	}
+	return nil
 }
 
 func (r *SecretResolver) resolveSourceSpec(ctx context.Context, namespace string, spec *dataflowv1.DataFlowSpec) error {
 	source := &spec.Source
 
-	switch source.Type {
-	case "kafka":
-		if source.Kafka != nil {
-			if err := r.resolveKafkaSourceSpec(ctx, namespace, source.Kafka); err != nil {
+	// When Config is set, unmarshal -> resolve -> marshal
+	if source.Config != nil && len(source.Config.Raw) > 0 {
+		switch source.Type {
+		case "kafka":
+			var cfg dataflowv1.KafkaSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
 				return err
 			}
-		}
-	case "postgresql":
-		if source.PostgreSQL != nil {
-			if err := r.resolvePostgreSQLSourceSpec(ctx, namespace, source.PostgreSQL); err != nil {
+			if err := r.resolveKafkaSourceSpec(ctx, namespace, &cfg); err != nil {
 				return err
 			}
-		}
-	case "trino":
-		if source.Trino != nil {
-			if err := r.resolveTrinoSourceSpec(ctx, namespace, source.Trino); err != nil {
+			return marshalConfig(source.Config, &cfg)
+		case "postgresql":
+			var cfg dataflowv1.PostgreSQLSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
 				return err
 			}
-		}
-	case "clickhouse":
-		if source.ClickHouse != nil {
-			if err := r.resolveClickHouseSourceSpec(ctx, namespace, source.ClickHouse); err != nil {
+			if err := r.resolvePostgreSQLSourceSpec(ctx, namespace, &cfg); err != nil {
 				return err
 			}
+			return marshalConfig(source.Config, &cfg)
+		case "trino":
+			var cfg dataflowv1.TrinoSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveTrinoSourceSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(source.Config, &cfg)
+		case "clickhouse":
+			var cfg dataflowv1.ClickHouseSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveClickHouseSourceSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(source.Config, &cfg)
+		case "nessie":
+			var cfg dataflowv1.NessieSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveNessieSourceSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(source.Config, &cfg)
 		}
 	}
-
 	return nil
 }
 
 func (r *SecretResolver) resolveSinkSpec(ctx context.Context, namespace string, spec *dataflowv1.DataFlowSpec) error {
 	sink := &spec.Sink
 
-	switch sink.Type {
-	case "kafka":
-		if sink.Kafka != nil {
-			if err := r.resolveKafkaSinkSpec(ctx, namespace, sink.Kafka); err != nil {
+	// When Config is set, unmarshal -> resolve -> marshal
+	if sink.Config != nil && len(sink.Config.Raw) > 0 {
+		switch sink.Type {
+		case "kafka":
+			var cfg dataflowv1.KafkaSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
 				return err
 			}
-		}
-	case "postgresql":
-		if sink.PostgreSQL != nil {
-			if err := r.resolvePostgreSQLSinkSpec(ctx, namespace, sink.PostgreSQL); err != nil {
+			if err := r.resolveKafkaSinkSpec(ctx, namespace, &cfg); err != nil {
 				return err
 			}
-		}
-	case "trino":
-		if sink.Trino != nil {
-			if err := r.resolveTrinoSinkSpec(ctx, namespace, sink.Trino); err != nil {
+			if err := marshalConfig(sink.Config, &cfg); err != nil {
 				return err
 			}
-		}
-	case "clickhouse":
-		if sink.ClickHouse != nil {
-			if err := r.resolveClickHouseSinkSpec(ctx, namespace, sink.ClickHouse); err != nil {
+		case "postgresql":
+			var cfg dataflowv1.PostgreSQLSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolvePostgreSQLSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			if err := marshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+		case "trino":
+			var cfg dataflowv1.TrinoSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveTrinoSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			if err := marshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+		case "clickhouse":
+			var cfg dataflowv1.ClickHouseSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveClickHouseSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			if err := marshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+		case "nessie":
+			var cfg dataflowv1.NessieSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveNessieSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			if err := marshalConfig(sink.Config, &cfg); err != nil {
 				return err
 			}
 		}
 	}
+	return r.resolveRouterSinks(ctx, namespace, spec)
+}
 
-	// Resolve router sink secrets
+func (r *SecretResolver) resolveRouterSinks(ctx context.Context, namespace string, spec *dataflowv1.DataFlowSpec) error {
 	for i := range spec.Transformations {
-		if spec.Transformations[i].Type == "router" && spec.Transformations[i].Router != nil {
-			for j := range spec.Transformations[i].Router.Routes {
-				routeSink := &spec.Transformations[i].Router.Routes[j].Sink
+		t := &spec.Transformations[i]
+		if t.Type != "router" {
+			continue
+		}
+		routerCfg, err := t.GetRouterConfig()
+		if err != nil || routerCfg == nil {
+			continue
+		}
+		for j := range routerCfg.Routes {
+			routeSink := &routerCfg.Routes[j].Sink
+			if routeSink.Config != nil && len(routeSink.Config.Raw) > 0 {
 				switch routeSink.Type {
 				case "kafka":
-					if routeSink.Kafka != nil {
-						if err := r.resolveKafkaSinkSpec(ctx, namespace, routeSink.Kafka); err != nil {
-							return err
-						}
+					var cfg dataflowv1.KafkaSinkSpec
+					if err := unmarshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+					if err := r.resolveKafkaSinkSpec(ctx, namespace, &cfg); err != nil {
+						return err
+					}
+					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
 					}
 				case "postgresql":
-					if routeSink.PostgreSQL != nil {
-						if err := r.resolvePostgreSQLSinkSpec(ctx, namespace, routeSink.PostgreSQL); err != nil {
-							return err
-						}
+					var cfg dataflowv1.PostgreSQLSinkSpec
+					if err := unmarshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+					if err := r.resolvePostgreSQLSinkSpec(ctx, namespace, &cfg); err != nil {
+						return err
+					}
+					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
 					}
 				case "trino":
-					if routeSink.Trino != nil {
-						if err := r.resolveTrinoSinkSpec(ctx, namespace, routeSink.Trino); err != nil {
-							return err
-						}
+					var cfg dataflowv1.TrinoSinkSpec
+					if err := unmarshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+					if err := r.resolveTrinoSinkSpec(ctx, namespace, &cfg); err != nil {
+						return err
+					}
+					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
 					}
 				case "clickhouse":
-					if routeSink.ClickHouse != nil {
-						if err := r.resolveClickHouseSinkSpec(ctx, namespace, routeSink.ClickHouse); err != nil {
-							return err
-						}
+					var cfg dataflowv1.ClickHouseSinkSpec
+					if err := unmarshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+					if err := r.resolveClickHouseSinkSpec(ctx, namespace, &cfg); err != nil {
+						return err
+					}
+					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+				case "nessie":
+					var cfg dataflowv1.NessieSinkSpec
+					if err := unmarshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+					if err := r.resolveNessieSinkSpec(ctx, namespace, &cfg); err != nil {
+						return err
+					}
+					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
 					}
 				}
 			}
 		}
+		// When Config was the source, marshal routerCfg back (we modified a copy)
+		if t.Config != nil && len(t.Config.Raw) > 0 {
+			if err := marshalConfig(t.Config, routerCfg); err != nil {
+				return err
+			}
+		}
 	}
-
 	return nil
 }
 
@@ -746,5 +931,101 @@ func (r *SecretResolver) resolveKeycloakConfig(ctx context.Context, namespace st
 		config.Token = value
 	}
 
+	return nil
+}
+
+func (r *SecretResolver) resolveNessieSourceSpec(ctx context.Context, namespace string, spec *dataflowv1.NessieSourceSpec) error {
+	if spec.BaseURLSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.BaseURLSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.BaseURL = value
+	}
+	if spec.TokenSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TokenSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.BearerToken = value
+	}
+	if spec.NamespaceSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.NamespaceSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Namespace = value
+	}
+	if spec.TableSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TableSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Table = value
+	}
+	if spec.BasicAuth != nil {
+		if spec.BasicAuth.UsernameSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.UsernameSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Username = value
+		}
+		if spec.BasicAuth.PasswordSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.PasswordSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Password = value
+		}
+	}
+	return nil
+}
+
+func (r *SecretResolver) resolveNessieSinkSpec(ctx context.Context, namespace string, spec *dataflowv1.NessieSinkSpec) error {
+	if spec.BaseURLSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.BaseURLSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.BaseURL = value
+	}
+	if spec.TokenSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TokenSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.BearerToken = value
+	}
+	if spec.NamespaceSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.NamespaceSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Namespace = value
+	}
+	if spec.TableSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TableSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Table = value
+	}
+	if spec.BasicAuth != nil {
+		if spec.BasicAuth.UsernameSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.UsernameSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Username = value
+		}
+		if spec.BasicAuth.PasswordSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.PasswordSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Password = value
+		}
+	}
 	return nil
 }

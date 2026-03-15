@@ -17,7 +17,10 @@ limitations under the License.
 package connectors
 
 import (
+	"encoding/json"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/stretchr/testify/assert"
@@ -33,14 +36,28 @@ func TestCreateSourceConnector_Kafka(t *testing.T) {
 	}{
 		{
 			name: "valid kafka source",
-			source: &v1.SourceSpec{
-				Type: "kafka",
-				Kafka: &v1.KafkaSourceSpec{
+			source: func() *v1.SourceSpec {
+				cfg := v1.KafkaSourceSpec{
 					Brokers:       []string{"localhost:9092"},
 					Topic:         "test-topic",
 					ConsumerGroup: "test-group",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "valid kafka source with raw config",
+			source: func() *v1.SourceSpec {
+				cfg := v1.KafkaSourceSpec{
+					Brokers:       []string{"localhost:9092"},
+					Topic:         "test-topic",
+					ConsumerGroup: "test-group",
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -79,13 +96,14 @@ func TestCreateSourceConnector_PostgreSQL(t *testing.T) {
 	}{
 		{
 			name: "valid postgresql source",
-			source: &v1.SourceSpec{
-				Type: "postgresql",
-				PostgreSQL: &v1.PostgreSQLSourceSpec{
+			source: func() *v1.SourceSpec {
+				cfg := v1.PostgreSQLSourceSpec{
 					ConnectionString: "postgres://user:pass@localhost/db",
 					Table:            "test_table",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "postgresql", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -135,15 +153,16 @@ func TestCreateSourceConnector_Iceberg(t *testing.T) {
 		// 	},
 		{
 			name: "valid trino source",
-			source: &v1.SourceSpec{
-				Type: "trino",
-				Trino: &v1.TrinoSourceSpec{
+			source: func() *v1.SourceSpec {
+				cfg := v1.TrinoSourceSpec{
 					ServerURL: "http://localhost:8080",
 					Catalog:   "test_catalog",
 					Schema:    "test_schema",
 					Table:     "test_table",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		// TODO: Iceberg source is not yet implemented
@@ -191,15 +210,16 @@ func TestCreateSourceConnector_Nessie(t *testing.T) {
 	}{
 		{
 			name: "valid nessie source",
-			source: &v1.SourceSpec{
-				Type: "nessie",
-				Nessie: &v1.NessieSourceSpec{
+			source: func() *v1.SourceSpec {
+				cfg := v1.NessieSourceSpec{
 					BaseURL:   "http://nessie:19120",
 					Branch:    "main",
 					Namespace: "ns",
 					Table:     "t1",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "nessie", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -248,13 +268,11 @@ func TestCreateSinkConnector_Kafka(t *testing.T) {
 	}{
 		{
 			name: "valid kafka sink",
-			sink: &v1.SinkSpec{
-				Type: "kafka",
-				Kafka: &v1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "test-topic",
-				},
-			},
+			sink: func() *v1.SinkSpec {
+				cfg := v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic"}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -293,13 +311,14 @@ func TestCreateSinkConnector_PostgreSQL(t *testing.T) {
 	}{
 		{
 			name: "valid postgresql sink",
-			sink: &v1.SinkSpec{
-				Type: "postgresql",
-				PostgreSQL: &v1.PostgreSQLSinkSpec{
+			sink: func() *v1.SinkSpec {
+				cfg := v1.PostgreSQLSinkSpec{
 					ConnectionString: "postgres://user:pass@localhost/db",
 					Table:            "test_table",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "postgresql", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -338,15 +357,16 @@ func TestCreateSinkConnector_Nessie(t *testing.T) {
 	}{
 		{
 			name: "valid nessie sink",
-			sink: &v1.SinkSpec{
-				Type: "nessie",
-				Nessie: &v1.NessieSinkSpec{
+			sink: func() *v1.SinkSpec {
+				cfg := v1.NessieSinkSpec{
 					BaseURL:   "http://nessie:19120",
 					Branch:    "main",
 					Namespace: "ns",
 					Table:     "t1",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "nessie", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -384,22 +404,22 @@ func TestCreateSinkConnector_Trino(t *testing.T) {
 	}{
 		{
 			name: "valid trino sink",
-			sink: &v1.SinkSpec{
-				Type: "trino",
-				Trino: &v1.TrinoSinkSpec{
+			sink: func() *v1.SinkSpec {
+				cfg := v1.TrinoSinkSpec{
 					ServerURL: "http://trino:8080",
 					Catalog:   "hive",
 					Schema:    "default",
 					Table:     "test_table",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
 			name: "trino sink with keycloak",
-			sink: &v1.SinkSpec{
-				Type: "trino",
-				Trino: &v1.TrinoSinkSpec{
+			sink: func() *v1.SinkSpec {
+				cfg := v1.TrinoSinkSpec{
 					ServerURL: "http://trino:8080",
 					Catalog:   "hive",
 					Schema:    "default",
@@ -412,8 +432,10 @@ func TestCreateSinkConnector_Trino(t *testing.T) {
 						Username:     "user",
 						Password:     "pass",
 					},
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -452,13 +474,14 @@ func TestCreateSourceConnector_ClickHouse(t *testing.T) {
 	}{
 		{
 			name: "valid clickhouse source",
-			source: &v1.SourceSpec{
-				Type: "clickhouse",
-				ClickHouse: &v1.ClickHouseSourceSpec{
+			source: func() *v1.SourceSpec {
+				cfg := v1.ClickHouseSourceSpec{
 					ConnectionString: "clickhouse://localhost:9000?username=default&password=&database=default",
 					Table:            "test_table",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "clickhouse", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{
@@ -497,13 +520,14 @@ func TestCreateSinkConnector_ClickHouse(t *testing.T) {
 	}{
 		{
 			name: "valid clickhouse sink",
-			sink: &v1.SinkSpec{
-				Type: "clickhouse",
-				ClickHouse: &v1.ClickHouseSinkSpec{
+			sink: func() *v1.SinkSpec {
+				cfg := v1.ClickHouseSinkSpec{
 					ConnectionString: "clickhouse://localhost:9000?username=default&password=&database=default",
 					Table:            "test_table",
-				},
-			},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "clickhouse", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
 			wantErr: false,
 		},
 		{

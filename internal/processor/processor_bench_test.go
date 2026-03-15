@@ -18,9 +18,12 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -95,21 +98,23 @@ func (b *benchmarkSinkConnector) Close() error {
 func newBenchmarkProcessor(messageCount, messageSize int) *Processor {
 	source := &benchmarkSourceConnector{messageCount: messageCount, messageSize: messageSize}
 	sink := &benchmarkSinkConnector{}
+	sourceCfg, _ := json.Marshal(v1.KafkaSourceSpec{
+		Brokers:       []string{"localhost:9092"},
+		Topic:         "bench-topic",
+		ConsumerGroup: "bench-group",
+	})
+	sinkCfg, _ := json.Marshal(v1.KafkaSinkSpec{
+		Brokers: []string{"localhost:9092"},
+		Topic:   "bench-out",
+	})
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSourceSpec{
-				Brokers:       []string{"localhost:9092"},
-				Topic:         "bench-topic",
-				ConsumerGroup: "bench-group",
-			},
+			Type:   "kafka",
+			Config: &runtime.RawExtension{Raw: sourceCfg},
 		},
 		Sink: v1.SinkSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "bench-out",
-			},
+			Type:   "kafka",
+			Config: &runtime.RawExtension{Raw: sinkCfg},
 		},
 	}
 	return &Processor{

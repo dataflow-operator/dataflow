@@ -18,8 +18,11 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -27,6 +30,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func mustConfig(v interface{}) *runtime.RawExtension {
+	b, _ := json.Marshal(v)
+	return &runtime.RawExtension{Raw: b}
+}
 
 // mockSourceConnector is a mock implementation of SourceConnector
 type mockSourceConnector struct {
@@ -97,19 +105,12 @@ func TestNewProcessor(t *testing.T) {
 			name: "valid processor with kafka source and sink",
 			spec: &v1.DataFlowSpec{
 				Source: v1.SourceSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSourceSpec{
-						Brokers:       []string{"localhost:9092"},
-						Topic:         "test-topic",
-						ConsumerGroup: "test-group",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 				},
 				Sink: v1.SinkSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSinkSpec{
-						Brokers: []string{"localhost:9092"},
-						Topic:   "output-topic",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 				},
 			},
 			wantErr: false,
@@ -118,26 +119,17 @@ func TestNewProcessor(t *testing.T) {
 			name: "processor with transformations",
 			spec: &v1.DataFlowSpec{
 				Source: v1.SourceSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSourceSpec{
-						Brokers:       []string{"localhost:9092"},
-						Topic:         "test-topic",
-						ConsumerGroup: "test-group",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 				},
 				Sink: v1.SinkSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSinkSpec{
-						Brokers: []string{"localhost:9092"},
-						Topic:   "output-topic",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 				},
 				Transformations: []v1.TransformationSpec{
 					{
-						Type: "timestamp",
-						Timestamp: &v1.TimestampTransformation{
-							FieldName: "created_at",
-						},
+						Type:   "timestamp",
+						Config: mustConfig(v1.TimestampTransformation{FieldName: "created_at"}),
 					},
 				},
 			},
@@ -150,11 +142,8 @@ func TestNewProcessor(t *testing.T) {
 					Type: "invalid",
 				},
 				Sink: v1.SinkSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSinkSpec{
-						Brokers: []string{"localhost:9092"},
-						Topic:   "output-topic",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 				},
 			},
 			wantErr: true,
@@ -163,12 +152,8 @@ func TestNewProcessor(t *testing.T) {
 			name: "processor with invalid sink",
 			spec: &v1.DataFlowSpec{
 				Source: v1.SourceSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSourceSpec{
-						Brokers:       []string{"localhost:9092"},
-						Topic:         "test-topic",
-						ConsumerGroup: "test-group",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 				},
 				Sink: v1.SinkSpec{
 					Type: "invalid",
@@ -195,19 +180,12 @@ func TestNewProcessor(t *testing.T) {
 func TestProcessor_GetStats(t *testing.T) {
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSourceSpec{
-				Brokers:       []string{"localhost:9092"},
-				Topic:         "test-topic",
-				ConsumerGroup: "test-group",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 		},
 		Sink: v1.SinkSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "output-topic",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 		},
 	}
 
@@ -230,19 +208,12 @@ func TestProcessor_Start_SourceConnectError(t *testing.T) {
 func TestNewProcessorWithLogger(t *testing.T) {
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSourceSpec{
-				Brokers:       []string{"localhost:9092"},
-				Topic:         "test-topic",
-				ConsumerGroup: "test-group",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 		},
 		Sink: v1.SinkSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "output-topic",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 		},
 	}
 
@@ -255,37 +226,27 @@ func TestNewProcessorWithLogger(t *testing.T) {
 func TestProcessor_WithRouterTransformation(t *testing.T) {
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSourceSpec{
-				Brokers:       []string{"localhost:9092"},
-				Topic:         "test-topic",
-				ConsumerGroup: "test-group",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 		},
 		Sink: v1.SinkSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "default-topic",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "default-topic"}),
 		},
 		Transformations: []v1.TransformationSpec{
 			{
 				Type: "router",
-				Router: &v1.RouterTransformation{
+				Config: mustConfig(v1.RouterTransformation{
 					Routes: []v1.RouteRule{
 						{
 							Condition: "$.type == 'error'",
 							Sink: v1.SinkSpec{
-								Type: "kafka",
-								Kafka: &v1.KafkaSinkSpec{
-									Brokers: []string{"localhost:9092"},
-									Topic:   "error-topic",
-								},
+								Type:   "kafka",
+								Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "error-topic"}),
 							},
 						},
 					},
-				},
+				}),
 			},
 		},
 	}
@@ -309,26 +270,16 @@ func TestNewProcessor_WithErrorSink(t *testing.T) {
 			name: "processor with error sink",
 			spec: &v1.DataFlowSpec{
 				Source: v1.SourceSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSourceSpec{
-						Brokers:       []string{"localhost:9092"},
-						Topic:         "test-topic",
-						ConsumerGroup: "test-group",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 				},
 				Sink: v1.SinkSpec{
-					Type: "postgresql",
-					PostgreSQL: &v1.PostgreSQLSinkSpec{
-						ConnectionString: "postgres://user:pass@localhost:5432/db",
-						Table:            "output_table",
-					},
+					Type:   "postgresql",
+					Config: mustConfig(v1.PostgreSQLSinkSpec{ConnectionString: "postgres://user:pass@localhost:5432/db", Table: "output_table"}),
 				},
 				Errors: &v1.SinkSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSinkSpec{
-						Brokers: []string{"localhost:9092"},
-						Topic:   "error-topic",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "error-topic"}),
 				},
 			},
 			wantErr: false,
@@ -337,19 +288,12 @@ func TestNewProcessor_WithErrorSink(t *testing.T) {
 			name: "processor with invalid error sink",
 			spec: &v1.DataFlowSpec{
 				Source: v1.SourceSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSourceSpec{
-						Brokers:       []string{"localhost:9092"},
-						Topic:         "test-topic",
-						ConsumerGroup: "test-group",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 				},
 				Sink: v1.SinkSpec{
-					Type: "kafka",
-					Kafka: &v1.KafkaSinkSpec{
-						Brokers: []string{"localhost:9092"},
-						Topic:   "output-topic",
-					},
+					Type:   "kafka",
+					Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 				},
 				Errors: &v1.SinkSpec{
 					Type: "invalid",
@@ -376,26 +320,16 @@ func TestNewProcessor_WithErrorSink(t *testing.T) {
 func TestProcessor_ErrorSinkConfiguration(t *testing.T) {
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSourceSpec{
-				Brokers:       []string{"localhost:9092"},
-				Topic:         "test-topic",
-				ConsumerGroup: "test-group",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 		},
 		Sink: v1.SinkSpec{
-			Type: "postgresql",
-			PostgreSQL: &v1.PostgreSQLSinkSpec{
-				ConnectionString: "postgres://user:pass@localhost:5432/db",
-				Table:            "output_table",
-			},
+			Type:   "postgresql",
+			Config: mustConfig(v1.PostgreSQLSinkSpec{ConnectionString: "postgres://user:pass@localhost:5432/db", Table: "output_table"}),
 		},
 		Errors: &v1.SinkSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "error-topic",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "error-topic"}),
 		},
 	}
 
@@ -415,19 +349,12 @@ func TestProcessor_FirstMessageLoggedOnce(t *testing.T) {
 	// causing the log to fire for every message (e.g. 100+ logs for 100 messages).
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSourceSpec{
-				Brokers:       []string{"localhost:9092"},
-				Topic:         "test-topic",
-				ConsumerGroup: "test-group",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 		},
 		Sink: v1.SinkSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "output-topic",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 		},
 	}
 	p, err := NewProcessor(spec)
@@ -438,19 +365,12 @@ func TestProcessor_FirstMessageLoggedOnce(t *testing.T) {
 func TestProcessor_createErrorMessage_approximateMetadata(t *testing.T) {
 	spec := &v1.DataFlowSpec{
 		Source: v1.SourceSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSourceSpec{
-				Brokers:       []string{"localhost:9092"},
-				Topic:         "test-topic",
-				ConsumerGroup: "test-group",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 		},
 		Sink: v1.SinkSpec{
-			Type: "kafka",
-			Kafka: &v1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "output-topic",
-			},
+			Type:   "kafka",
+			Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 		},
 	}
 	p, err := NewProcessor(spec)

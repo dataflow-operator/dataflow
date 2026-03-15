@@ -142,11 +142,12 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 		}
 
 		// Check if this is a router transformer
-		if t.Type == "router" && t.Router != nil {
-			// Store sink specs for each route
-			for _, route := range t.Router.Routes {
-				// Use condition as key for routing
-				routerSinks[route.Condition] = route.Sink
+		if t.Type == "router" {
+			routerCfg, err := t.GetRouterConfig()
+			if err == nil && routerCfg != nil {
+				for _, route := range routerCfg.Routes {
+					routerSinks[route.Condition] = route.Sink
+				}
 			}
 		}
 

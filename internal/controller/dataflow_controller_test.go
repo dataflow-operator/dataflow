@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -44,6 +45,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func mustConfig(v interface{}) *runtime.RawExtension {
+	b, _ := json.Marshal(v)
+	return &runtime.RawExtension{Raw: b}
+}
 
 // conflictSimulatingClient wraps a client and returns Conflict on the first N Status().Update() calls.
 type conflictSimulatingClient struct {
@@ -177,8 +183,8 @@ func TestProcessorImageFor(t *testing.T) {
 		df := &dataflowv1.DataFlow{
 			ObjectMeta: metav1.ObjectMeta{Name: "df", Namespace: "default"},
 			Spec: dataflowv1.DataFlowSpec{
-				Source: dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"}},
-				Sink:   dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}},
+				Source: dataflowv1.SourceSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"})},
+				Sink:   dataflowv1.SinkSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"})},
 			},
 		}
 		img := reconciler.processorImageFor(df)
@@ -191,8 +197,8 @@ func TestProcessorImageFor(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "df", Namespace: "default"},
 			Spec: dataflowv1.DataFlowSpec{
 				ProcessorVersion: "v1.2.3",
-				Source:           dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"}},
-				Sink:             dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}},
+				Source:           dataflowv1.SourceSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"})},
+				Sink:             dataflowv1.SinkSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"})},
 			},
 		}
 		img := reconciler.processorImageFor(df)
@@ -207,8 +213,8 @@ func TestProcessorImageFor(t *testing.T) {
 			Spec: dataflowv1.DataFlowSpec{
 				ProcessorImage:   "my.registry.io/my-processor:custom",
 				ProcessorVersion: "v1.2.3",
-				Source:           dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"}},
-				Sink:             dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}},
+				Source:           dataflowv1.SourceSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t", ConsumerGroup: "g"})},
+				Sink:             dataflowv1.SinkSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"})},
 			},
 		}
 		img := reconciler.processorImageFor(df)
@@ -265,19 +271,12 @@ func TestUpdateStatusWithRetry_SuccessOnFirstAttempt(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-df", Namespace: "default"},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "t",
-					ConsumerGroup: "g",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "out",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
 			},
 		},
 	}
@@ -313,19 +312,12 @@ func TestUpdateStatusWithRetry_RetriesOnConflict(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-df", Namespace: "default"},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "t",
-					ConsumerGroup: "g",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "out",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
 			},
 		},
 	}
@@ -363,19 +355,12 @@ func TestUpdateStatusWithRetry_ReturnsErrorAfterMaxRetries(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-df", Namespace: "default"},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "t",
-					ConsumerGroup: "g",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "out",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
 			},
 		},
 	}
@@ -474,19 +459,12 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -562,12 +540,12 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorImage(t *testin
 		Spec: dataflowv1.DataFlowSpec{
 			ProcessorImage: customImage,
 			Source: dataflowv1.SourceSpec{
-				Type:  "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type:  "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
 			},
 		},
 	}
@@ -595,12 +573,12 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorVersion(t *test
 		Spec: dataflowv1.DataFlowSpec{
 			ProcessorVersion: "v0.5.0",
 			Source: dataflowv1.SourceSpec{
-				Type:  "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type:  "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
 			},
 		},
 	}
@@ -632,12 +610,12 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesImagePullSecrets(t *testing.
 				{Name: "other-pull-secret"},
 			},
 			Source: dataflowv1.SourceSpec{
-				Type:  "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type:  "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
 			},
 		},
 	}
@@ -679,19 +657,12 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -735,19 +706,12 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer(t *testing.T)
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -815,8 +779,8 @@ func TestEnsureDataFlowFinalizer(t *testing.T) {
 	dataflow := &dataflowv1.DataFlow{
 		ObjectMeta: metav1.ObjectMeta{Name: "df1", Namespace: "default"},
 		Spec: dataflowv1.DataFlowSpec{
-			Source: dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{}},
-			Sink:   dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{}},
+			Source: dataflowv1.SourceSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSourceSpec{})},
+			Sink:   dataflowv1.SinkSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSinkSpec{})},
 		},
 	}
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dataflow).Build()
@@ -854,8 +818,8 @@ func TestRemoveDataFlowFinalizer(t *testing.T) {
 			Finalizers: []string{"other.io/finalizer", DataFlowFinalizer},
 		},
 		Spec: dataflowv1.DataFlowSpec{
-			Source: dataflowv1.SourceSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSourceSpec{}},
-			Sink:   dataflowv1.SinkSpec{Type: "kafka", Kafka: &dataflowv1.KafkaSinkSpec{}},
+			Source: dataflowv1.SourceSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSourceSpec{})},
+			Sink:   dataflowv1.SinkSpec{Type: "kafka", Config: mustConfig(dataflowv1.KafkaSinkSpec{})},
 		},
 	}
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dataflow).Build()
@@ -901,19 +865,12 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 			Resources: &corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -1036,19 +993,12 @@ func TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -1102,19 +1052,12 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -1167,16 +1110,12 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecContentChanged(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type:  "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -1198,7 +1137,10 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecContentChanged(t *testing.T) {
 
 	// Change DataFlow spec content (Kafka brokers) — same ConfigMap name, but content changes
 	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, dataflow))
-	dataflow.Spec.Source.Kafka.Brokers = []string{"kafka-1:9092", "kafka-2:9092"}
+	var kafkaCfg dataflowv1.KafkaSourceSpec
+	require.NoError(t, json.Unmarshal(dataflow.Spec.Source.Config.Raw, &kafkaCfg))
+	kafkaCfg.Brokers = []string{"kafka-1:9092", "kafka-2:9092"}
+	dataflow.Spec.Source.Config = mustConfig(kafkaCfg)
 	require.NoError(t, fakeClient.Update(ctx, dataflow))
 
 	// Second reconcile — Deployment should be updated (spec-hash changed)
@@ -1249,19 +1191,12 @@ func TestCreateOrUpdateDeployment_RetryOnConflict(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -1313,19 +1248,12 @@ func TestCreateOrUpdateDeployment_ConflictAfterMaxRetries(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -1383,11 +1311,8 @@ func TestDataFlowReconciler_Reconcile_InvalidSpec(t *testing.T) {
 				Type: "invalid",
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -1443,19 +1368,12 @@ func TestDataFlowReconciler_Reconcile_UpdateStats(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}
@@ -1535,19 +1453,12 @@ func TestReconcileEmitsEvents(t *testing.T) {
 		},
 		Spec: dataflowv1.DataFlowSpec{
 			Source: dataflowv1.SourceSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSourceSpec{
-					Brokers:       []string{"localhost:9092"},
-					Topic:         "test-topic",
-					ConsumerGroup: "test-group",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "test-topic", ConsumerGroup: "test-group"}),
 			},
 			Sink: dataflowv1.SinkSpec{
-				Type: "kafka",
-				Kafka: &dataflowv1.KafkaSinkSpec{
-					Brokers: []string{"localhost:9092"},
-					Topic:   "output-topic",
-				},
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 			},
 		},
 	}

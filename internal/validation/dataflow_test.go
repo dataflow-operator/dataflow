@@ -17,13 +17,48 @@ limitations under the License.
 package validation
 
 import (
+	"encoding/json"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 )
+
+func kafkaSource(cfg dataflowv1.KafkaSourceSpec) dataflowv1.SourceSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.SourceSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
+}
+func kafkaSink(cfg dataflowv1.KafkaSinkSpec) dataflowv1.SinkSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.SinkSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
+}
+func postgresqlSource(cfg dataflowv1.PostgreSQLSourceSpec) dataflowv1.SourceSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.SourceSpec{Type: "postgresql", Config: &runtime.RawExtension{Raw: raw}}
+}
+func trinoSource(cfg dataflowv1.TrinoSourceSpec) dataflowv1.SourceSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.SourceSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
+}
+func timestampTransform(cfg dataflowv1.TimestampTransformation) dataflowv1.TransformationSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.TransformationSpec{Type: "timestamp", Config: &runtime.RawExtension{Raw: raw}}
+}
+func flattenTransform(cfg dataflowv1.FlattenTransformation) dataflowv1.TransformationSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.TransformationSpec{Type: "flatten", Config: &runtime.RawExtension{Raw: raw}}
+}
+func snakeCaseTransform(cfg dataflowv1.SnakeCaseTransformation) dataflowv1.TransformationSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.TransformationSpec{Type: "snakeCase", Config: &runtime.RawExtension{Raw: raw}}
+}
+func routerTransform(cfg dataflowv1.RouterTransformation) dataflowv1.TransformationSpec {
+	raw, _ := json.Marshal(cfg)
+	return dataflowv1.TransformationSpec{Type: "router", Config: &runtime.RawExtension{Raw: raw}}
+}
 
 func TestValidateDataFlowSpec_NilSpec(t *testing.T) {
 	errs := ValidateDataFlowSpec(nil)
@@ -33,20 +68,22 @@ func TestValidateDataFlowSpec_NilSpec(t *testing.T) {
 }
 
 func TestValidateDataFlowSpec_ValidKafkaToKafka(t *testing.T) {
+	sourceCfg, _ := json.Marshal(dataflowv1.KafkaSourceSpec{
+		Brokers: []string{"localhost:9092"},
+		Topic:   "input",
+	})
+	sinkCfg, _ := json.Marshal(dataflowv1.KafkaSinkSpec{
+		Brokers: []string{"localhost:9092"},
+		Topic:   "output",
+	})
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{
-			Type: "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "input",
-			},
+			Type:   "kafka",
+			Config: &runtime.RawExtension{Raw: sourceCfg},
 		},
 		Sink: dataflowv1.SinkSpec{
-			Type: "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{
-				Brokers: []string{"localhost:9092"},
-				Topic:   "output",
-			},
+			Type:   "kafka",
+			Config: &runtime.RawExtension{Raw: sinkCfg},
 		},
 	}
 	errs := ValidateDataFlowSpec(spec)
@@ -55,13 +92,35 @@ func TestValidateDataFlowSpec_ValidKafkaToKafka(t *testing.T) {
 	}
 }
 
+func TestValidateDataFlowSpec_RawConfigFormat(t *testing.T) {
+	kafkaConfig := dataflowv1.KafkaSourceSpec{
+		Brokers: []string{"localhost:9092"},
+		Topic:   "input",
+	}
+	configRaw, _ := json.Marshal(kafkaConfig)
+
+	spec := &dataflowv1.DataFlowSpec{
+		Source: dataflowv1.SourceSpec{
+			Type:   "kafka",
+			Config: &runtime.RawExtension{Raw: configRaw},
+		},
+		Sink: dataflowv1.SinkSpec{
+			Type: "kafka",
+			Config: &runtime.RawExtension{
+				Raw: []byte(`{"brokers":["localhost:9092"],"topic":"output"}`),
+			},
+		},
+	}
+	errs := ValidateDataFlowSpec(spec)
+	if len(errs) > 0 {
+		t.Errorf("expected no errors for valid raw config spec, got: %v", errs.ToAggregate())
+	}
+}
+
 func TestValidateDataFlowSpec_EmptySource(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) == 0 {
@@ -82,10 +141,7 @@ func TestValidateDataFlowSpec_EmptySource(t *testing.T) {
 func TestValidateDataFlowSpec_InvalidSourceType(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: dataflowv1.SourceSpec{Type: "invalid"},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) == 0 {
@@ -95,11 +151,8 @@ func TestValidateDataFlowSpec_InvalidSourceType(t *testing.T) {
 
 func TestValidateDataFlowSpec_SourceTypeWithoutConfig(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{Type: "kafka"}, // Kafka nil
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: dataflowv1.SourceSpec{Type: "kafka"}, // Config nil
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) == 0 {
@@ -109,14 +162,8 @@ func TestValidateDataFlowSpec_SourceTypeWithoutConfig(t *testing.T) {
 
 func TestValidateDataFlowSpec_KafkaSourceMissingBrokersAndTopic(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{}, // no brokers, no topic
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{}), // no brokers, no topic
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) < 2 {
@@ -126,14 +173,8 @@ func TestValidateDataFlowSpec_KafkaSourceMissingBrokersAndTopic(t *testing.T) {
 
 func TestValidateDataFlowSpec_InvalidTransformationType(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		Transformations: []dataflowv1.TransformationSpec{
 			{Type: "unknown"},
 		},
@@ -146,16 +187,10 @@ func TestValidateDataFlowSpec_InvalidTransformationType(t *testing.T) {
 
 func TestValidateDataFlowSpec_TransformationTypeWithoutConfig(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		Transformations: []dataflowv1.TransformationSpec{
-			{Type: "flatten"}, // Flatten config is nil
+			{Type: "flatten"}, // Config is nil
 		},
 	}
 	errs := ValidateDataFlowSpec(spec)
@@ -166,15 +201,9 @@ func TestValidateDataFlowSpec_TransformationTypeWithoutConfig(t *testing.T) {
 
 func TestValidateDataFlowSpec_ErrorsSinkInvalid(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Errors: &dataflowv1.SinkSpec{Type: "kafka"}, // Kafka nil
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Errors: &dataflowv1.SinkSpec{Type: "kafka"}, // Config nil
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) == 0 {
@@ -184,18 +213,12 @@ func TestValidateDataFlowSpec_ErrorsSinkInvalid(t *testing.T) {
 
 func TestValidateDataFlowSpec_SecretRefMissingNameOrKey(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type: "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{
-				Brokers:        []string{"b"},
-				Topic:          "t",
-				TopicSecretRef: &dataflowv1.SecretRef{Name: "sec"}, // Key missing
-			},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{
+			Brokers:        []string{"b"},
+			Topic:          "t",
+			TopicSecretRef: &dataflowv1.SecretRef{Name: "sec"}, // Key missing
+		}),
+		Sink: kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) == 0 {
@@ -206,14 +229,8 @@ func TestValidateDataFlowSpec_SecretRefMissingNameOrKey(t *testing.T) {
 func TestValidateDataFlowSpec_ResourcesNegative(t *testing.T) {
 	negQty := resource.MustParse("-100m")
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		Resources: &corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceCPU: negQty},
 		},
@@ -226,18 +243,12 @@ func TestValidateDataFlowSpec_ResourcesNegative(t *testing.T) {
 
 func TestValidateDataFlowSpec_ValidWithTransformations(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		Transformations: []dataflowv1.TransformationSpec{
-			{Type: "timestamp", Timestamp: &dataflowv1.TimestampTransformation{}},
-			{Type: "flatten", Flatten: &dataflowv1.FlattenTransformation{Field: "items"}},
-			{Type: "snakeCase", SnakeCase: &dataflowv1.SnakeCaseTransformation{}},
+			timestampTransform(dataflowv1.TimestampTransformation{}),
+			flattenTransform(dataflowv1.FlattenTransformation{Field: "items"}),
+			snakeCaseTransform(dataflowv1.SnakeCaseTransformation{}),
 		},
 	}
 	errs := ValidateDataFlowSpec(spec)
@@ -248,23 +259,14 @@ func TestValidateDataFlowSpec_ValidWithTransformations(t *testing.T) {
 
 func TestValidateDataFlowSpec_RouterWithInvalidNestedSink(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		Transformations: []dataflowv1.TransformationSpec{
-			{
-				Type: "router",
-				Router: &dataflowv1.RouterTransformation{
-					Routes: []dataflowv1.RouteRule{
-						{Condition: "true", Sink: dataflowv1.SinkSpec{Type: "kafka"}}, // Kafka config nil
-					},
+			routerTransform(dataflowv1.RouterTransformation{
+				Routes: []dataflowv1.RouteRule{
+					{Condition: "true", Sink: dataflowv1.SinkSpec{Type: "kafka"}}, // Config nil
 				},
-			},
+			}),
 		},
 	}
 	errs := ValidateDataFlowSpec(spec)
@@ -276,16 +278,10 @@ func TestValidateDataFlowSpec_RouterWithInvalidNestedSink(t *testing.T) {
 // Ensure we don't panic on empty path segments (e.g. flatten with empty field)
 func TestValidateDataFlowSpec_FlattenEmptyField(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		Transformations: []dataflowv1.TransformationSpec{
-			{Type: "flatten", Flatten: &dataflowv1.FlattenTransformation{Field: ""}},
+			flattenTransform(dataflowv1.FlattenTransformation{Field: ""}),
 		},
 	}
 	errs := ValidateDataFlowSpec(spec)
@@ -296,17 +292,11 @@ func TestValidateDataFlowSpec_FlattenEmptyField(t *testing.T) {
 
 func TestValidateDataFlowSpec_PostgreSQLSourceValid(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type: "postgresql",
-			PostgreSQL: &dataflowv1.PostgreSQLSourceSpec{
-				ConnectionString: "host=localhost",
-				Table:            "t",
-			},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: postgresqlSource(dataflowv1.PostgreSQLSourceSpec{
+			ConnectionString: "host=localhost",
+			Table:            "t",
+		}),
+		Sink: kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) > 0 {
@@ -316,19 +306,13 @@ func TestValidateDataFlowSpec_PostgreSQLSourceValid(t *testing.T) {
 
 func TestValidateDataFlowSpec_TrinoSourceValid(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
-		Source: dataflowv1.SourceSpec{
-			Type: "trino",
-			Trino: &dataflowv1.TrinoSourceSpec{
-				ServerURL: "http://trino:8080",
-				Catalog:   "c",
-				Schema:    "s",
-				Table:     "t",
-			},
-		},
-		Sink: dataflowv1.SinkSpec{
-			Type:  "kafka",
-			Kafka: &dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
-		},
+		Source: trinoSource(dataflowv1.TrinoSourceSpec{
+			ServerURL: "http://trino:8080",
+			Catalog:   "c",
+			Schema:    "s",
+			Table:     "t",
+		}),
+		Sink: kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) > 0 {

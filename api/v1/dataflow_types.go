@@ -14,12 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-
 package v1
 
 import (
+	"encoding/json"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // DataFlowSpec defines the desired state of DataFlow
@@ -75,30 +77,122 @@ type DataFlowSpec struct {
 	CheckpointPersistence *bool `json:"checkpointPersistence,omitempty"`
 }
 
-// SourceSpec defines the source configuration
+// SourceSpec defines the source configuration (type + config).
+// Supports both generic format (type+config) and legacy format (type+kafka/postgresql/etc) when unmarshaling.
+// +kubebuilder:pruning:PreserveUnknownFields
 type SourceSpec struct {
-	// Type of source: kafka, postgresql
+	// Type of source: kafka, postgresql, trino, clickhouse, nessie, or plugin type
 	Type string `json:"type"`
 
-	// Kafka source configuration
+	// Config holds connector configuration. Structure depends on type.
+	// For built-in types see KafkaSourceSpec, PostgreSQLSourceSpec, etc.
 	// +optional
-	Kafka *KafkaSourceSpec `json:"kafka,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Config *runtime.RawExtension `json:"config,omitempty"`
+}
 
-	// PostgreSQL source configuration
-	// +optional
+// sourceSpecRaw is used for unmarshaling legacy format (type + kafka/postgresql/etc).
+type sourceSpecRaw struct {
+	Type       string                `json:"type"`
+	Config     *runtime.RawExtension `json:"config,omitempty"`
+	Kafka      *KafkaSourceSpec      `json:"kafka,omitempty"`
 	PostgreSQL *PostgreSQLSourceSpec `json:"postgresql,omitempty"`
-
-	// Trino source configuration
-	// +optional
-	Trino *TrinoSourceSpec `json:"trino,omitempty"`
-
-	// ClickHouse source configuration
-	// +optional
+	Trino      *TrinoSourceSpec      `json:"trino,omitempty"`
 	ClickHouse *ClickHouseSourceSpec `json:"clickhouse,omitempty"`
+	Nessie     *NessieSourceSpec     `json:"nessie,omitempty"`
+}
 
-	// Nessie source configuration (Iceberg tables via Nessie catalog)
-	// +optional
-	Nessie *NessieSourceSpec `json:"nessie,omitempty"`
+// UnmarshalJSON supports both generic (type+config) and legacy (type+kafka/etc) formats.
+func (s *SourceSpec) UnmarshalJSON(data []byte) error {
+	var r sourceSpecRaw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	s.Type = r.Type
+	s.Config = r.Config
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		var cfg interface{}
+		switch r.Type {
+		case "kafka":
+			cfg = r.Kafka
+		case "postgresql":
+			cfg = r.PostgreSQL
+		case "trino":
+			cfg = r.Trino
+		case "clickhouse":
+			cfg = r.ClickHouse
+		case "nessie":
+			cfg = r.Nessie
+		}
+		if cfg != nil {
+			b, err := json.Marshal(cfg)
+			if err != nil {
+				return err
+			}
+			s.Config = &runtime.RawExtension{Raw: b}
+		}
+	}
+	return nil
+}
+
+// GetKafkaConfig returns Kafka config from Config.
+func (s *SourceSpec) GetKafkaConfig() (*KafkaSourceSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var k KafkaSourceSpec
+	if err := json.Unmarshal(s.Config.Raw, &k); err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
+// GetPostgreSQLConfig returns PostgreSQL config.
+func (s *SourceSpec) GetPostgreSQLConfig() (*PostgreSQLSourceSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var p PostgreSQLSourceSpec
+	if err := json.Unmarshal(s.Config.Raw, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// GetTrinoConfig returns Trino config.
+func (s *SourceSpec) GetTrinoConfig() (*TrinoSourceSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var t TrinoSourceSpec
+	if err := json.Unmarshal(s.Config.Raw, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// GetClickHouseConfig returns ClickHouse config.
+func (s *SourceSpec) GetClickHouseConfig() (*ClickHouseSourceSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c ClickHouseSourceSpec
+	if err := json.Unmarshal(s.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetNessieConfig returns Nessie config.
+func (s *SourceSpec) GetNessieConfig() (*NessieSourceSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var n NessieSourceSpec
+	if err := json.Unmarshal(s.Config.Raw, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
 
 // KafkaSourceSpec defines Kafka source configuration
@@ -410,30 +504,121 @@ type KeycloakConfig struct {
 	TokenSecretRef *SecretRef `json:"tokenSecretRef,omitempty"`
 }
 
-// SinkSpec defines the sink configuration
+// SinkSpec defines the sink configuration (type + config).
+// Supports both generic format (type+config) and legacy format (type+kafka/postgresql/etc) when unmarshaling.
+// +kubebuilder:pruning:PreserveUnknownFields
 type SinkSpec struct {
-	// Type of sink: kafka, postgresql
+	// Type of sink: kafka, postgresql, trino, clickhouse, nessie, or plugin type
 	Type string `json:"type"`
 
-	// Kafka sink configuration
+	// Config holds connector configuration. Structure depends on type.
 	// +optional
-	Kafka *KafkaSinkSpec `json:"kafka,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Config *runtime.RawExtension `json:"config,omitempty"`
+}
 
-	// PostgreSQL sink configuration
-	// +optional
-	PostgreSQL *PostgreSQLSinkSpec `json:"postgresql,omitempty"`
+// sinkSpecRaw is used for unmarshaling legacy format.
+type sinkSpecRaw struct {
+	Type       string                `json:"type"`
+	Config     *runtime.RawExtension `json:"config,omitempty"`
+	Kafka      *KafkaSinkSpec        `json:"kafka,omitempty"`
+	PostgreSQL *PostgreSQLSinkSpec   `json:"postgresql,omitempty"`
+	Trino      *TrinoSinkSpec        `json:"trino,omitempty"`
+	ClickHouse *ClickHouseSinkSpec   `json:"clickhouse,omitempty"`
+	Nessie     *NessieSinkSpec       `json:"nessie,omitempty"`
+}
 
-	// Trino sink configuration
-	// +optional
-	Trino *TrinoSinkSpec `json:"trino,omitempty"`
+// UnmarshalJSON supports both generic and legacy formats.
+func (s *SinkSpec) UnmarshalJSON(data []byte) error {
+	var r sinkSpecRaw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	s.Type = r.Type
+	s.Config = r.Config
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		var cfg interface{}
+		switch r.Type {
+		case "kafka":
+			cfg = r.Kafka
+		case "postgresql":
+			cfg = r.PostgreSQL
+		case "trino":
+			cfg = r.Trino
+		case "clickhouse":
+			cfg = r.ClickHouse
+		case "nessie":
+			cfg = r.Nessie
+		}
+		if cfg != nil {
+			b, err := json.Marshal(cfg)
+			if err != nil {
+				return err
+			}
+			s.Config = &runtime.RawExtension{Raw: b}
+		}
+	}
+	return nil
+}
 
-	// ClickHouse sink configuration
-	// +optional
-	ClickHouse *ClickHouseSinkSpec `json:"clickhouse,omitempty"`
+// GetKafkaConfig returns Kafka sink config.
+func (s *SinkSpec) GetKafkaConfig() (*KafkaSinkSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var k KafkaSinkSpec
+	if err := json.Unmarshal(s.Config.Raw, &k); err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
 
-	// Nessie sink configuration (Iceberg tables via Nessie catalog)
-	// +optional
-	Nessie *NessieSinkSpec `json:"nessie,omitempty"`
+// GetPostgreSQLConfig returns PostgreSQL sink config.
+func (s *SinkSpec) GetPostgreSQLConfig() (*PostgreSQLSinkSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var p PostgreSQLSinkSpec
+	if err := json.Unmarshal(s.Config.Raw, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// GetTrinoConfig returns Trino sink config.
+func (s *SinkSpec) GetTrinoConfig() (*TrinoSinkSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var t TrinoSinkSpec
+	if err := json.Unmarshal(s.Config.Raw, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// GetClickHouseConfig returns ClickHouse sink config.
+func (s *SinkSpec) GetClickHouseConfig() (*ClickHouseSinkSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c ClickHouseSinkSpec
+	if err := json.Unmarshal(s.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetNessieConfig returns Nessie sink config.
+func (s *SinkSpec) GetNessieConfig() (*NessieSinkSpec, error) {
+	if s.Config == nil || len(s.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var n NessieSinkSpec
+	if err := json.Unmarshal(s.Config.Raw, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
 
 // NessieSinkSpec defines Nessie (Iceberg REST catalog) sink configuration.
@@ -719,46 +904,181 @@ type SASLConfig struct {
 	PasswordSecretRef *SecretRef `json:"passwordSecretRef,omitempty"`
 }
 
-// TransformationSpec defines a transformation to apply
+// TransformationSpec defines a transformation to apply (type + config).
+// Supports both generic format (type+config) and legacy format (type+timestamp/flatten/etc) when unmarshaling.
+// +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
 	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase
 	Type string `json:"type"`
 
-	// Timestamp transformation configuration
+	// Config holds transformation configuration. Structure depends on type.
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Config *runtime.RawExtension `json:"config,omitempty"`
+}
+
+// transformationSpecRaw is used for unmarshaling legacy format.
+type transformationSpecRaw struct {
+	Type      string                   `json:"type"`
+	Config    *runtime.RawExtension    `json:"config,omitempty"`
 	Timestamp *TimestampTransformation `json:"timestamp,omitempty"`
-
-	// Flatten transformation configuration
-	// +optional
-	Flatten *FlattenTransformation `json:"flatten,omitempty"`
-
-	// Filter transformation configuration
-	// +optional
-	Filter *FilterTransformation `json:"filter,omitempty"`
-
-	// Mask transformation configuration
-	// +optional
-	Mask *MaskTransformation `json:"mask,omitempty"`
-
-	// Router transformation configuration
-	// +optional
-	Router *RouterTransformation `json:"router,omitempty"`
-
-	// Select transformation configuration
-	// +optional
-	Select *SelectTransformation `json:"select,omitempty"`
-
-	// Remove transformation configuration
-	// +optional
-	Remove *RemoveTransformation `json:"remove,omitempty"`
-
-	// SnakeCase transformation configuration
-	// +optional
+	Flatten   *FlattenTransformation   `json:"flatten,omitempty"`
+	Filter    *FilterTransformation    `json:"filter,omitempty"`
+	Mask      *MaskTransformation      `json:"mask,omitempty"`
+	Router    *RouterTransformation    `json:"router,omitempty"`
+	Select    *SelectTransformation    `json:"select,omitempty"`
+	Remove    *RemoveTransformation    `json:"remove,omitempty"`
 	SnakeCase *SnakeCaseTransformation `json:"snakeCase,omitempty"`
-
-	// CamelCase transformation configuration
-	// +optional
 	CamelCase *CamelCaseTransformation `json:"camelCase,omitempty"`
+}
+
+// UnmarshalJSON supports both generic and legacy formats.
+func (t *TransformationSpec) UnmarshalJSON(data []byte) error {
+	var r transformationSpecRaw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	t.Type = r.Type
+	t.Config = r.Config
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		var cfg interface{}
+		switch r.Type {
+		case "timestamp":
+			cfg = r.Timestamp
+		case "flatten":
+			cfg = r.Flatten
+		case "filter":
+			cfg = r.Filter
+		case "mask":
+			cfg = r.Mask
+		case "router":
+			cfg = r.Router
+		case "select":
+			cfg = r.Select
+		case "remove":
+			cfg = r.Remove
+		case "snakeCase":
+			cfg = r.SnakeCase
+		case "camelCase":
+			cfg = r.CamelCase
+		}
+		if cfg != nil {
+			b, err := json.Marshal(cfg)
+			if err != nil {
+				return err
+			}
+			t.Config = &runtime.RawExtension{Raw: b}
+		}
+	}
+	return nil
+}
+
+// GetTimestampConfig returns Timestamp transformation config.
+func (t *TransformationSpec) GetTimestampConfig() (*TimestampTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c TimestampTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetFlattenConfig returns Flatten transformation config.
+func (t *TransformationSpec) GetFlattenConfig() (*FlattenTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c FlattenTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetFilterConfig returns Filter transformation config.
+func (t *TransformationSpec) GetFilterConfig() (*FilterTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c FilterTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetMaskConfig returns Mask transformation config.
+func (t *TransformationSpec) GetMaskConfig() (*MaskTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c MaskTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetRouterConfig returns Router transformation config.
+func (t *TransformationSpec) GetRouterConfig() (*RouterTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c RouterTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetSelectConfig returns Select transformation config.
+func (t *TransformationSpec) GetSelectConfig() (*SelectTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c SelectTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetRemoveConfig returns Remove transformation config.
+func (t *TransformationSpec) GetRemoveConfig() (*RemoveTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c RemoveTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetSnakeCaseConfig returns SnakeCase transformation config.
+func (t *TransformationSpec) GetSnakeCaseConfig() (*SnakeCaseTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c SnakeCaseTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetCamelCaseConfig returns CamelCase transformation config.
+func (t *TransformationSpec) GetCamelCaseConfig() (*CamelCaseTransformation, error) {
+	if t.Config == nil || len(t.Config.Raw) == 0 {
+		return nil, nil
+	}
+	var c CamelCaseTransformation
+	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // TimestampTransformation adds a timestamp field

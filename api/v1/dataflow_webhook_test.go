@@ -18,19 +18,27 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
 )
+
+func mustConfig(v interface{}) *runtime.RawExtension {
+	b, _ := json.Marshal(v)
+	return &runtime.RawExtension{Raw: b}
+}
 
 func TestDataFlow_ValidateCreate_Valid(t *testing.T) {
 	df := &DataFlow{}
 	df.Spec = DataFlowSpec{
 		Source: SourceSpec{
-			Type:  "kafka",
-			Kafka: &KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:   "kafka",
+			Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
 		},
 		Sink: SinkSpec{
-			Type:  "kafka",
-			Kafka: &KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:   "kafka",
+			Config: mustConfig(KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		},
 	}
 	warnings, err := df.ValidateCreate(context.Background(), df)
@@ -45,10 +53,10 @@ func TestDataFlow_ValidateCreate_Valid(t *testing.T) {
 func TestDataFlow_ValidateCreate_Invalid(t *testing.T) {
 	df := &DataFlow{}
 	df.Spec = DataFlowSpec{
-		Source: SourceSpec{Type: "kafka"}, // Kafka config nil
+		Source: SourceSpec{Type: "kafka"}, // Config nil
 		Sink: SinkSpec{
-			Type:  "kafka",
-			Kafka: &KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:   "kafka",
+			Config: mustConfig(KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		},
 	}
 	_, err := df.ValidateCreate(context.Background(), df)
@@ -61,12 +69,12 @@ func TestDataFlow_ValidateUpdate_Valid(t *testing.T) {
 	df := &DataFlow{}
 	df.Spec = DataFlowSpec{
 		Source: SourceSpec{
-			Type:  "kafka",
-			Kafka: &KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:   "kafka",
+			Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
 		},
 		Sink: SinkSpec{
-			Type:  "kafka",
-			Kafka: &KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"},
+			Type:   "kafka",
+			Config: mustConfig(KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
 		},
 	}
 	old := &DataFlow{}

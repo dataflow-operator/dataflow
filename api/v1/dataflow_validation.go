@@ -17,6 +17,8 @@ limitations under the License.
 package v1
 
 import (
+	"encoding/json"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
@@ -64,36 +66,62 @@ func validateSource(s *SourceSpec, f *field.Path) field.ErrorList {
 		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse", "nessie"}))
 		return all
 	}
+	hasConfig := s.Config != nil && len(s.Config.Raw) > 0
 	switch s.Type {
 	case "kafka":
-		if s.Kafka == nil {
-			all = append(all, field.Required(f.Child("kafka"), "kafka source configuration is required"))
+		if hasConfig {
+			var cfg KafkaSourceSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid kafka config: "+err.Error()))
+			} else {
+				all = append(all, validateKafkaSource(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateKafkaSource(s.Kafka, f.Child("kafka"))...)
+			all = append(all, field.Required(f.Child("config"), "kafka source configuration is required"))
 		}
 	case "postgresql":
-		if s.PostgreSQL == nil {
-			all = append(all, field.Required(f.Child("postgresql"), "postgresql source configuration is required"))
+		if hasConfig {
+			var cfg PostgreSQLSourceSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid postgresql config: "+err.Error()))
+			} else {
+				all = append(all, validatePostgreSQLSource(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validatePostgreSQLSource(s.PostgreSQL, f.Child("postgresql"))...)
+			all = append(all, field.Required(f.Child("config"), "postgresql source configuration is required"))
 		}
 	case "trino":
-		if s.Trino == nil {
-			all = append(all, field.Required(f.Child("trino"), "trino source configuration is required"))
+		if hasConfig {
+			var cfg TrinoSourceSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid trino config: "+err.Error()))
+			} else {
+				all = append(all, validateTrinoSource(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateTrinoSource(s.Trino, f.Child("trino"))...)
+			all = append(all, field.Required(f.Child("config"), "trino source configuration is required"))
 		}
 	case "clickhouse":
-		if s.ClickHouse == nil {
-			all = append(all, field.Required(f.Child("clickhouse"), "clickhouse source configuration is required"))
+		if hasConfig {
+			var cfg ClickHouseSourceSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid clickhouse config: "+err.Error()))
+			} else {
+				all = append(all, validateClickHouseSource(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateClickHouseSource(s.ClickHouse, f.Child("clickhouse"))...)
+			all = append(all, field.Required(f.Child("config"), "clickhouse source configuration is required"))
 		}
 	case "nessie":
-		if s.Nessie == nil {
-			all = append(all, field.Required(f.Child("nessie"), "nessie source configuration is required"))
+		if hasConfig {
+			var cfg NessieSourceSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid nessie config: "+err.Error()))
+			} else {
+				all = append(all, validateNessieSource(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateNessieSource(s.Nessie, f.Child("nessie"))...)
+			all = append(all, field.Required(f.Child("config"), "nessie source configuration is required"))
 		}
 	}
 	return all
@@ -184,36 +212,62 @@ func validateSink(s *SinkSpec, f *field.Path) field.ErrorList {
 		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse", "nessie"}))
 		return all
 	}
+	hasConfig := s.Config != nil && len(s.Config.Raw) > 0
 	switch s.Type {
 	case "kafka":
-		if s.Kafka == nil {
-			all = append(all, field.Required(f.Child("kafka"), "kafka sink configuration is required"))
+		if hasConfig {
+			var cfg KafkaSinkSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid kafka config: "+err.Error()))
+			} else {
+				all = append(all, validateKafkaSink(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateKafkaSink(s.Kafka, f.Child("kafka"))...)
+			all = append(all, field.Required(f.Child("config"), "kafka sink configuration is required"))
 		}
 	case "postgresql":
-		if s.PostgreSQL == nil {
-			all = append(all, field.Required(f.Child("postgresql"), "postgresql sink configuration is required"))
+		if hasConfig {
+			var cfg PostgreSQLSinkSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid postgresql config: "+err.Error()))
+			} else {
+				all = append(all, validatePostgreSQLSink(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validatePostgreSQLSink(s.PostgreSQL, f.Child("postgresql"))...)
+			all = append(all, field.Required(f.Child("config"), "postgresql sink configuration is required"))
 		}
 	case "trino":
-		if s.Trino == nil {
-			all = append(all, field.Required(f.Child("trino"), "trino sink configuration is required"))
+		if hasConfig {
+			var cfg TrinoSinkSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid trino config: "+err.Error()))
+			} else {
+				all = append(all, validateTrinoSink(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateTrinoSink(s.Trino, f.Child("trino"))...)
+			all = append(all, field.Required(f.Child("config"), "trino sink configuration is required"))
 		}
 	case "clickhouse":
-		if s.ClickHouse == nil {
-			all = append(all, field.Required(f.Child("clickhouse"), "clickhouse sink configuration is required"))
+		if hasConfig {
+			var cfg ClickHouseSinkSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid clickhouse config: "+err.Error()))
+			} else {
+				all = append(all, validateClickHouseSink(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateClickHouseSink(s.ClickHouse, f.Child("clickhouse"))...)
+			all = append(all, field.Required(f.Child("config"), "clickhouse sink configuration is required"))
 		}
 	case "nessie":
-		if s.Nessie == nil {
-			all = append(all, field.Required(f.Child("nessie"), "nessie sink configuration is required"))
+		if hasConfig {
+			var cfg NessieSinkSpec
+			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
+				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid nessie config: "+err.Error()))
+			} else {
+				all = append(all, validateNessieSink(&cfg, f.Child("config"))...)
+			}
 		} else {
-			all = append(all, validateNessieSink(s.Nessie, f.Child("nessie"))...)
+			all = append(all, field.Required(f.Child("config"), "nessie sink configuration is required"))
 		}
 	}
 	return all
@@ -413,59 +467,105 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 				[]string{"timestamp", "flatten", "filter", "mask", "router", "select", "remove", "snakeCase", "camelCase"}))
 			continue
 		}
+		hasConfig := t.Config != nil && len(t.Config.Raw) > 0
 		switch t.Type {
 		case "timestamp":
-			if t.Timestamp == nil {
-				all = append(all, field.Required(idx.Child("timestamp"), "timestamp transformation configuration is required"))
+			if hasConfig {
+				var cfg TimestampTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid timestamp config: "+err.Error()))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "timestamp transformation configuration is required"))
 			}
 		case "flatten":
-			if t.Flatten == nil {
-				all = append(all, field.Required(idx.Child("flatten"), "flatten transformation configuration is required"))
-			} else if t.Flatten.Field == "" {
-				all = append(all, field.Required(idx.Child("flatten", "field"), "field is required"))
+			if hasConfig {
+				var cfg FlattenTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid flatten config: "+err.Error()))
+				} else if cfg.Field == "" {
+					all = append(all, field.Required(idx.Child("config", "field"), "field is required"))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "flatten transformation configuration is required"))
 			}
 		case "filter":
-			if t.Filter == nil {
-				all = append(all, field.Required(idx.Child("filter"), "filter transformation configuration is required"))
-			} else if t.Filter.Condition == "" {
-				all = append(all, field.Required(idx.Child("filter", "condition"), "condition is required"))
+			if hasConfig {
+				var cfg FilterTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid filter config: "+err.Error()))
+				} else if cfg.Condition == "" {
+					all = append(all, field.Required(idx.Child("config", "condition"), "condition is required"))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "filter transformation configuration is required"))
 			}
 		case "mask":
-			if t.Mask == nil {
-				all = append(all, field.Required(idx.Child("mask"), "mask transformation configuration is required"))
-			} else if len(t.Mask.Fields) == 0 {
-				all = append(all, field.Required(idx.Child("mask", "fields"), "at least one field is required"))
+			if hasConfig {
+				var cfg MaskTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid mask config: "+err.Error()))
+				} else if len(cfg.Fields) == 0 {
+					all = append(all, field.Required(idx.Child("config", "fields"), "at least one field is required"))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "mask transformation configuration is required"))
 			}
 		case "router":
-			if t.Router == nil {
-				all = append(all, field.Required(idx.Child("router"), "router transformation configuration is required"))
+			routerCfg, _ := t.GetRouterConfig()
+			if routerCfg == nil {
+				all = append(all, field.Required(idx.Child("config"), "router transformation configuration is required (config or router)"))
 			} else {
-				for j, route := range t.Router.Routes {
+				routesPath := idx.Child("router", "routes")
+				if hasConfig {
+					routesPath = idx.Child("config", "routes")
+				}
+				for j, route := range routerCfg.Routes {
 					if route.Condition == "" {
-						all = append(all, field.Required(idx.Child("router", "routes").Index(j).Child("condition"), "condition is required"))
+						all = append(all, field.Required(routesPath.Index(j).Child("condition"), "condition is required"))
 					}
-					all = append(all, validateSink(&route.Sink, idx.Child("router", "routes").Index(j).Child("sink"))...)
+					all = append(all, validateSink(&route.Sink, routesPath.Index(j).Child("sink"))...)
 				}
 			}
 		case "select":
-			if t.Select == nil {
-				all = append(all, field.Required(idx.Child("select"), "select transformation configuration is required"))
-			} else if len(t.Select.Fields) == 0 {
-				all = append(all, field.Required(idx.Child("select", "fields"), "at least one field is required"))
+			if hasConfig {
+				var cfg SelectTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid select config: "+err.Error()))
+				} else if len(cfg.Fields) == 0 {
+					all = append(all, field.Required(idx.Child("config", "fields"), "at least one field is required"))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "select transformation configuration is required"))
 			}
 		case "remove":
-			if t.Remove == nil {
-				all = append(all, field.Required(idx.Child("remove"), "remove transformation configuration is required"))
-			} else if len(t.Remove.Fields) == 0 {
-				all = append(all, field.Required(idx.Child("remove", "fields"), "at least one field is required"))
+			if hasConfig {
+				var cfg RemoveTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid remove config: "+err.Error()))
+				} else if len(cfg.Fields) == 0 {
+					all = append(all, field.Required(idx.Child("config", "fields"), "at least one field is required"))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "remove transformation configuration is required"))
 			}
 		case "snakeCase":
-			if t.SnakeCase == nil {
-				all = append(all, field.Required(idx.Child("snakeCase"), "snakeCase transformation configuration is required"))
+			if hasConfig {
+				var cfg SnakeCaseTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid snakeCase config: "+err.Error()))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "snakeCase transformation configuration is required"))
 			}
 		case "camelCase":
-			if t.CamelCase == nil {
-				all = append(all, field.Required(idx.Child("camelCase"), "camelCase transformation configuration is required"))
+			if hasConfig {
+				var cfg CamelCaseTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid camelCase config: "+err.Error()))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "camelCase transformation configuration is required"))
 			}
 		}
 	}

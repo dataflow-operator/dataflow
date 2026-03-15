@@ -22,54 +22,91 @@ import (
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 )
 
-// CreateTransformer creates a transformer based on the transformation spec
+// CreateTransformer creates a transformer based on the transformation spec.
+// Supports both config (type+config) and legacy (type+timestamp/flatten/etc) formats.
 func CreateTransformer(transformation *v1.TransformationSpec) (Transformer, error) {
 	switch transformation.Type {
 	case "timestamp":
-		if transformation.Timestamp == nil {
+		cfg, err := transformation.GetTimestampConfig()
+		if err != nil {
+			return nil, fmt.Errorf("timestamp transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("timestamp transformation configuration is required")
 		}
-		return NewTimestampTransformer(transformation.Timestamp), nil
+		return NewTimestampTransformer(cfg), nil
 	case "flatten":
-		if transformation.Flatten == nil {
+		cfg, err := transformation.GetFlattenConfig()
+		if err != nil {
+			return nil, fmt.Errorf("flatten transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("flatten transformation configuration is required")
 		}
-		return NewFlattenTransformer(transformation.Flatten), nil
+		return NewFlattenTransformer(cfg), nil
 	case "filter":
-		if transformation.Filter == nil {
+		cfg, err := transformation.GetFilterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("filter transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("filter transformation configuration is required")
 		}
-		return NewFilterTransformer(transformation.Filter), nil
+		return NewFilterTransformer(cfg), nil
 	case "mask":
-		if transformation.Mask == nil {
+		cfg, err := transformation.GetMaskConfig()
+		if err != nil {
+			return nil, fmt.Errorf("mask transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("mask transformation configuration is required")
 		}
-		return NewMaskTransformer(transformation.Mask), nil
+		return NewMaskTransformer(cfg), nil
 	case "router":
-		if transformation.Router == nil {
+		cfg, err := transformation.GetRouterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("router transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("router transformation configuration is required")
 		}
-		return NewRouterTransformer(transformation.Router), nil
+		return NewRouterTransformer(cfg), nil
 	case "select":
-		if transformation.Select == nil {
+		cfg, err := transformation.GetSelectConfig()
+		if err != nil {
+			return nil, fmt.Errorf("select transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("select transformation configuration is required")
 		}
-		return NewSelectTransformer(transformation.Select), nil
+		return NewSelectTransformer(cfg), nil
 	case "remove":
-		if transformation.Remove == nil {
+		cfg, err := transformation.GetRemoveConfig()
+		if err != nil {
+			return nil, fmt.Errorf("remove transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("remove transformation configuration is required")
 		}
-		return NewRemoveTransformer(transformation.Remove), nil
+		return NewRemoveTransformer(cfg), nil
 	case "snakeCase":
-		if transformation.SnakeCase == nil {
+		cfg, err := transformation.GetSnakeCaseConfig()
+		if err != nil {
+			return nil, fmt.Errorf("snakeCase transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("snakeCase transformation configuration is required")
 		}
-		return NewSnakeCaseTransformer(transformation.SnakeCase), nil
+		return NewSnakeCaseTransformer(cfg), nil
 	case "camelCase":
-		if transformation.CamelCase == nil {
+		cfg, err := transformation.GetCamelCaseConfig()
+		if err != nil {
+			return nil, fmt.Errorf("camelCase transformation configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("camelCase transformation configuration is required")
 		}
-		return NewCamelCaseTransformer(transformation.CamelCase), nil
+		return NewCamelCaseTransformer(cfg), nil
 	// TODO: replaceField and headerFrom transformations are not yet implemented in API
 	// case "replaceField":
 	// 	if transformation.ReplaceField == nil {

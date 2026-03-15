@@ -17,12 +17,20 @@ limitations under the License.
 package transformers
 
 import (
+	"encoding/json"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func mustConfig(v interface{}) *runtime.RawExtension {
+	b, _ := json.Marshal(v)
+	return &runtime.RawExtension{Raw: b}
+}
 
 func TestCreateTransformer_Timestamp(t *testing.T) {
 	tests := []struct {
@@ -34,11 +42,8 @@ func TestCreateTransformer_Timestamp(t *testing.T) {
 		{
 			name: "valid timestamp transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "timestamp",
-				Timestamp: &v1.TimestampTransformation{
-					FieldName: "created_at",
-					Format:    "RFC3339",
-				},
+				Type:   "timestamp",
+				Config: mustConfig(v1.TimestampTransformation{FieldName: "created_at", Format: "RFC3339"}),
 			},
 			wantErr: false,
 		},
@@ -79,10 +84,8 @@ func TestCreateTransformer_Flatten(t *testing.T) {
 		{
 			name: "valid flatten transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "flatten",
-				Flatten: &v1.FlattenTransformation{
-					Field: "$.items",
-				},
+				Type:   "flatten",
+				Config: mustConfig(v1.FlattenTransformation{Field: "$.items"}),
 			},
 			wantErr: false,
 		},
@@ -123,10 +126,8 @@ func TestCreateTransformer_Filter(t *testing.T) {
 		{
 			name: "valid filter transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "filter",
-				Filter: &v1.FilterTransformation{
-					Condition: "$.status == 'active'",
-				},
+				Type:   "filter",
+				Config: mustConfig(v1.FilterTransformation{Condition: "$.status == 'active'"}),
 			},
 			wantErr: false,
 		},
@@ -167,12 +168,8 @@ func TestCreateTransformer_Mask(t *testing.T) {
 		{
 			name: "valid mask transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "mask",
-				Mask: &v1.MaskTransformation{
-					Fields:     []string{"$.password", "$.email"},
-					MaskChar:   "*",
-					KeepLength: true,
-				},
+				Type:   "mask",
+				Config: mustConfig(v1.MaskTransformation{Fields: []string{"$.password", "$.email"}, MaskChar: "*", KeepLength: true}),
 			},
 			wantErr: false,
 		},
@@ -214,20 +211,17 @@ func TestCreateTransformer_Router(t *testing.T) {
 			name: "valid router transformation",
 			transformation: &v1.TransformationSpec{
 				Type: "router",
-				Router: &v1.RouterTransformation{
+				Config: mustConfig(v1.RouterTransformation{
 					Routes: []v1.RouteRule{
 						{
 							Condition: "$.type == 'error'",
 							Sink: v1.SinkSpec{
-								Type: "kafka",
-								Kafka: &v1.KafkaSinkSpec{
-									Brokers: []string{"localhost:9092"},
-									Topic:   "errors",
-								},
+								Type:   "kafka",
+								Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "errors"}),
 							},
 						},
 					},
-				},
+				}),
 			},
 			wantErr: false,
 		},
@@ -268,10 +262,8 @@ func TestCreateTransformer_Select(t *testing.T) {
 		{
 			name: "valid select transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "select",
-				Select: &v1.SelectTransformation{
-					Fields: []string{"$.id", "$.name", "$.status"},
-				},
+				Type:   "select",
+				Config: mustConfig(v1.SelectTransformation{Fields: []string{"$.id", "$.name", "$.status"}}),
 			},
 			wantErr: false,
 		},
@@ -312,10 +304,8 @@ func TestCreateTransformer_Remove(t *testing.T) {
 		{
 			name: "valid remove transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "remove",
-				Remove: &v1.RemoveTransformation{
-					Fields: []string{"$.password", "$.secret"},
-				},
+				Type:   "remove",
+				Config: mustConfig(v1.RemoveTransformation{Fields: []string{"$.password", "$.secret"}}),
 			},
 			wantErr: false,
 		},
@@ -356,10 +346,8 @@ func TestCreateTransformer_SnakeCase(t *testing.T) {
 		{
 			name: "valid snakeCase transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "snakeCase",
-				SnakeCase: &v1.SnakeCaseTransformation{
-					Deep: true,
-				},
+				Type:   "snakeCase",
+				Config: mustConfig(v1.SnakeCaseTransformation{Deep: true}),
 			},
 			wantErr: false,
 		},
@@ -400,10 +388,8 @@ func TestCreateTransformer_CamelCase(t *testing.T) {
 		{
 			name: "valid camelCase transformation",
 			transformation: &v1.TransformationSpec{
-				Type: "camelCase",
-				CamelCase: &v1.CamelCaseTransformation{
-					Deep: true,
-				},
+				Type:   "camelCase",
+				Config: mustConfig(v1.CamelCaseTransformation{Deep: true}),
 			},
 			wantErr: false,
 		},

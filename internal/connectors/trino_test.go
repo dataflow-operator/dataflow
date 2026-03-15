@@ -452,10 +452,10 @@ func TestTrinoSinkConnector_hasRawModeColumns(t *testing.T) {
 		Table:     "test",
 	})
 	tests := []struct {
-		name         string
-		columns      []TableColumnInfo
-		wantOk       bool
-		wantDataCol  string
+		name        string
+		columns     []TableColumnInfo
+		wantOk      bool
+		wantDataCol string
 	}{
 		{
 			name: "data_and_metadata",

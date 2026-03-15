@@ -24,6 +24,7 @@ import (
 
 // CreateSourceConnector creates a source connector based on the source spec.
 // Options can include WithCheckpointStore for checkpoint persistence.
+// Supports both config (type+config) and legacy (type+kafka/postgresql/etc) formats.
 func CreateSourceConnector(source *v1.SourceSpec, opts ...SourceConnectorOption) (SourceConnector, error) {
 	options := &SourceConnectorOptions{}
 	for _, opt := range opts {
@@ -32,63 +33,104 @@ func CreateSourceConnector(source *v1.SourceSpec, opts ...SourceConnectorOption)
 
 	switch source.Type {
 	case "kafka":
-		if source.Kafka == nil {
+		cfg, err := source.GetKafkaConfig()
+		if err != nil {
+			return nil, fmt.Errorf("kafka source configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("kafka source configuration is required")
 		}
-		return NewKafkaSourceConnector(source.Kafka), nil
+		return NewKafkaSourceConnector(cfg), nil
 	case "postgresql":
-		if source.PostgreSQL == nil {
+		cfg, err := source.GetPostgreSQLConfig()
+		if err != nil {
+			return nil, fmt.Errorf("postgresql source configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("postgresql source configuration is required")
 		}
-		return NewPostgreSQLSourceConnectorWithOptions(source.PostgreSQL, options), nil
+		return NewPostgreSQLSourceConnectorWithOptions(cfg, options), nil
 	case "trino":
-		if source.Trino == nil {
+		cfg, err := source.GetTrinoConfig()
+		if err != nil {
+			return nil, fmt.Errorf("trino source configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("trino source configuration is required")
 		}
-		return NewTrinoSourceConnectorWithOptions(source.Trino, options), nil
+		return NewTrinoSourceConnectorWithOptions(cfg, options), nil
 	case "clickhouse":
-		if source.ClickHouse == nil {
+		cfg, err := source.GetClickHouseConfig()
+		if err != nil {
+			return nil, fmt.Errorf("clickhouse source configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("clickhouse source configuration is required")
 		}
-		return NewClickHouseSourceConnectorWithOptions(source.ClickHouse, options), nil
+		return NewClickHouseSourceConnectorWithOptions(cfg, options), nil
 	case "nessie":
-		if source.Nessie == nil {
+		cfg, err := source.GetNessieConfig()
+		if err != nil {
+			return nil, fmt.Errorf("nessie source configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("nessie source configuration is required")
 		}
-		return NewNessieSourceConnector(source.Nessie), nil
+		return NewNessieSourceConnector(cfg), nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", source.Type)
 	}
 }
 
-// CreateSinkConnector creates a sink connector based on the sink spec
+// CreateSinkConnector creates a sink connector based on the sink spec.
+// Supports both config (type+config) and legacy (type+kafka/postgresql/etc) formats.
 func CreateSinkConnector(sink *v1.SinkSpec) (SinkConnector, error) {
 	switch sink.Type {
 	case "kafka":
-		if sink.Kafka == nil {
+		cfg, err := sink.GetKafkaConfig()
+		if err != nil {
+			return nil, fmt.Errorf("kafka sink configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("kafka sink configuration is required")
 		}
-		return NewKafkaSinkConnector(sink.Kafka), nil
+		return NewKafkaSinkConnector(cfg), nil
 	case "postgresql":
-		if sink.PostgreSQL == nil {
+		cfg, err := sink.GetPostgreSQLConfig()
+		if err != nil {
+			return nil, fmt.Errorf("postgresql sink configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("postgresql sink configuration is required")
 		}
-		return NewPostgreSQLSinkConnector(sink.PostgreSQL), nil
+		return NewPostgreSQLSinkConnector(cfg), nil
 	case "trino":
-		if sink.Trino == nil {
+		cfg, err := sink.GetTrinoConfig()
+		if err != nil {
+			return nil, fmt.Errorf("trino sink configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("trino sink configuration is required")
 		}
-		return NewTrinoSinkConnector(sink.Trino), nil
+		return NewTrinoSinkConnector(cfg), nil
 	case "clickhouse":
-		if sink.ClickHouse == nil {
+		cfg, err := sink.GetClickHouseConfig()
+		if err != nil {
+			return nil, fmt.Errorf("clickhouse sink configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("clickhouse sink configuration is required")
 		}
-		return NewClickHouseSinkConnector(sink.ClickHouse), nil
+		return NewClickHouseSinkConnector(cfg), nil
 	case "nessie":
-		if sink.Nessie == nil {
+		cfg, err := sink.GetNessieConfig()
+		if err != nil {
+			return nil, fmt.Errorf("nessie sink configuration: %w", err)
+		}
+		if cfg == nil {
 			return nil, fmt.Errorf("nessie sink configuration is required")
 		}
-		return NewNessieSinkConnector(sink.Nessie), nil
+		return NewNessieSinkConnector(cfg), nil
 	default:
 		return nil, fmt.Errorf("unsupported sink type: %s", sink.Type)
 	}

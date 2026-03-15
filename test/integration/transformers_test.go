@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,6 +30,11 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/transformers"
 	"github.com/dataflow-operator/dataflow/internal/types"
 )
+
+func mustConfig(v interface{}) *runtime.RawExtension {
+	b, _ := json.Marshal(v)
+	return &runtime.RawExtension{Raw: b}
+}
 
 // TestTransformersIntegration tests all transformers with real data.
 func TestTransformersIntegration(t *testing.T) {
@@ -236,21 +243,15 @@ func TestTransformersIntegration(t *testing.T) {
 				{
 					Condition: "type == 'user'",
 					Sink: v1.SinkSpec{
-						Type: "kafka",
-						Kafka: &v1.KafkaSinkSpec{
-							Brokers: []string{"localhost:9092"},
-							Topic:   "user-topic",
-						},
+						Type:   "kafka",
+						Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "user-topic"}),
 					},
 				},
 				{
 					Condition: "type == 'order'",
 					Sink: v1.SinkSpec{
-						Type: "kafka",
-						Kafka: &v1.KafkaSinkSpec{
-							Brokers: []string{"localhost:9092"},
-							Topic:   "order-topic",
-						},
+						Type:   "kafka",
+						Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "order-topic"}),
 					},
 				},
 			},
