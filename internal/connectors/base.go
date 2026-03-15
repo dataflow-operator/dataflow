@@ -169,3 +169,16 @@ func ParseTableRef(table string) (schema, name string) {
 	}
 	return "public", table
 }
+
+// quotePostgreSQLIdentifier quotes a PostgreSQL identifier (table, column, index name).
+// Required when identifier contains hyphens, spaces, or other special chars.
+func quotePostgreSQLIdentifier(id string) string {
+	return `"` + strings.ReplaceAll(id, `"`, `""`) + `"`
+}
+
+// QuotePostgreSQLTableRef returns a properly quoted schema.table ref for use in SQL.
+// E.g. "kafka-to-postgres-raw-events" -> "public"."kafka-to-postgres-raw-events"
+func QuotePostgreSQLTableRef(table string) string {
+	schema, name := ParseTableRef(table)
+	return quotePostgreSQLIdentifier(schema) + "." + quotePostgreSQLIdentifier(name)
+}

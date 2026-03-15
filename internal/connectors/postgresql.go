@@ -152,13 +152,14 @@ func (p *PostgreSQLSourceConnector) ensureSourceTable(ctx context.Context) error
 		return nil
 	}
 	p.logger.Info("Creating source table", "table", p.config.Table)
+	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 	createQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id SERIAL PRIMARY KEY,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)
-	`, p.config.Table)
+	`, quotedTable)
 	_, err = p.conn.Exec(ctx, createQuery)
 	if err != nil {
 		return fmt.Errorf("failed to create source table: %w", err)
@@ -348,12 +349,13 @@ func (p *PostgreSQLSourceConnector) buildReadQuery() string {
 	p.checkpointMu.Lock()
 	lastRead := p.lastReadChangeTime
 	p.checkpointMu.Unlock()
+	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 	if lastRead != nil {
 		// RFC3339Nano preserves sub-second precision to avoid re-reading or skipping rows at boundaries
 		return fmt.Sprintf("SELECT * FROM %s WHERE %s > '%s' ORDER BY %s, id",
-			p.config.Table, orderExpr, lastRead.UTC().Format(time.RFC3339Nano), orderExpr)
+			quotedTable, orderExpr, lastRead.UTC().Format(time.RFC3339Nano), orderExpr)
 	}
-	return fmt.Sprintf("SELECT * FROM %s ORDER BY %s, id", p.config.Table, orderExpr)
+	return fmt.Sprintf("SELECT * FROM %s ORDER BY %s, id", quotedTable, orderExpr)
 }
 
 // extractChangeTime returns the change tracking timestamp for the row (for checkpoint).
@@ -529,6 +531,7 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	}
 
 	p.logger.Info("Creating table (raw mode)", "table", p.config.Table)
+	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 	createQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id SERIAL PRIMARY KEY,
@@ -538,7 +541,7 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			deleted_at TIMESTAMP
 		)
-	`, p.config.Table)
+	`, quotedTable)
 
 	_, err = p.conn.Exec(ctx, createQuery)
 	if err != nil {
@@ -549,7 +552,9 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	p.hasJSONBCached = nil // raw mode table has value, not data column
 	p.logger.Info("Table created successfully", "table", p.config.Table)
 
-	indexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_%s_value ON %s USING GIN (value)`, p.config.Table, p.config.Table)
+	_, tableName := ParseTableRef(p.config.Table)
+	indexName := quotePostgreSQLIdentifier("idx_" + tableName + "_value")
+	indexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (value)`, indexName, quotedTable)
 	_, err = p.conn.Exec(ctx, indexQuery)
 	if err != nil {
 		p.logger.Info("Failed to create index (non-critical)", "table", p.config.Table, "error", err)
@@ -590,7 +595,7 @@ func (p *PostgreSQLSinkConnector) ensureTableFromMessage(ctx context.Context, da
 	for _, col := range columns {
 		val := data[col]
 		pgType := inferPostgreSQLType(val)
-		def := fmt.Sprintf(`"%s" %s`, col, pgType)
+		def := fmt.Sprintf(`%s %s`, quotePostgreSQLIdentifier(col), pgType)
 		if col == "id" {
 			def += " PRIMARY KEY"
 		}
@@ -607,7 +612,8 @@ func (p *PostgreSQLSinkConnector) ensureTableFromMessage(ctx context.Context, da
 	}
 
 	p.logger.Info("Creating table from message structure", "table", p.config.Table, "columns", columns)
-	createQuery := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (%s)`, p.config.Table, joinStrings(colDefs, ", "))
+	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
+	createQuery := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (%s)`, quotedTable, joinStrings(colDefs, ", "))
 	_, err = p.conn.Exec(ctx, createQuery)
 	if err != nil {
 		return fmt.Errorf("failed to create table from message: %w", err)
@@ -906,7 +912,8 @@ func (p *PostgreSQLSinkConnector) trySoftDelete(msg *types.Message, batch *pgx.B
 	if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
 		conflictKey = *p.config.ConflictKey
 	}
-	query := fmt.Sprintf("UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s = $1", p.config.Table, *p.config.SoftDeleteColumn, conflictKey)
+	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
+	query := fmt.Sprintf("UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s = $1", quotedTable, quotePostgreSQLIdentifier(*p.config.SoftDeleteColumn), quotePostgreSQLIdentifier(conflictKey))
 	batch.Queue(query, idVal)
 	*batchMessages = append(*batchMessages, msg)
 	*count++
@@ -959,10 +966,11 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 			}
 			metaJSON, _ = json.Marshal(meta)
 		}
+		quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 		if upsertMode {
-			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb) ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value, _metadata = EXCLUDED._metadata", p.config.Table)
+			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb) ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value, _metadata = EXCLUDED._metadata", quotedTable)
 		} else {
-			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb)", p.config.Table)
+			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb)", quotedTable)
 		}
 		values = []interface{}{string(valueJSON), string(metaJSON)}
 		return query, values, nil
@@ -970,10 +978,11 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 
 	hasJSONB, e := p.hasJSONBColumn(ctx)
 	if e == nil && hasJSONB {
+		quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 		if upsertMode {
-			query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", p.config.Table)
+			query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", quotedTable)
 		} else {
-			query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", p.config.Table)
+			query = fmt.Sprintf("INSERT INTO %s (data) VALUES ($1::jsonb) ON CONFLICT DO NOTHING", quotedTable)
 		}
 		jsonData, _ := json.Marshal(data)
 		values = []interface{}{string(jsonData)}
@@ -996,14 +1005,15 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 	if len(columns) == 0 {
 		return "", nil, fmt.Errorf("empty message, no columns to insert")
 	}
-	columnList := fmt.Sprintf(`"%s"`, columns[0])
+	columnList := quotePostgreSQLIdentifier(columns[0])
 	for i := 1; i < len(columns); i++ {
-		columnList += fmt.Sprintf(`, "%s"`, columns[i])
+		columnList += ", " + quotePostgreSQLIdentifier(columns[i])
 	}
 	placeholderList := "$1"
 	for i := 2; i <= len(placeholders); i++ {
 		placeholderList += fmt.Sprintf(", $%d", i)
 	}
+	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 	if upsertMode {
 		conflictKey := "id"
 		if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
@@ -1012,20 +1022,20 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 		updateClauses := make([]string, 0)
 		for _, col := range columns {
 			if col != conflictKey {
-				updateClauses = append(updateClauses, fmt.Sprintf(`"%s" = EXCLUDED."%s"`, col, col))
+				updateClauses = append(updateClauses, fmt.Sprintf(`%s = EXCLUDED.%s`, quotePostgreSQLIdentifier(col), quotePostgreSQLIdentifier(col)))
 			}
 		}
 		if len(updateClauses) == 0 {
-			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", p.config.Table, columnList, placeholderList, conflictKey)
+			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", quotedTable, columnList, placeholderList, quotePostgreSQLIdentifier(conflictKey))
 		} else {
 			updateClause := updateClauses[0]
 			for i := 1; i < len(updateClauses); i++ {
 				updateClause += ", " + updateClauses[i]
 			}
-			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", p.config.Table, columnList, placeholderList, conflictKey, updateClause)
+			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", quotedTable, columnList, placeholderList, quotePostgreSQLIdentifier(conflictKey), updateClause)
 		}
 	} else {
-		query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", p.config.Table, columnList, placeholderList)
+		query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", quotedTable, columnList, placeholderList)
 	}
 	values = colValues
 	return query, values, nil

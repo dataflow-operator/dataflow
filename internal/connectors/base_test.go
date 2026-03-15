@@ -155,3 +155,40 @@ func TestParseTableRef(t *testing.T) {
 		})
 	}
 }
+
+func TestQuotePostgreSQLIdentifier(t *testing.T) {
+	tests := []struct {
+		id   string
+		want string
+	}{
+		{"users", `"users"`},
+		{"kafka-to-postgres-raw-events", `"kafka-to-postgres-raw-events"`},
+		{"table-name", `"table-name"`},
+		{`col"umn`, `"col""umn"`},
+		{"simple", `"simple"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got := quotePostgreSQLIdentifier(tt.id)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestQuotePostgreSQLTableRef(t *testing.T) {
+	tests := []struct {
+		table string
+		want  string
+	}{
+		{"users", `"public"."users"`},
+		{"kafka-to-postgres-raw-events", `"public"."kafka-to-postgres-raw-events"`},
+		{"public.events", `"public"."events"`},
+		{"myschema.my-table", `"myschema"."my-table"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.table, func(t *testing.T) {
+			got := QuotePostgreSQLTableRef(tt.table)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

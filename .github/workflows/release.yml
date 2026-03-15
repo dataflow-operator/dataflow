@@ -82,5 +82,12 @@ jobs:
           platforms: ${{ steps.platforms.outputs.platforms }}
           build-args: |
             VERSION=v${{ needs.release.outputs.new_release_version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # GHA cache + registry cache (сохраняется между runs, переживает eviction)
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+          # Отключаем attestation для ускорения (опционально)
+          provenance: false

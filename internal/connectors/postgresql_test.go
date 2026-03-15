@@ -75,6 +75,13 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 			lastReadChangeTime: ptrTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
 			wantContains:       []string{`WHERE "modified_at" > '2024-01-15T10:00:00`, `ORDER BY "modified_at", id`},
 		},
+		{
+			name: "table with hyphens is properly quoted",
+			config: &v1.PostgreSQLSourceSpec{
+				Table: "kafka-to-postgres-raw-events",
+			},
+			wantContains: []string{`"public"."kafka-to-postgres-raw-events"`, "ORDER BY"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

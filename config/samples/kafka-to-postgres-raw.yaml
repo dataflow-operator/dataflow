@@ -1,0 +1,23 @@
+# Kafka → PostgreSQL (rawMode) для staging
+# Namespace: dataflow-staging (совпадает с staging-postgresql, staging-kafka)
+# Kafka: staging-kafka:9092 (как в conductor). Bitnami: staging-kafka-kafka-bootstrap:9092
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-postgres-raw
+  namespace: dataflow-staging
+spec:
+  source:
+    type: kafka
+    config:
+      brokers:
+        - staging-kafka:9092
+      topic: kafka-to-postgres-raw
+      consumerGroup: dataflow-raw-group
+  sink:
+    type: postgresql
+    config:
+      connectionString: "postgres://postgres:dataflow@staging-postgresql:5432/dataflow?sslmode=disable"
+      table: kafka-to-postgres-raw-events
+      autoCreateTable: true
+      rawMode: true

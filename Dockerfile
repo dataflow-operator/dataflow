@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Build stage. Контекст — каталог dataflow (docker build из dataflow/ или -f dataflow/Dockerfile dataflow).
 FROM golang:1.25-alpine AS builder
 
@@ -13,11 +14,13 @@ COPY . .
 
 ARG VERSION=dev
 ARG TARGETARCH=amd64
+# -trimpath убирает пути из бинарника, -ldflags -s -w уменьшает размер
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH sh -c "\
-    go build -o manager -ldflags \"-X github.com/dataflow-operator/dataflow/internal/version.Version=${VERSION}\" main.go && \
-    go build -o processor cmd/processor/main.go"
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w -X github.com/dataflow-operator/dataflow/internal/version.Version=${VERSION}" \
+    -o manager main.go && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w" \
+    -o processor ./cmd/processor
 # Final stage
 FROM alpine:3.19
 
