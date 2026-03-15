@@ -1171,6 +1171,7 @@ spec:
             - sink
             - source
             type: object
+            x-kubernetes-preserve-unknown-fields: true
           status:
             description: DataFlowStatus defines the observed state of DataFlow
             properties:

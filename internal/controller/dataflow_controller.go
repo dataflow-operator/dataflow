@@ -227,6 +227,47 @@ func genReconcileID() string {
 	return hex.EncodeToString(b)
 }
 
+const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
+
+// restoreSpecFromLastApplied restores source/sink config from last-applied-configuration
+// when the API stripped it (e.g. due to CRD schema pruning). Modifies dataflow in place.
+func restoreSpecFromLastApplied(dataflow *dataflowv1.DataFlow) error {
+	raw, ok := dataflow.Annotations[lastAppliedAnnotation]
+	if !ok || raw == "" {
+		return nil
+	}
+	var applied struct {
+		Spec struct {
+			Source struct {
+				Config *runtime.RawExtension `json:"config,omitempty"`
+			} `json:"source"`
+			Sink struct {
+				Config *runtime.RawExtension `json:"config,omitempty"`
+			} `json:"sink"`
+			Errors *struct {
+				Config *runtime.RawExtension `json:"config,omitempty"`
+			} `json:"errors,omitempty"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal([]byte(raw), &applied); err != nil {
+		return err
+	}
+	if (dataflow.Spec.Source.Config == nil || len(dataflow.Spec.Source.Config.Raw) == 0) &&
+		applied.Spec.Source.Config != nil && len(applied.Spec.Source.Config.Raw) > 0 {
+		dataflow.Spec.Source.Config = applied.Spec.Source.Config
+	}
+	if (dataflow.Spec.Sink.Config == nil || len(dataflow.Spec.Sink.Config.Raw) == 0) &&
+		applied.Spec.Sink.Config != nil && len(applied.Spec.Sink.Config.Raw) > 0 {
+		dataflow.Spec.Sink.Config = applied.Spec.Sink.Config
+	}
+	if dataflow.Spec.Errors != nil && applied.Spec.Errors != nil &&
+		(dataflow.Spec.Errors.Config == nil || len(dataflow.Spec.Errors.Config.Raw) == 0) &&
+		applied.Spec.Errors.Config != nil && len(applied.Spec.Errors.Config.Raw) > 0 {
+		dataflow.Spec.Errors.Config = applied.Spec.Errors.Config
+	}
+	return nil
+}
+
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflows/finalizers,verbs=update
@@ -267,6 +308,11 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	log.Info("Reconciling DataFlow")
+
+	// Restore config from last-applied-configuration if API stripped it (CRD pruning).
+	if err := restoreSpecFromLastApplied(&dataflow); err != nil {
+		log.V(1).Info("Could not restore spec from last-applied-configuration", "error", err)
+	}
 
 	// Check if DataFlow is being deleted: run cleanup only when our finalizer is present
 	if !dataflow.DeletionTimestamp.IsZero() {
