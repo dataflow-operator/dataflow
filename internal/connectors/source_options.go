@@ -27,10 +27,10 @@ type SourceConnectorOption func(*SourceConnectorOptions)
 
 // SourceConnectorOptions holds optional configuration for source connectors.
 type SourceConnectorOptions struct {
-	CheckpointStore    checkpoint.Store
-	SourceType         string // e.g. "postgresql", "clickhouse", "trino"
-	InitialCheckpoint  []byte // pre-loaded checkpoint data from store
-	ChannelBufferSize  int    // buffer size for message channels; 0 = use default
+	CheckpointStore   checkpoint.Store
+	SourceType        string // e.g. "postgresql", "clickhouse", "trino"
+	InitialCheckpoint []byte // pre-loaded checkpoint data from store
+	ChannelBufferSize int    // buffer size for message channels; 0 = use default
 }
 
 // WithCheckpointStore enables checkpoint persistence for the source connector.

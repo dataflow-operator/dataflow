@@ -42,11 +42,11 @@ type ClickHouseSourceConnector struct {
 	baseConnectorRWMutex
 	connectorLogger
 	connectorMetadata
-	config          *v1.ClickHouseSourceSpec
-	conn            *sql.DB
-	lastReadID      int64      // Track last read ID to avoid duplicates
-	lastReadTime    *time.Time // Track last read time to avoid duplicates
-	readStateMu     sync.Mutex // protects lastReadID, lastReadTime (separate from conn to avoid blocking Connect/Close)
+	config            *v1.ClickHouseSourceSpec
+	conn              *sql.DB
+	lastReadID        int64      // Track last read ID to avoid duplicates
+	lastReadTime      *time.Time // Track last read time to avoid duplicates
+	readStateMu       sync.Mutex // protects lastReadID, lastReadTime (separate from conn to avoid blocking Connect/Close)
 	checkpointStore   checkpoint.Store
 	sourceType        string
 	channelBufferSize int

@@ -49,6 +49,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/controller"
 	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Import for metrics registration
 	"github.com/dataflow-operator/dataflow/internal/metrics/aggregator"
+	"github.com/dataflow-operator/dataflow/internal/sentry"
 	"github.com/dataflow-operator/dataflow/internal/webhookenv"
 	//+kubebuilder:scaffold:imports
 )
@@ -117,6 +118,11 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	if err := sentry.Init(); err != nil {
+		setupLog.Error(err, "Sentry init failed")
+	}
+	defer sentry.Flush()
 
 	// Log level: LOG_LEVEL env var takes priority (debug, info, warn, error)
 	levelEnabler := levelFromEnvOrOptions(os.Getenv("LOG_LEVEL"), opts.Level)

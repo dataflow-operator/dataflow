@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.43.0
 	github.com/IBM/sarama v1.46.3
+	github.com/getsentry/sentry-go v0.30.0
 	github.com/apache/arrow-go/v18 v18.4.1
 	github.com/apache/iceberg-go v0.4.0
 	github.com/go-logr/logr v1.4.3

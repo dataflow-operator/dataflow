@@ -54,8 +54,8 @@ type KafkaSourceConnector struct {
 	consumer          sarama.ConsumerGroup
 	channelBufferSize int
 	avroSchema        avro.Schema           // Avro schema for deserialization (when not using Schema Registry)
-	schemaCache  *schemaCache          // Cache for schemas from Schema Registry
-	schemaClient *schemaRegistryClient // Client for Schema Registry
+	schemaCache       *schemaCache          // Cache for schemas from Schema Registry
+	schemaClient      *schemaRegistryClient // Client for Schema Registry
 }
 
 // schemaCache caches Avro schemas by ID

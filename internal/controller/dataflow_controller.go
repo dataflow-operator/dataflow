@@ -204,6 +204,21 @@ func processorLogLevel() string {
 	return "info"
 }
 
+// processorSentryEnvVars returns env vars for Sentry to pass to processor pods.
+// When SENTRY_DSN is set in the operator, these vars are forwarded so processors can report to Sentry.
+func processorSentryEnvVars() []corev1.EnvVar {
+	if os.Getenv("SENTRY_DSN") == "" {
+		return nil
+	}
+	var out []corev1.EnvVar
+	for _, key := range []string{"SENTRY_DSN", "SENTRY_ENVIRONMENT", "SENTRY_TRACES_SAMPLE_RATE", "SENTRY_DEBUG", "SENTRY_RELEASE"} {
+		if v := os.Getenv(key); v != "" {
+			out = append(out, corev1.EnvVar{Name: key, Value: v})
+		}
+	}
+	return out
+}
+
 // reconcileTimeout returns the timeout for a single Reconcile run from env RECONCILE_TIMEOUT_SECONDS (default 180s).
 func reconcileTimeout() time.Duration {
 	const defaultSeconds = 180
@@ -798,9 +813,10 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 								"--namespace=" + req.Namespace,
 								"--name=" + dataflow.Name,
 							},
-							Env: []corev1.EnvVar{
-								{Name: "LOG_LEVEL", Value: processorLogLevel()},
-							},
+							Env: append(
+								[]corev1.EnvVar{{Name: "LOG_LEVEL", Value: processorLogLevel()}},
+								processorSentryEnvVars()...,
+							),
 							Ports: []corev1.ContainerPort{
 								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 							},

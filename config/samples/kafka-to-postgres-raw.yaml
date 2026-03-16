@@ -10,7 +10,7 @@ metadata:
   name: kafka-to-postgres-raw
   namespace: dataflow-staging
 spec:
-  channelBufferSize: 500   # буфер каналов source→processor→sink (по умолчанию 100)
+  channelBufferSize: 1000   # буфер каналов source→processor→sink (по умолчанию 100)
   source:
     type: kafka
     config:

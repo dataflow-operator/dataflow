@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,6 +41,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Register metrics
 	"github.com/dataflow-operator/dataflow/internal/processor"
+	"github.com/dataflow-operator/dataflow/internal/sentry"
 )
 
 func main() {
@@ -56,6 +58,11 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	if err := sentry.Init(); err != nil {
+		log.Printf("Sentry init failed: %v", err)
+	}
+	defer sentry.Flush()
 
 	// Log level: LOG_LEVEL env var (debug, info, warn, error) or flags
 	levelEnabler := processorLevelFromEnv(os.Getenv("LOG_LEVEL"), opts.Level)

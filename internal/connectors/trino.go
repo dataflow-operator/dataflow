@@ -38,10 +38,10 @@ type TrinoSourceConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
-	config          *v1.TrinoSourceSpec
-	client          *trinoClient
-	lastReadID      interface{} // advanced only on Ack (after sink write)
-	readStateMu     sync.Mutex  // protects lastReadID
+	config            *v1.TrinoSourceSpec
+	client            *trinoClient
+	lastReadID        interface{} // advanced only on Ack (after sink write)
+	readStateMu       sync.Mutex  // protects lastReadID
 	checkpointStore   checkpoint.Store
 	sourceType        string
 	channelBufferSize int

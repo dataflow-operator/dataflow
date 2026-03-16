@@ -513,6 +513,16 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	}
 	assert.True(t, hasLogLevel, "processor container should have LOG_LEVEL env")
 
+	// Without SENTRY_DSN, processor should not have Sentry env vars
+	var hasSentryDSN bool
+	for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "SENTRY_DSN" {
+			hasSentryDSN = true
+			break
+		}
+	}
+	assert.False(t, hasSentryDSN, "processor should not have SENTRY_DSN when not set in operator")
+
 	// Verify ConfigMap was created
 	var configMap corev1.ConfigMap
 	configMapName := types.NamespacedName{
@@ -524,6 +534,59 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	assert.Contains(t, configMap.Data, "spec.json")
 
 	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestDataFlowReconciler_Reconcile_ProcessorGetsSentryEnvWhenSet(t *testing.T) {
+	prevDSN := os.Getenv("SENTRY_DSN")
+	prevEnv := os.Getenv("SENTRY_ENVIRONMENT")
+	defer func() {
+		_ = os.Setenv("SENTRY_DSN", prevDSN)
+		_ = os.Setenv("SENTRY_ENVIRONMENT", prevEnv)
+	}()
+	require.NoError(t, os.Setenv("SENTRY_DSN", "https://key@o0.ingest.sentry.io/1"))
+	require.NoError(t, os.Setenv("SENTRY_ENVIRONMENT", "staging"))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-dataflow", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-dataflow", Namespace: "default"}}
+	_, _ = reconciler.Reconcile(ctx, req)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+
+	env := deployment.Spec.Template.Spec.Containers[0].Env
+	var dsnVal, envVal string
+	for _, e := range env {
+		if e.Name == "SENTRY_DSN" {
+			dsnVal = e.Value
+		}
+		if e.Name == "SENTRY_ENVIRONMENT" {
+			envVal = e.Value
+		}
+	}
+	assert.Equal(t, "https://key@o0.ingest.sentry.io/1", dsnVal, "processor should have SENTRY_DSN from operator env")
+	assert.Equal(t, "staging", envVal, "processor should have SENTRY_ENVIRONMENT from operator env")
 }
 
 func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorImage(t *testing.T) {

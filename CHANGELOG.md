@@ -1,3 +1,7 @@
+### Added
+
+- **Sentry** integration for error monitoring and tracing. Operator and processor pods report to Sentry when `SENTRY_DSN` is set. Helm chart supports `sentry.enabled`, `sentry.dsn`, `sentry.environment`, `sentry.tracesSampleRate`, `sentry.debug`, `sentry.release`.
+
 ## [1.0.9](https://github.com/dataflow-operator/dataflow/compare/v1.0.8...v1.0.9) (2026-03-16)
 
 ### Added
