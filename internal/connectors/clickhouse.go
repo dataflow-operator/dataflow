@@ -41,6 +41,7 @@ import (
 type ClickHouseSourceConnector struct {
 	baseConnectorRWMutex
 	connectorLogger
+	connectorMetadata
 	config          *v1.ClickHouseSourceSpec
 	conn            *sql.DB
 	lastReadID      int64      // Track last read ID to avoid duplicates
@@ -58,8 +59,9 @@ func NewClickHouseSourceConnector(config *v1.ClickHouseSourceSpec) *ClickHouseSo
 // NewClickHouseSourceConnectorWithOptions creates a ClickHouse source connector with optional checkpoint persistence.
 func NewClickHouseSourceConnectorWithOptions(config *v1.ClickHouseSourceSpec, opts *SourceConnectorOptions) *ClickHouseSourceConnector {
 	c := &ClickHouseSourceConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "clickhouse", connectorRole: "source"},
 	}
 	if opts != nil {
 		c.checkpointStore = opts.CheckpointStore
@@ -132,34 +134,12 @@ func (c *ClickHouseSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 	if c.conn == nil {
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
-
 	c.logger.Info("Starting to read from ClickHouse", "table", c.config.Table)
-	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
-
-	go func() {
-		defer close(msgChan)
-
-		pollInterval := 5 * time.Second
-		if c.config.PollInterval != nil {
-			pollInterval = time.Duration(*c.config.PollInterval) * time.Second
-		}
-
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-
-		c.readRows(ctx, msgChan)
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				c.readRows(ctx, msgChan)
-			}
-		}
-	}()
-
-	return msgChan, nil
+	pollInterval := 5 * time.Second
+	if c.config.PollInterval != nil {
+		pollInterval = time.Duration(*c.config.PollInterval) * time.Second
+	}
+	return runPollingRead(ctx, pollInterval, c.readRows), nil
 }
 
 func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {
@@ -367,6 +347,8 @@ func (c *ClickHouseSourceConnector) Close() error {
 type ClickHouseSinkConnector struct {
 	baseConnector
 	connectorLogger
+	connectorMetadata
+	rawModeConfig
 	config         *v1.ClickHouseSinkSpec
 	conn           *sql.DB
 	firstWriteOnce sync.Once
@@ -375,8 +357,10 @@ type ClickHouseSinkConnector struct {
 // NewClickHouseSinkConnector creates a new ClickHouse sink connector
 func NewClickHouseSinkConnector(config *v1.ClickHouseSinkSpec) *ClickHouseSinkConnector {
 	return &ClickHouseSinkConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "clickhouse", connectorRole: "sink"},
+		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
 	}
 }
 
@@ -412,10 +396,6 @@ func (c *ClickHouseSinkConnector) Connect(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (c *ClickHouseSinkConnector) rawMode() bool {
-	return c.config.RawMode != nil && *c.config.RawMode
 }
 
 func (c *ClickHouseSinkConnector) tableExists(ctx context.Context) (bool, error) {

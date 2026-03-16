@@ -90,64 +90,41 @@ type SourceSpec struct {
 	Config *runtime.RawExtension `json:"config,omitempty"`
 }
 
-// GetKafkaConfig returns Kafka config from Config.
-func (s *SourceSpec) GetKafkaConfig() (*KafkaSourceSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
+// getTypedConfig unmarshals a RawExtension into the given type T.
+func getTypedConfig[T any](raw *runtime.RawExtension) (*T, error) {
+	if raw == nil || len(raw.Raw) == 0 {
 		return nil, nil
 	}
-	var k KafkaSourceSpec
-	if err := json.Unmarshal(s.Config.Raw, &k); err != nil {
+	var cfg T
+	if err := json.Unmarshal(raw.Raw, &cfg); err != nil {
 		return nil, err
 	}
-	return &k, nil
+	return &cfg, nil
+}
+
+// GetKafkaConfig returns Kafka config from Config.
+func (s *SourceSpec) GetKafkaConfig() (*KafkaSourceSpec, error) {
+	return getTypedConfig[KafkaSourceSpec](s.Config)
 }
 
 // GetPostgreSQLConfig returns PostgreSQL config.
 func (s *SourceSpec) GetPostgreSQLConfig() (*PostgreSQLSourceSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var p PostgreSQLSourceSpec
-	if err := json.Unmarshal(s.Config.Raw, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return getTypedConfig[PostgreSQLSourceSpec](s.Config)
 }
 
 // GetTrinoConfig returns Trino config.
 func (s *SourceSpec) GetTrinoConfig() (*TrinoSourceSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var t TrinoSourceSpec
-	if err := json.Unmarshal(s.Config.Raw, &t); err != nil {
-		return nil, err
-	}
-	return &t, nil
+	return getTypedConfig[TrinoSourceSpec](s.Config)
 }
 
 // GetClickHouseConfig returns ClickHouse config.
 func (s *SourceSpec) GetClickHouseConfig() (*ClickHouseSourceSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c ClickHouseSourceSpec
-	if err := json.Unmarshal(s.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[ClickHouseSourceSpec](s.Config)
 }
 
 // GetNessieConfig returns Nessie config.
 func (s *SourceSpec) GetNessieConfig() (*NessieSourceSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var n NessieSourceSpec
-	if err := json.Unmarshal(s.Config.Raw, &n); err != nil {
-		return nil, err
-	}
-	return &n, nil
+	return getTypedConfig[NessieSourceSpec](s.Config)
 }
 
 // KafkaSourceSpec defines Kafka source configuration
@@ -473,62 +450,27 @@ type SinkSpec struct {
 
 // GetKafkaConfig returns Kafka sink config.
 func (s *SinkSpec) GetKafkaConfig() (*KafkaSinkSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var k KafkaSinkSpec
-	if err := json.Unmarshal(s.Config.Raw, &k); err != nil {
-		return nil, err
-	}
-	return &k, nil
+	return getTypedConfig[KafkaSinkSpec](s.Config)
 }
 
 // GetPostgreSQLConfig returns PostgreSQL sink config.
 func (s *SinkSpec) GetPostgreSQLConfig() (*PostgreSQLSinkSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var p PostgreSQLSinkSpec
-	if err := json.Unmarshal(s.Config.Raw, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return getTypedConfig[PostgreSQLSinkSpec](s.Config)
 }
 
 // GetTrinoConfig returns Trino sink config.
 func (s *SinkSpec) GetTrinoConfig() (*TrinoSinkSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var t TrinoSinkSpec
-	if err := json.Unmarshal(s.Config.Raw, &t); err != nil {
-		return nil, err
-	}
-	return &t, nil
+	return getTypedConfig[TrinoSinkSpec](s.Config)
 }
 
 // GetClickHouseConfig returns ClickHouse sink config.
 func (s *SinkSpec) GetClickHouseConfig() (*ClickHouseSinkSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c ClickHouseSinkSpec
-	if err := json.Unmarshal(s.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[ClickHouseSinkSpec](s.Config)
 }
 
 // GetNessieConfig returns Nessie sink config.
 func (s *SinkSpec) GetNessieConfig() (*NessieSinkSpec, error) {
-	if s.Config == nil || len(s.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var n NessieSinkSpec
-	if err := json.Unmarshal(s.Config.Raw, &n); err != nil {
-		return nil, err
-	}
-	return &n, nil
+	return getTypedConfig[NessieSinkSpec](s.Config)
 }
 
 // NessieSinkSpec defines Nessie (Iceberg REST catalog) sink configuration.
@@ -828,110 +770,47 @@ type TransformationSpec struct {
 
 // GetTimestampConfig returns Timestamp transformation config.
 func (t *TransformationSpec) GetTimestampConfig() (*TimestampTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c TimestampTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[TimestampTransformation](t.Config)
 }
 
 // GetFlattenConfig returns Flatten transformation config.
 func (t *TransformationSpec) GetFlattenConfig() (*FlattenTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c FlattenTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[FlattenTransformation](t.Config)
 }
 
 // GetFilterConfig returns Filter transformation config.
 func (t *TransformationSpec) GetFilterConfig() (*FilterTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c FilterTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[FilterTransformation](t.Config)
 }
 
 // GetMaskConfig returns Mask transformation config.
 func (t *TransformationSpec) GetMaskConfig() (*MaskTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c MaskTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[MaskTransformation](t.Config)
 }
 
 // GetRouterConfig returns Router transformation config.
 func (t *TransformationSpec) GetRouterConfig() (*RouterTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c RouterTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[RouterTransformation](t.Config)
 }
 
 // GetSelectConfig returns Select transformation config.
 func (t *TransformationSpec) GetSelectConfig() (*SelectTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c SelectTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[SelectTransformation](t.Config)
 }
 
 // GetRemoveConfig returns Remove transformation config.
 func (t *TransformationSpec) GetRemoveConfig() (*RemoveTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c RemoveTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[RemoveTransformation](t.Config)
 }
 
 // GetSnakeCaseConfig returns SnakeCase transformation config.
 func (t *TransformationSpec) GetSnakeCaseConfig() (*SnakeCaseTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c SnakeCaseTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[SnakeCaseTransformation](t.Config)
 }
 
 // GetCamelCaseConfig returns CamelCase transformation config.
 func (t *TransformationSpec) GetCamelCaseConfig() (*CamelCaseTransformation, error) {
-	if t.Config == nil || len(t.Config.Raw) == 0 {
-		return nil, nil
-	}
-	var c CamelCaseTransformation
-	if err := json.Unmarshal(t.Config.Raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return getTypedConfig[CamelCaseTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field

@@ -46,46 +46,14 @@ func (s *SnakeCaseTransformer) Transform(ctx context.Context, message *types.Mes
 		return []*types.Message{message}, nil
 	}
 
-	converted := s.convertKeys(data, s.config.Deep)
+	converted := convertKeysRecursive(data, s.config.Deep, toSnakeCase)
 
 	jsonData, err := json.Marshal(converted)
 	if err != nil {
 		return nil, err
 	}
 
-	newMsg := types.NewMessage(jsonData)
-	newMsg.Metadata = message.Metadata
-	newMsg.Timestamp = message.Timestamp
-	return []*types.Message{newMsg}, nil
-}
-
-// convertKeys recursively converts keys in the data structure
-func (s *SnakeCaseTransformer) convertKeys(data interface{}, deep bool) interface{} {
-	switch v := data.(type) {
-	case map[string]interface{}:
-		result := make(map[string]interface{})
-		for key, value := range v {
-			newKey := toSnakeCase(key)
-			if deep {
-				result[newKey] = s.convertKeys(value, deep)
-			} else {
-				result[newKey] = value
-			}
-		}
-		return result
-	case []interface{}:
-		result := make([]interface{}, len(v))
-		for i, item := range v {
-			if deep {
-				result[i] = s.convertKeys(item, deep)
-			} else {
-				result[i] = item
-			}
-		}
-		return result
-	default:
-		return data
-	}
+	return []*types.Message{newMessageFrom(message, jsonData)}, nil
 }
 
 // toSnakeCase converts a string to snake_case

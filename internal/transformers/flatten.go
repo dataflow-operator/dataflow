@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -47,21 +46,10 @@ func (f *FlattenTransformer) SetLogger(logger logr.Logger) {
 	f.logger = logger
 }
 
-// normalizeFieldPath normalizes JSONPath field (removes $. prefix if present)
-func (f *FlattenTransformer) normalizeFieldPath(field string) string {
-	// Remove $. prefix if present (gjson doesn't need it for root fields)
-	if strings.HasPrefix(field, "$.") {
-		return field[2:]
-	} else if strings.HasPrefix(field, "$") {
-		return field[1:]
-	}
-	return field
-}
-
 // Transform flattens the array field into multiple messages
 func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
 	// Normalize field path
-	fieldPath := f.normalizeFieldPath(f.config.Field)
+	fieldPath := normalizeFieldPath(f.config.Field)
 
 	// Get the array field using JSONPath
 	result := gjson.GetBytes(message.Data, fieldPath)
@@ -124,9 +112,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 		delete(originalData, fieldPath)
 		delete(originalData, f.config.Field)
 		newData, _ := json.Marshal(originalData)
-		newMsg := types.NewMessage(newData)
-		newMsg.Metadata = message.Metadata
-		newMsg.Timestamp = message.Timestamp
+		newMsg := newMessageFrom(message, newData)
 		return []*types.Message{newMsg}, nil
 	}
 
@@ -162,9 +148,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 			continue
 		}
 
-		newMsg := types.NewMessage(jsonData)
-		newMsg.Metadata = message.Metadata
-		newMsg.Timestamp = message.Timestamp
+		newMsg := newMessageFrom(message, jsonData)
 		messages = append(messages, newMsg)
 	}
 

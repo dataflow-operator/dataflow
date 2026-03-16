@@ -226,7 +226,6 @@ func TestPostgreSQLSinkConnector_trySoftDelete(t *testing.T) {
 	}
 }
 
-func ptrBool(v bool) *bool           { return &v }
 func ptrTime(v time.Time) *time.Time { return &v }
 
 func msgWithOpAndID(op string, id int) *types.Message {
@@ -366,24 +365,6 @@ func TestPostgreSQLSinkConnector_buildInsertForMessage_RawMode_PlainMessage(t *t
 	assert.Equal(t, "products", metaMap["table"])
 	assert.Equal(t, float64(1), metaMap["id"])
 	assert.Equal(t, "insert", metaMap["operation"])
-}
-
-func TestPostgreSQLSinkConnector_rawMode(t *testing.T) {
-	tests := []struct {
-		name   string
-		config *v1.PostgreSQLSinkSpec
-		want   bool
-	}{
-		{"nil", &v1.PostgreSQLSinkSpec{}, false},
-		{"false", &v1.PostgreSQLSinkSpec{RawMode: ptrBool(false)}, false},
-		{"true", &v1.PostgreSQLSinkSpec{RawMode: ptrBool(true)}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := NewPostgreSQLSinkConnector(tt.config)
-			assert.Equal(t, tt.want, p.rawMode())
-		})
-	}
 }
 
 // TestPostgreSQLConnectors_ImplementSetMetadata verifies both PostgreSQL connectors

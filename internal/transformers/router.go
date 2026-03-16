@@ -79,12 +79,7 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 				"fieldPath", fieldPath)
 		}
 
-		// Remove $. prefix if present (gjson doesn't need it for root fields)
-		if strings.HasPrefix(fieldPath, "$.") {
-			fieldPath = fieldPath[2:]
-		} else if strings.HasPrefix(fieldPath, "$") {
-			fieldPath = fieldPath[1:]
-		}
+		fieldPath = normalizeFieldPath(fieldPath)
 
 		// Evaluate the condition
 		result := gjson.GetBytes(message.Data, fieldPath)
@@ -111,19 +106,7 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 				"match", isTrue)
 		} else {
 			// For simple existence check, use truthiness
-			value := result.Value()
-			switch v := value.(type) {
-			case bool:
-				isTrue = v
-			case string:
-				isTrue = v != "" && v != "false"
-			case float64:
-				isTrue = v != 0
-			case nil:
-				isTrue = false
-			default:
-				isTrue = true
-			}
+			isTrue = isTruthy(result.Value())
 		}
 
 		if isTrue {

@@ -17,108 +17,49 @@ limitations under the License.
 package transformers
 
 import (
+	"encoding/json"
 	"fmt"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// transformerEntry defines how to create a transformer from raw config.
+type transformerEntry struct {
+	create func(raw *runtime.RawExtension) (Transformer, error)
+}
+
+var transformerRegistry = map[string]transformerEntry{
+	"timestamp": {create: createTransformer[v1.TimestampTransformation]("timestamp", func(cfg *v1.TimestampTransformation) Transformer { return NewTimestampTransformer(cfg) })},
+	"flatten":   {create: createTransformer[v1.FlattenTransformation]("flatten", func(cfg *v1.FlattenTransformation) Transformer { return NewFlattenTransformer(cfg) })},
+	"filter":    {create: createTransformer[v1.FilterTransformation]("filter", func(cfg *v1.FilterTransformation) Transformer { return NewFilterTransformer(cfg) })},
+	"mask":      {create: createTransformer[v1.MaskTransformation]("mask", func(cfg *v1.MaskTransformation) Transformer { return NewMaskTransformer(cfg) })},
+	"router":    {create: createTransformer[v1.RouterTransformation]("router", func(cfg *v1.RouterTransformation) Transformer { return NewRouterTransformer(cfg) })},
+	"select":    {create: createTransformer[v1.SelectTransformation]("select", func(cfg *v1.SelectTransformation) Transformer { return NewSelectTransformer(cfg) })},
+	"remove":    {create: createTransformer[v1.RemoveTransformation]("remove", func(cfg *v1.RemoveTransformation) Transformer { return NewRemoveTransformer(cfg) })},
+	"snakeCase": {create: createTransformer[v1.SnakeCaseTransformation]("snakeCase", func(cfg *v1.SnakeCaseTransformation) Transformer { return NewSnakeCaseTransformer(cfg) })},
+	"camelCase": {create: createTransformer[v1.CamelCaseTransformation]("camelCase", func(cfg *v1.CamelCaseTransformation) Transformer { return NewCamelCaseTransformer(cfg) })},
+}
+
+// createTransformer returns a factory function that unmarshals raw config into T and calls newFn.
+func createTransformer[T any](typeName string, newFn func(*T) Transformer) func(*runtime.RawExtension) (Transformer, error) {
+	return func(raw *runtime.RawExtension) (Transformer, error) {
+		if raw == nil {
+			return nil, fmt.Errorf("%s transformation configuration is required", typeName)
+		}
+		var cfg T
+		if err := json.Unmarshal(raw.Raw, &cfg); err != nil {
+			return nil, fmt.Errorf("configuration: %w", err)
+		}
+		return newFn(&cfg), nil
+	}
+}
+
 // CreateTransformer creates a transformer based on the transformation spec.
-// Supports both config (type+config) and legacy (type+timestamp/flatten/etc) formats.
 func CreateTransformer(transformation *v1.TransformationSpec) (Transformer, error) {
-	switch transformation.Type {
-	case "timestamp":
-		cfg, err := transformation.GetTimestampConfig()
-		if err != nil {
-			return nil, fmt.Errorf("timestamp transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("timestamp transformation configuration is required")
-		}
-		return NewTimestampTransformer(cfg), nil
-	case "flatten":
-		cfg, err := transformation.GetFlattenConfig()
-		if err != nil {
-			return nil, fmt.Errorf("flatten transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("flatten transformation configuration is required")
-		}
-		return NewFlattenTransformer(cfg), nil
-	case "filter":
-		cfg, err := transformation.GetFilterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("filter transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("filter transformation configuration is required")
-		}
-		return NewFilterTransformer(cfg), nil
-	case "mask":
-		cfg, err := transformation.GetMaskConfig()
-		if err != nil {
-			return nil, fmt.Errorf("mask transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("mask transformation configuration is required")
-		}
-		return NewMaskTransformer(cfg), nil
-	case "router":
-		cfg, err := transformation.GetRouterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("router transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("router transformation configuration is required")
-		}
-		return NewRouterTransformer(cfg), nil
-	case "select":
-		cfg, err := transformation.GetSelectConfig()
-		if err != nil {
-			return nil, fmt.Errorf("select transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("select transformation configuration is required")
-		}
-		return NewSelectTransformer(cfg), nil
-	case "remove":
-		cfg, err := transformation.GetRemoveConfig()
-		if err != nil {
-			return nil, fmt.Errorf("remove transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("remove transformation configuration is required")
-		}
-		return NewRemoveTransformer(cfg), nil
-	case "snakeCase":
-		cfg, err := transformation.GetSnakeCaseConfig()
-		if err != nil {
-			return nil, fmt.Errorf("snakeCase transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("snakeCase transformation configuration is required")
-		}
-		return NewSnakeCaseTransformer(cfg), nil
-	case "camelCase":
-		cfg, err := transformation.GetCamelCaseConfig()
-		if err != nil {
-			return nil, fmt.Errorf("camelCase transformation configuration: %w", err)
-		}
-		if cfg == nil {
-			return nil, fmt.Errorf("camelCase transformation configuration is required")
-		}
-		return NewCamelCaseTransformer(cfg), nil
-	// TODO: replaceField and headerFrom transformations are not yet implemented in API
-	// case "replaceField":
-	// 	if transformation.ReplaceField == nil {
-	// 		return nil, fmt.Errorf("replaceField transformation configuration is required")
-	// 	}
-	// 	return NewReplaceFieldTransformer(transformation.ReplaceField), nil
-	// case "headerFrom":
-	// 	if transformation.HeaderFrom == nil {
-	// 		return nil, fmt.Errorf("headerFrom transformation configuration is required")
-	// 	}
-	// 	return NewHeaderFromTransformer(transformation.HeaderFrom), nil
-	default:
+	entry, ok := transformerRegistry[transformation.Type]
+	if !ok {
 		return nil, fmt.Errorf("unsupported transformation type: %s", transformation.Type)
 	}
+	return entry.create(transformation.Config)
 }

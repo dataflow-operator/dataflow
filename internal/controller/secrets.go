@@ -599,103 +599,54 @@ func isCertificateContent(value string) bool {
 	return strings.HasPrefix(trimmed, "-----BEGIN")
 }
 
-func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string, config *dataflowv1.TLSConfig) error {
-	if config.CertSecretRef != nil {
-		value, err := r.ResolveSecretValue(ctx, namespace, config.CertSecretRef)
+// resolveTLSField resolves a secret reference for a TLS field (cert, key, or CA) into a file path.
+func (r *SecretResolver) resolveTLSField(ctx context.Context, namespace string, secretRef *dataflowv1.SecretRef, fieldName string) (string, error) {
+	value, err := r.ResolveSecretValue(ctx, namespace, secretRef)
+	if err != nil {
+		return "", err
+	}
+	return r.ensureTLSFile(ctx, value, fieldName)
+}
+
+// ensureTLSFile materializes a TLS-related value (cert, key, or CA) into a file path.
+// If the value is certificate content or doesn't point to an existing file, a temp file is created.
+func (r *SecretResolver) ensureTLSFile(ctx context.Context, value, fieldName string) (string, error) {
+	if isCertificateContent(value) {
+		tempFile, err := r.createTempFile(fieldName+"-", []byte(value))
 		if err != nil {
-			return err
+			return "", fmt.Errorf("failed to create temporary %s file: %w", fieldName, err)
 		}
-		// Check if value is a file path or certificate content
-		// If it starts with -----BEGIN, it's certificate content
-		if isCertificateContent(value) {
-			// Value is certificate content, create temporary file
-			tempFile, err := r.createTempFile("cert-", []byte(value))
-			if err != nil {
-				return fmt.Errorf("failed to create temporary cert file: %w", err)
-			}
-			config.CertFile = tempFile
-		} else {
-			// Check if it's a valid file path
-			if _, err := os.Stat(value); err == nil {
-				// Value is a file path
-				config.CertFile = value
-			} else {
-				// Treat as certificate content if file doesn't exist
-				tempFile, err := r.createTempFile("cert-", []byte(value))
-				if err != nil {
-					return fmt.Errorf("failed to create temporary cert file: %w", err)
-				}
-				config.CertFile = tempFile
-			}
+		return tempFile, nil
+	}
+	if _, err := os.Stat(value); err == nil {
+		return value, nil
+	}
+	tempFile, err := r.createTempFile(fieldName+"-", []byte(value))
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary %s file: %w", fieldName, err)
+	}
+	return tempFile, nil
+}
+
+func (r *SecretResolver) resolveTLSConfig(ctx context.Context, namespace string, config *dataflowv1.TLSConfig) error {
+	var err error
+
+	if config.CertSecretRef != nil {
+		if config.CertFile, err = r.resolveTLSField(ctx, namespace, config.CertSecretRef, "cert"); err != nil {
+			return err
 		}
 	}
 
 	if config.KeySecretRef != nil {
-		value, err := r.ResolveSecretValue(ctx, namespace, config.KeySecretRef)
-		if err != nil {
+		if config.KeyFile, err = r.resolveTLSField(ctx, namespace, config.KeySecretRef, "key"); err != nil {
 			return err
-		}
-		// Check if value is a file path or key content
-		// If it starts with -----BEGIN, it's key content
-		if isCertificateContent(value) {
-			// Value is key content, create temporary file
-			tempFile, err := r.createTempFile("key-", []byte(value))
-			if err != nil {
-				return fmt.Errorf("failed to create temporary key file: %w", err)
-			}
-			config.KeyFile = tempFile
-		} else {
-			// Check if it's a valid file path
-			if _, err := os.Stat(value); err == nil {
-				// Value is a file path
-				config.KeyFile = value
-			} else {
-				// Treat as key content if file doesn't exist
-				tempFile, err := r.createTempFile("key-", []byte(value))
-				if err != nil {
-					return fmt.Errorf("failed to create temporary key file: %w", err)
-				}
-				config.KeyFile = tempFile
-			}
 		}
 	}
 
 	if config.CASecretRef != nil {
-		value, err := r.ResolveSecretValue(ctx, namespace, config.CASecretRef)
-		if err != nil {
-			return fmt.Errorf("failed to resolve CA secret %s/%s key %s: %w",
-				config.CASecretRef.Namespace, config.CASecretRef.Name, config.CASecretRef.Key, err)
+		if config.CAFile, err = r.resolveTLSField(ctx, namespace, config.CASecretRef, "CA"); err != nil {
+			return err
 		}
-		// Check if value is certificate content
-		isContent := isCertificateContent(value)
-		// Check if value is a file path or CA certificate content
-		// If it starts with -----BEGIN, it's CA certificate content
-		if isContent {
-			// Value is CA certificate content, create temporary file
-			tempFile, err := r.createTempFile("ca-", []byte(value))
-			if err != nil {
-				return fmt.Errorf("failed to create temporary CA file: %w", err)
-			}
-			config.CAFile = tempFile
-			// Log successful creation
-			if stat, err := os.Stat(tempFile); err == nil {
-				_ = stat // File exists and has size
-			}
-		} else {
-			// Check if it's a valid file path
-			if _, err := os.Stat(value); err == nil {
-				// Value is a file path
-				config.CAFile = value
-			} else {
-				// Treat as CA certificate content if file doesn't exist
-				tempFile, err := r.createTempFile("ca-", []byte(value))
-				if err != nil {
-					return fmt.Errorf("failed to create temporary CA file: %w", err)
-				}
-				config.CAFile = tempFile
-			}
-		}
-		// Verify file exists and is readable
 		if config.CAFile != "" {
 			if stat, err := os.Stat(config.CAFile); err != nil {
 				return fmt.Errorf("CA file %s does not exist or is not readable: %w", config.CAFile, err)

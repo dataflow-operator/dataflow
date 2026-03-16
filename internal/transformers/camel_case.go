@@ -46,46 +46,14 @@ func (c *CamelCaseTransformer) Transform(ctx context.Context, message *types.Mes
 		return []*types.Message{message}, nil
 	}
 
-	converted := c.convertKeys(data, c.config.Deep)
+	converted := convertKeysRecursive(data, c.config.Deep, toCamelCase)
 
 	jsonData, err := json.Marshal(converted)
 	if err != nil {
 		return nil, err
 	}
 
-	newMsg := types.NewMessage(jsonData)
-	newMsg.Metadata = message.Metadata
-	newMsg.Timestamp = message.Timestamp
-	return []*types.Message{newMsg}, nil
-}
-
-// convertKeys recursively converts keys in the data structure
-func (c *CamelCaseTransformer) convertKeys(data interface{}, deep bool) interface{} {
-	switch v := data.(type) {
-	case map[string]interface{}:
-		result := make(map[string]interface{})
-		for key, value := range v {
-			newKey := toCamelCase(key)
-			if deep {
-				result[newKey] = c.convertKeys(value, deep)
-			} else {
-				result[newKey] = value
-			}
-		}
-		return result
-	case []interface{}:
-		result := make([]interface{}, len(v))
-		for i, item := range v {
-			if deep {
-				result[i] = c.convertKeys(item, deep)
-			} else {
-				result[i] = item
-			}
-		}
-		return result
-	default:
-		return data
-	}
+	return []*types.Message{newMessageFrom(message, jsonData)}, nil
 }
 
 // toCamelCase converts a string to CamelCase

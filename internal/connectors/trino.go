@@ -20,8 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +37,9 @@ import (
 type TrinoSourceConnector struct {
 	baseConnector
 	connectorLogger
+	connectorMetadata
 	config          *v1.TrinoSourceSpec
-	httpClient      *http.Client
-	keycloakAuth    *KeycloakAuth
+	client          *trinoClient
 	lastReadID      interface{} // advanced only on Ack (after sink write)
 	readStateMu     sync.Mutex  // protects lastReadID
 	checkpointStore checkpoint.Store
@@ -56,8 +54,9 @@ func NewTrinoSourceConnector(config *v1.TrinoSourceSpec) *TrinoSourceConnector {
 // NewTrinoSourceConnectorWithOptions creates a Trino source connector with optional checkpoint persistence.
 func NewTrinoSourceConnectorWithOptions(config *v1.TrinoSourceSpec, opts *SourceConnectorOptions) *TrinoSourceConnector {
 	t := &TrinoSourceConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "trino", connectorRole: "source"},
 	}
 	if opts != nil {
 		t.checkpointStore = opts.CheckpointStore
@@ -100,301 +99,38 @@ func (t *TrinoSourceConnector) Connect(ctx context.Context) error {
 		"schema", t.config.Schema,
 		"table", t.config.Table)
 
-	// Setup HTTP client
-	t.httpClient = &http.Client{
-		Timeout: 30 * time.Second,
+	client, err := newTrinoClient(ctx, trinoClientConfig{
+		ServerURL: t.config.ServerURL,
+		Catalog:   t.config.Catalog,
+		Schema:    t.config.Schema,
+		Keycloak:  t.config.Keycloak,
+	}, t.logger)
+	if err != nil {
+		return err
 	}
-
-	// Setup OAuth2/Keycloak authentication if configured
-	if t.config.Keycloak != nil {
-		t.keycloakAuth = &KeycloakAuth{
-			config:     t.config.Keycloak,
-			httpClient: t.httpClient,
-			logger:     t.logger,
-		}
-		if err := SetupKeycloakAuth(ctx, t.keycloakAuth); err != nil {
-			return fmt.Errorf("failed to setup Keycloak authentication: %w", err)
-		}
-	}
-
-	// Test connection by executing a simple query
-	testQuery := fmt.Sprintf("SELECT 1")
-	if err := t.testConnection(ctx, testQuery); err != nil {
+	if err := client.testConnection(ctx); err != nil {
 		return fmt.Errorf("failed to connect to Trino: %w", err)
 	}
+	t.client = client
 
 	t.logger.Info("Successfully connected to Trino")
 	return nil
 }
 
-// testConnection tests the connection to Trino
-func (t *TrinoSourceConnector) testConnection(ctx context.Context, query string) error {
-	_, err := t.executeQuery(ctx, query)
-	return err
-}
-
-// executeQuery executes a SQL query on Trino
-func (t *TrinoSourceConnector) executeQuery(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	// Log SQL query for debugging
-	t.logger.Info("Executing SQL query on Trino", "query", query, "catalog", t.config.Catalog, "schema", t.config.Schema)
-
-	// Build Trino query URL
-	queryURL := fmt.Sprintf("%s/v1/statement", strings.TrimSuffix(t.config.ServerURL, "/"))
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "POST", queryURL, strings.NewReader(query))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("X-Trino-User", "dataflow-operator")
-	req.Header.Set("X-Trino-Catalog", t.config.Catalog)
-	req.Header.Set("X-Trino-Schema", t.config.Schema)
-
-	// Add OAuth token if available
-	if t.keycloakAuth != nil {
-		if token := t.keycloakAuth.GetToken(); token != "" {
-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-		}
-	}
-
-	// Execute request
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		t.logger.Error(err, "Failed to execute Trino query", "query", query, "url", queryURL)
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.logger.Error(nil, "Trino query failed", "query", query, "status", resp.StatusCode, "response", string(body))
-		return nil, fmt.Errorf("Trino query failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	var queryResponse TrinoQueryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&queryResponse); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	// Check for errors in initial response
-	if queryResponse.Error != nil {
-		errorMsg := fmt.Sprintf("Trino query failed: %s", queryResponse.Error.Message)
-		if queryResponse.Error.ErrorName != "" {
-			errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, queryResponse.Error.ErrorName, queryResponse.Error.ErrorCode)
-		}
-		if queryResponse.Error.ErrorLocation != nil {
-			errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, queryResponse.Error.ErrorLocation.LineNumber, queryResponse.Error.ErrorLocation.ColumnNumber)
-		}
-		if queryResponse.Error.FailureInfo != nil {
-			errorDetails, _ := json.Marshal(queryResponse.Error.FailureInfo)
-			errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-		}
-		t.logger.Error(nil, "Trino query error in initial response", "query", query, "error", errorMsg, "errorName", queryResponse.Error.ErrorName, "errorCode", queryResponse.Error.ErrorCode)
-		return nil, fmt.Errorf("%s", errorMsg)
-	}
-
-	// Check if query failed in initial response
-	if queryResponse.Stats.State == "FAILED" {
-		errorMsg := "Trino query failed"
-		if queryResponse.Error != nil {
-			errorMsg = fmt.Sprintf("Trino query failed: %s", queryResponse.Error.Message)
-			if queryResponse.Error.ErrorName != "" {
-				errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, queryResponse.Error.ErrorName, queryResponse.Error.ErrorCode)
-			}
-			if queryResponse.Error.ErrorLocation != nil {
-				errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, queryResponse.Error.ErrorLocation.LineNumber, queryResponse.Error.ErrorLocation.ColumnNumber)
-			}
-			if queryResponse.Error.FailureInfo != nil {
-				errorDetails, _ := json.Marshal(queryResponse.Error.FailureInfo)
-				errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-			}
-		} else {
-			// If no error object, log the full response for debugging
-			responseBody, _ := json.Marshal(queryResponse)
-			errorMsg = fmt.Sprintf("Trino query failed with state FAILED. Response: %s", string(responseBody))
-		}
-		t.logger.Error(nil, "Trino query failed in initial response", "query", query, "state", queryResponse.Stats.State, "error", errorMsg)
-		return nil, fmt.Errorf("%s", errorMsg)
-	}
-
-	// Check if this is an INSERT/UPDATE/DELETE statement (no data returned)
-	isDMLStatement := strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "INSERT") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "UPDATE") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "DELETE") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "CREATE") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "DROP") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "ALTER")
-
-	// Follow nextUri if present and collect all data
-	// For INSERT statements, we need to follow nextURI until query is complete
-	allDataRows := make([][]interface{}, 0)
-	if queryResponse.Data != nil {
-		allDataRows = append(allDataRows, queryResponse.Data...)
-	}
-
-	nextURI := queryResponse.NextURI
-	columns := queryResponse.Columns
-	queryState := queryResponse.Stats.State
-
-	for nextURI != "" {
-		t.logger.Info("Following next URI for Trino query", "nextURI", nextURI, "query", query, "state", queryState)
-		nextResp, err := t.httpClient.Get(nextURI)
-		if err != nil {
-			t.logger.Error(err, "Failed to follow next URI", "nextURI", nextURI, "query", query)
-			return nil, fmt.Errorf("failed to follow next URI: %w", err)
-		}
-		defer nextResp.Body.Close()
-
-		if nextResp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(nextResp.Body)
-			t.logger.Error(nil, "Trino next URI request failed", "nextURI", nextURI, "status", nextResp.StatusCode, "response", string(body))
-			return nil, fmt.Errorf("Trino query failed with status %d: %s", nextResp.StatusCode, string(body))
-		}
-
-		var nextResponse TrinoQueryResponse
-		if err := json.NewDecoder(nextResp.Body).Decode(&nextResponse); err != nil {
-			t.logger.Error(err, "Failed to decode next response", "nextURI", nextURI)
-			return nil, fmt.Errorf("failed to decode next response: %w", err)
-		}
-
-		// Update state
-		if nextResponse.Stats.State != "" {
-			queryState = nextResponse.Stats.State
-		}
-
-		// Check for errors in response
-		if nextResponse.Error != nil {
-			errorMsg := fmt.Sprintf("Trino query failed: %s", nextResponse.Error.Message)
-			if nextResponse.Error.ErrorName != "" {
-				errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, nextResponse.Error.ErrorName, nextResponse.Error.ErrorCode)
-			}
-			if nextResponse.Error.ErrorLocation != nil {
-				errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, nextResponse.Error.ErrorLocation.LineNumber, nextResponse.Error.ErrorLocation.ColumnNumber)
-			}
-			if nextResponse.Error.FailureInfo != nil {
-				errorDetails, _ := json.Marshal(nextResponse.Error.FailureInfo)
-				errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-			}
-			t.logger.Error(nil, "Trino query error", "query", query, "error", errorMsg, "errorName", nextResponse.Error.ErrorName, "errorCode", nextResponse.Error.ErrorCode)
-			return nil, fmt.Errorf("%s", errorMsg)
-		}
-
-		// Check if query failed
-		if queryState == "FAILED" {
-			errorMsg := "Trino query failed"
-			if nextResponse.Error != nil {
-				errorMsg = fmt.Sprintf("Trino query failed: %s", nextResponse.Error.Message)
-				if nextResponse.Error.ErrorName != "" {
-					errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, nextResponse.Error.ErrorName, nextResponse.Error.ErrorCode)
-				}
-				if nextResponse.Error.ErrorLocation != nil {
-					errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, nextResponse.Error.ErrorLocation.LineNumber, nextResponse.Error.ErrorLocation.ColumnNumber)
-				}
-				if nextResponse.Error.FailureInfo != nil {
-					errorDetails, _ := json.Marshal(nextResponse.Error.FailureInfo)
-					errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-				}
-			} else {
-				// If no error object, log the full response for debugging
-				responseBody, _ := json.Marshal(nextResponse)
-				errorMsg = fmt.Sprintf("Trino query failed with state FAILED. Response: %s", string(responseBody))
-			}
-			t.logger.Error(nil, "Trino query failed", "query", query, "state", queryState, "error", errorMsg)
-			return nil, fmt.Errorf("%s", errorMsg)
-		}
-
-		// Append data rows (for SELECT queries)
-		if nextResponse.Data != nil {
-			allDataRows = append(allDataRows, nextResponse.Data...)
-		}
-
-		// Update columns if not set yet
-		if len(columns) == 0 && len(nextResponse.Columns) > 0 {
-			columns = nextResponse.Columns
-		}
-
-		// For DML statements, check if query is finished
-		if isDMLStatement && (queryState == "FINISHED" || nextResponse.NextURI == "") {
-			t.logger.Info("DML statement completed", "query", query, "state", queryState)
-			// Return empty results for DML statements
-			return []map[string]interface{}{}, nil
-		}
-
-		nextURI = nextResponse.NextURI
-
-		// If no nextURI and query is finished, break
-		if nextURI == "" && queryState == "FINISHED" {
-			break
-		}
-	}
-
-	// For DML statements (INSERT, UPDATE, DELETE), return empty results
-	if isDMLStatement {
-		t.logger.Info("Trino DML statement executed successfully", "query", query, "state", queryState)
-		return []map[string]interface{}{}, nil
-	}
-
-	// Convert array of arrays to array of maps using column names (for SELECT queries)
-	results := make([]map[string]interface{}, 0, len(allDataRows))
-	for _, row := range allDataRows {
-		rowMap := make(map[string]interface{})
-		for i, value := range row {
-			if i < len(columns) {
-				rowMap[columns[i].Name] = value
-			} else {
-				// Fallback if column count doesn't match
-				rowMap[fmt.Sprintf("col%d", i)] = value
-			}
-		}
-		results = append(results, rowMap)
-	}
-
-	t.logger.Info("Trino query executed successfully", "query", query, "rowsReturned", len(results), "state", queryState)
-
-	return results, nil
-}
-
 // Read returns a channel of messages from Trino
 func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message, error) {
-	if t.httpClient == nil {
+	if t.client == nil {
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
-
-	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
-
-	go func() {
-		defer close(msgChan)
-
-		pollInterval := 5 * time.Second
-		if t.config.PollInterval != nil {
-			pollInterval = time.Duration(*t.config.PollInterval) * time.Second
+	pollInterval := 5 * time.Second
+	if t.config.PollInterval != nil {
+		pollInterval = time.Duration(*t.config.PollInterval) * time.Second
+	}
+	return runPollingRead(ctx, pollInterval, func(ctx context.Context, ch chan *types.Message) {
+		if err := t.readRows(ctx, ch); err != nil {
+			t.logger.Error(err, "Failed to read rows")
 		}
-
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-
-		// Initial read
-		if err := t.readRows(ctx, msgChan); err != nil {
-			t.logger.Error(err, "Failed to read initial rows")
-		}
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := t.readRows(ctx, msgChan); err != nil {
-					t.logger.Error(err, "Failed to read rows")
-				}
-			}
-		}
-	}()
-
-	return msgChan, nil
+	}), nil
 }
 
 func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
@@ -419,7 +155,7 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 		}
 	}
 
-	rows, err := t.executeQuery(ctx, query)
+	rows, err := t.client.executeQuery(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -484,9 +220,10 @@ func (t *TrinoSourceConnector) Close() error {
 type TrinoSinkConnector struct {
 	baseConnector
 	connectorLogger
+	connectorMetadata
+	rawModeConfig
 	config       *v1.TrinoSinkSpec
-	httpClient   *http.Client
-	keycloakAuth *KeycloakAuth
+	client       *trinoClient
 	tableColumns []TableColumnInfo // Cached table columns with types
 	columnsMu    sync.RWMutex
 }
@@ -494,8 +231,10 @@ type TrinoSinkConnector struct {
 // NewTrinoSinkConnector creates a new Trino sink connector
 func NewTrinoSinkConnector(config *v1.TrinoSinkSpec) *TrinoSinkConnector {
 	return &TrinoSinkConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "trino", connectorRole: "sink"},
+		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
 	}
 }
 
@@ -512,25 +251,19 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 		"schema", t.config.Schema,
 		"table", t.config.Table)
 
-	// Setup HTTP client
-	t.httpClient = &http.Client{
-		Timeout: 30 * time.Second,
+	client, err := newTrinoClient(ctx, trinoClientConfig{
+		ServerURL: t.config.ServerURL,
+		Catalog:   t.config.Catalog,
+		Schema:    t.config.Schema,
+		Keycloak:  t.config.Keycloak,
+	}, t.logger)
+	if err != nil {
+		return err
 	}
-
-	// Setup OAuth2/Keycloak authentication if configured
-	if t.config.Keycloak != nil {
-		t.keycloakAuth = &KeycloakAuth{
-			config:     t.config.Keycloak,
-			httpClient: t.httpClient,
-			logger:     t.logger,
-		}
-		if err := SetupKeycloakAuth(ctx, t.keycloakAuth); err != nil {
-			return fmt.Errorf("failed to setup Keycloak authentication: %w", err)
-		}
-	}
+	t.client = client
 
 	// Connect with retry on transient errors (503/502 from proxy, Trino overload, timeouts)
-	err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
+	err = retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 		// Only create table in Connect when rawMode (structure known). Non-rawMode defers to first write or table must exist.
 		if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable && t.rawMode() {
 			if err := t.ensureTable(ctx); err != nil {
@@ -544,8 +277,7 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 		t.columnsMu.Lock()
 		t.tableColumns = columns
 		t.columnsMu.Unlock()
-		testQuery := "SELECT 1"
-		if err := t.testConnection(ctx, testQuery); err != nil {
+		if err := t.client.testConnection(ctx); err != nil {
 			return fmt.Errorf("failed to connect to Trino: %w", err)
 		}
 		return nil
@@ -556,241 +288,6 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 
 	t.logger.Info("Successfully connected to Trino", "tableColumns", t.tableColumns)
 	return nil
-}
-
-func (t *TrinoSinkConnector) rawMode() bool {
-	return t.config.RawMode != nil && *t.config.RawMode
-}
-
-// testConnection tests the connection to Trino
-func (t *TrinoSinkConnector) testConnection(ctx context.Context, query string) error {
-	_, err := t.executeQuery(ctx, query)
-	return err
-}
-
-// executeQuery executes a SQL query on Trino
-func (t *TrinoSinkConnector) executeQuery(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	// Log SQL query for debugging
-	t.logger.Info("Executing SQL query on Trino", "query", query, "catalog", t.config.Catalog, "schema", t.config.Schema)
-
-	// Build Trino query URL
-	queryURL := fmt.Sprintf("%s/v1/statement", strings.TrimSuffix(t.config.ServerURL, "/"))
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "POST", queryURL, strings.NewReader(query))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("X-Trino-User", "dataflow-operator")
-	req.Header.Set("X-Trino-Catalog", t.config.Catalog)
-	req.Header.Set("X-Trino-Schema", t.config.Schema)
-
-	// Add OAuth token if available
-	if t.keycloakAuth != nil {
-		if token := t.keycloakAuth.GetToken(); token != "" {
-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-		}
-	}
-
-	// Execute request
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		t.logger.Error(err, "Failed to execute Trino query", "query", query, "url", queryURL)
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.logger.Error(nil, "Trino query failed", "query", query, "status", resp.StatusCode, "response", string(body))
-		return nil, fmt.Errorf("Trino query failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	var queryResponse TrinoQueryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&queryResponse); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	// Check for errors in initial response
-	if queryResponse.Error != nil {
-		errorMsg := fmt.Sprintf("Trino query failed: %s", queryResponse.Error.Message)
-		if queryResponse.Error.ErrorName != "" {
-			errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, queryResponse.Error.ErrorName, queryResponse.Error.ErrorCode)
-		}
-		if queryResponse.Error.ErrorLocation != nil {
-			errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, queryResponse.Error.ErrorLocation.LineNumber, queryResponse.Error.ErrorLocation.ColumnNumber)
-		}
-		if queryResponse.Error.FailureInfo != nil {
-			errorDetails, _ := json.Marshal(queryResponse.Error.FailureInfo)
-			errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-		}
-		t.logger.Error(nil, "Trino query error in initial response", "query", query, "error", errorMsg, "errorName", queryResponse.Error.ErrorName, "errorCode", queryResponse.Error.ErrorCode)
-		return nil, fmt.Errorf("%s", errorMsg)
-	}
-
-	// Check if query failed in initial response
-	if queryResponse.Stats.State == "FAILED" {
-		errorMsg := "Trino query failed"
-		if queryResponse.Error != nil {
-			errorMsg = fmt.Sprintf("Trino query failed: %s", queryResponse.Error.Message)
-			if queryResponse.Error.ErrorName != "" {
-				errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, queryResponse.Error.ErrorName, queryResponse.Error.ErrorCode)
-			}
-			if queryResponse.Error.ErrorLocation != nil {
-				errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, queryResponse.Error.ErrorLocation.LineNumber, queryResponse.Error.ErrorLocation.ColumnNumber)
-			}
-			if queryResponse.Error.FailureInfo != nil {
-				errorDetails, _ := json.Marshal(queryResponse.Error.FailureInfo)
-				errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-			}
-		} else {
-			// If no error object, log the full response for debugging
-			responseBody, _ := json.Marshal(queryResponse)
-			errorMsg = fmt.Sprintf("Trino query failed with state FAILED. Response: %s", string(responseBody))
-		}
-		t.logger.Error(nil, "Trino query failed in initial response", "query", query, "state", queryResponse.Stats.State, "error", errorMsg)
-		return nil, fmt.Errorf("%s", errorMsg)
-	}
-
-	// Check if this is an INSERT/UPDATE/DELETE statement (no data returned)
-	isDMLStatement := strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "INSERT") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "UPDATE") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "DELETE") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "CREATE") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "DROP") ||
-		strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "ALTER")
-
-	// Follow nextUri if present and collect all data
-	// For INSERT statements, we need to follow nextURI until query is complete
-	allDataRows := make([][]interface{}, 0)
-	if queryResponse.Data != nil {
-		allDataRows = append(allDataRows, queryResponse.Data...)
-	}
-
-	nextURI := queryResponse.NextURI
-	columns := queryResponse.Columns
-	queryState := queryResponse.Stats.State
-
-	for nextURI != "" {
-		t.logger.Info("Following next URI for Trino query", "nextURI", nextURI, "query", query, "state", queryState)
-		nextResp, err := t.httpClient.Get(nextURI)
-		if err != nil {
-			t.logger.Error(err, "Failed to follow next URI", "nextURI", nextURI, "query", query)
-			return nil, fmt.Errorf("failed to follow next URI: %w", err)
-		}
-		defer nextResp.Body.Close()
-
-		if nextResp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(nextResp.Body)
-			t.logger.Error(nil, "Trino next URI request failed", "nextURI", nextURI, "status", nextResp.StatusCode, "response", string(body))
-			return nil, fmt.Errorf("Trino query failed with status %d: %s", nextResp.StatusCode, string(body))
-		}
-
-		var nextResponse TrinoQueryResponse
-		if err := json.NewDecoder(nextResp.Body).Decode(&nextResponse); err != nil {
-			t.logger.Error(err, "Failed to decode next response", "nextURI", nextURI)
-			return nil, fmt.Errorf("failed to decode next response: %w", err)
-		}
-
-		// Update state
-		if nextResponse.Stats.State != "" {
-			queryState = nextResponse.Stats.State
-		}
-
-		// Check for errors in response
-		if nextResponse.Error != nil {
-			errorMsg := fmt.Sprintf("Trino query failed: %s", nextResponse.Error.Message)
-			if nextResponse.Error.ErrorName != "" {
-				errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, nextResponse.Error.ErrorName, nextResponse.Error.ErrorCode)
-			}
-			if nextResponse.Error.ErrorLocation != nil {
-				errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, nextResponse.Error.ErrorLocation.LineNumber, nextResponse.Error.ErrorLocation.ColumnNumber)
-			}
-			if nextResponse.Error.FailureInfo != nil {
-				errorDetails, _ := json.Marshal(nextResponse.Error.FailureInfo)
-				errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-			}
-			t.logger.Error(nil, "Trino query error", "query", query, "error", errorMsg, "errorName", nextResponse.Error.ErrorName, "errorCode", nextResponse.Error.ErrorCode)
-			return nil, fmt.Errorf("%s", errorMsg)
-		}
-
-		// Check if query failed
-		if queryState == "FAILED" {
-			errorMsg := "Trino query failed"
-			if nextResponse.Error != nil {
-				errorMsg = fmt.Sprintf("Trino query failed: %s", nextResponse.Error.Message)
-				if nextResponse.Error.ErrorName != "" {
-					errorMsg = fmt.Sprintf("%s (Error: %s, Code: %d)", errorMsg, nextResponse.Error.ErrorName, nextResponse.Error.ErrorCode)
-				}
-				if nextResponse.Error.ErrorLocation != nil {
-					errorMsg = fmt.Sprintf("%s at line %d, column %d", errorMsg, nextResponse.Error.ErrorLocation.LineNumber, nextResponse.Error.ErrorLocation.ColumnNumber)
-				}
-				if nextResponse.Error.FailureInfo != nil {
-					errorDetails, _ := json.Marshal(nextResponse.Error.FailureInfo)
-					errorMsg = fmt.Sprintf("%s. Details: %s", errorMsg, string(errorDetails))
-				}
-			} else {
-				// If no error object, log the full response for debugging
-				responseBody, _ := json.Marshal(nextResponse)
-				errorMsg = fmt.Sprintf("Trino query failed with state FAILED. Response: %s", string(responseBody))
-			}
-			t.logger.Error(nil, "Trino query failed", "query", query, "state", queryState, "error", errorMsg)
-			return nil, fmt.Errorf("%s", errorMsg)
-		}
-
-		// Append data rows (for SELECT queries)
-		if nextResponse.Data != nil {
-			allDataRows = append(allDataRows, nextResponse.Data...)
-		}
-
-		// Update columns if not set yet
-		if len(columns) == 0 && len(nextResponse.Columns) > 0 {
-			columns = nextResponse.Columns
-		}
-
-		// For DML statements, check if query is finished
-		if isDMLStatement && (queryState == "FINISHED" || nextResponse.NextURI == "") {
-			t.logger.Info("DML statement completed", "query", query, "state", queryState)
-			// Return empty results for DML statements
-			return []map[string]interface{}{}, nil
-		}
-
-		nextURI = nextResponse.NextURI
-
-		// If no nextURI and query is finished, break
-		if nextURI == "" && queryState == "FINISHED" {
-			break
-		}
-	}
-
-	// For DML statements (INSERT, UPDATE, DELETE), return empty results
-	if isDMLStatement {
-		t.logger.Info("Trino DML statement executed successfully", "query", query, "state", queryState)
-		return []map[string]interface{}{}, nil
-	}
-
-	// Convert array of arrays to array of maps using column names (for SELECT queries)
-	results := make([]map[string]interface{}, 0, len(allDataRows))
-	for _, row := range allDataRows {
-		rowMap := make(map[string]interface{})
-		for i, value := range row {
-			if i < len(columns) {
-				rowMap[columns[i].Name] = value
-			} else {
-				// Fallback if column count doesn't match
-				rowMap[fmt.Sprintf("col%d", i)] = value
-			}
-		}
-		results = append(results, rowMap)
-	}
-
-	t.logger.Info("Trino query executed successfully", "query", query, "rowsReturned", len(results), "state", queryState)
-
-	return results, nil
 }
 
 // TableColumnInfo represents column information from the table
@@ -807,7 +304,7 @@ func (t *TrinoSinkConnector) getTableColumns(ctx context.Context) ([]TableColumn
 		t.config.Table,
 	)
 
-	rows, err := t.executeQuery(ctx, query)
+	rows, err := t.client.executeQuery(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get table columns: %w", err)
 	}
@@ -847,7 +344,7 @@ func (t *TrinoSinkConnector) ensureTable(ctx context.Context) error {
 		escapedTable,
 	)
 
-	rows, err := t.executeQuery(ctx, checkQuery)
+	rows, err := t.client.executeQuery(ctx, checkQuery)
 	if err != nil {
 		return fmt.Errorf("failed to check if table exists: %w", err)
 	}
@@ -870,7 +367,7 @@ func (t *TrinoSinkConnector) ensureTable(ctx context.Context) error {
 		quotedTable,
 	)
 
-	_, err = t.executeQuery(ctx, createQuery)
+	_, err = t.client.executeQuery(ctx, createQuery)
 	if err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
@@ -954,7 +451,7 @@ func (t *TrinoSinkConnector) executeBatchRaw(ctx context.Context, batch []*types
 		strings.Join(valueRows, ", "),
 	)
 	t.logger.Info("Executing batch insert (raw mode)", "batchSize", len(batch), "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
-	_, err := t.executeQuery(ctx, query)
+	_, err := t.client.executeQuery(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to execute batch insert: %w", err)
 	}
@@ -964,7 +461,7 @@ func (t *TrinoSinkConnector) executeBatchRaw(ctx context.Context, batch []*types
 
 // Write writes messages to Trino
 func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {
-	if t.httpClient == nil {
+	if t.client == nil {
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
@@ -1320,7 +817,7 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 
 	t.logger.Info("Executing batch insert", "batchSize", len(batch), "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table), "columns", columnsToUse)
 
-	_, err := t.executeQuery(ctx, query)
+	_, err := t.client.executeQuery(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to execute batch insert: %w", err)
 	}

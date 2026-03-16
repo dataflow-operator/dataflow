@@ -41,7 +41,7 @@ func IsTimeoutError(err error) bool {
 }
 
 // IsRetryableTransient returns true for generic transient errors (connection refused, timeout, HTTP 5xx).
-// Used by connectSourceWithRetry and connectSinkWithRetry for all connector types.
+// Used by connectWithRetry for all connector types.
 func IsRetryableTransient(err error) bool {
 	if err == nil {
 		return false
@@ -85,8 +85,8 @@ func IsRetryableForClickHouse(err error) bool {
 	return IsTransientClickHouseError(err)
 }
 
-// OnRetryableClickHouse runs op and retries when it returns a transient ClickHouse error.
-func OnRetryableClickHouse(ctx context.Context, maxAttempts int, initialBackoff time.Duration, op func() error) error {
+// OnRetry retries op with exponential backoff when isRetryable returns true.
+func OnRetry(ctx context.Context, maxAttempts int, initialBackoff time.Duration, isRetryable func(error) bool, op func() error) error {
 	var lastErr error
 	backoff := initialBackoff
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -94,7 +94,7 @@ func OnRetryableClickHouse(ctx context.Context, maxAttempts int, initialBackoff 
 		if lastErr == nil {
 			return nil
 		}
-		if !IsRetryableForClickHouse(lastErr) {
+		if !isRetryable(lastErr) {
 			return lastErr
 		}
 		if attempt == maxAttempts-1 {
@@ -108,6 +108,11 @@ func OnRetryableClickHouse(ctx context.Context, maxAttempts int, initialBackoff 
 		}
 	}
 	return lastErr
+}
+
+// OnRetryableClickHouse runs op and retries when it returns a transient ClickHouse error.
+func OnRetryableClickHouse(ctx context.Context, maxAttempts int, initialBackoff time.Duration, op func() error) error {
+	return OnRetry(ctx, maxAttempts, initialBackoff, IsRetryableForClickHouse, op)
 }
 
 // IsTransientTrinoError returns true if err looks like a transient Trino error
@@ -145,52 +150,12 @@ func IsRetryableForTrino(err error) bool {
 // OnRetryableTrino runs op and retries when it returns a timeout or transient Trino error.
 // Use TrinoMaxAttempts and TrinoInitialBackoff for batch inserts.
 func OnRetryableTrino(ctx context.Context, maxAttempts int, initialBackoff time.Duration, op func() error) error {
-	var lastErr error
-	backoff := initialBackoff
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		lastErr = op()
-		if lastErr == nil {
-			return nil
-		}
-		if !IsRetryableForTrino(lastErr) {
-			return lastErr
-		}
-		if attempt == maxAttempts-1 {
-			return lastErr
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-			backoff *= 2
-		}
-	}
-	return lastErr
+	return OnRetry(ctx, maxAttempts, initialBackoff, IsRetryableForTrino, op)
 }
 
 // OnTimeout runs op and retries up to maxAttempts times when op returns a timeout error.
 // Backoff doubles after each attempt (initialBackoff, 2*initialBackoff, ...).
 // If op returns a non-timeout error, it is returned immediately without retry.
 func OnTimeout(ctx context.Context, maxAttempts int, initialBackoff time.Duration, op func() error) error {
-	var lastErr error
-	backoff := initialBackoff
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		lastErr = op()
-		if lastErr == nil {
-			return nil
-		}
-		if !IsTimeoutError(lastErr) {
-			return lastErr
-		}
-		if attempt == maxAttempts-1 {
-			return lastErr
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-			backoff *= 2
-		}
-	}
-	return lastErr
+	return OnRetry(ctx, maxAttempts, initialBackoff, IsTimeoutError, op)
 }

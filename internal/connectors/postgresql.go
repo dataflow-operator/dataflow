@@ -28,7 +28,6 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
-	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
@@ -56,8 +55,9 @@ func NewPostgreSQLSourceConnector(config *v1.PostgreSQLSourceSpec) *PostgreSQLSo
 // NewPostgreSQLSourceConnectorWithOptions creates a PostgreSQL source connector with optional checkpoint persistence.
 func NewPostgreSQLSourceConnectorWithOptions(config *v1.PostgreSQLSourceSpec, opts *SourceConnectorOptions) *PostgreSQLSourceConnector {
 	p := &PostgreSQLSourceConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "postgresql", connectorRole: "source"},
 	}
 	if opts != nil {
 		p.checkpointStore = opts.CheckpointStore
@@ -106,9 +106,7 @@ func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
 	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
 	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
 	if err != nil {
-		if p.namespace != "" && p.name != "" {
-			metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "source", "connect", "connection_error")
-		}
+		p.RecordError("connect", "connection_error")
 		p.logger.Error(err, "Failed to connect to PostgreSQL", "table", p.config.Table)
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
@@ -116,16 +114,12 @@ func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
 	p.conn = conn
 	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
 
-	if p.namespace != "" && p.name != "" {
-		metrics.SetConnectorConnectionStatus(p.namespace, p.name, "postgresql", "source", true)
-	}
+	p.SetConnectionStatus(true)
 
 	// Auto-create table if enabled (source)
 	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable {
 		if err := p.ensureSourceTable(ctx); err != nil {
-			if p.namespace != "" && p.name != "" {
-				metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "source", "connect", "ensure_table_error")
-			}
+			p.RecordError("connect", "ensure_table_error")
 			p.logger.Error(err, "Failed to ensure source table exists", "table", p.config.Table)
 			return fmt.Errorf("failed to ensure source table exists: %w", err)
 		}
@@ -173,35 +167,12 @@ func (p *PostgreSQLSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 	if p.conn == nil {
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
-
 	p.logger.Info("Starting to read from PostgreSQL", "table", p.config.Table)
-	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
-
-	go func() {
-		defer close(msgChan)
-
-		pollInterval := 5 * time.Second
-		if p.config.PollInterval != nil {
-			pollInterval = time.Duration(*p.config.PollInterval) * time.Second
-		}
-
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-
-		// Initial read
-		p.readRows(ctx, msgChan)
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				p.readRows(ctx, msgChan)
-			}
-		}
-	}()
-
-	return msgChan, nil
+	pollInterval := 5 * time.Second
+	if p.config.PollInterval != nil {
+		pollInterval = time.Duration(*p.config.PollInterval) * time.Second
+	}
+	return runPollingRead(ctx, pollInterval, p.readRows), nil
 }
 
 func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {
@@ -228,9 +199,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		p.logger.V(1).Info("Executing PostgreSQL query", "query", query, "table", p.config.Table)
 		rows, err := p.conn.Query(ctx, query)
 		if err != nil {
-			if p.namespace != "" && p.name != "" {
-				metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "source", "read", "query_error")
-			}
+			p.RecordError("read", "query_error")
 			p.logger.Error(err, "Failed to execute PostgreSQL query", "query", query, "table", p.config.Table)
 			return
 		}
@@ -256,9 +225,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		for rows.Next() {
 			values, err := rows.Values()
 			if err != nil {
-				if p.namespace != "" && p.name != "" {
-					metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "source", "read", "scan_error")
-				}
+				p.RecordError("read", "scan_error")
 				p.logger.Error(err, "Failed to read row values", "table", p.config.Table)
 				rows.Close()
 				return
@@ -289,9 +256,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 
 			jsonData, err := json.Marshal(rowMap)
 			if err != nil {
-				if p.namespace != "" && p.name != "" {
-					metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "source", "read", "marshal_error")
-				}
+				p.RecordError("read", "marshal_error")
 				p.logger.Error(err, "Failed to marshal row to JSON", "table", p.config.Table)
 				continue
 			}
@@ -310,9 +275,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 
 			select {
 			case msgChan <- msg:
-				if p.namespace != "" && p.name != "" {
-					metrics.RecordConnectorMessageRead(p.namespace, p.name, "postgresql", "source")
-				}
+				p.RecordMessageRead()
 			case <-ctx.Done():
 				rows.Close()
 				return
@@ -409,9 +372,7 @@ func (p *PostgreSQLSourceConnector) Close() error {
 	}
 	defer p.Unlock()
 
-	if p.namespace != "" && p.name != "" {
-		metrics.SetConnectorConnectionStatus(p.namespace, p.name, "postgresql", "source", false)
-	}
+	p.SetConnectionStatus(false)
 	p.logger.Info("Closing PostgreSQL source connection", "table", p.config.Table)
 	if p.conn != nil {
 		return p.conn.Close(context.Background())
@@ -424,6 +385,7 @@ type PostgreSQLSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	rawModeConfig
 	config            *v1.PostgreSQLSinkSpec
 	conn              *pgx.Conn
 	firstWriteOnce    sync.Once
@@ -434,8 +396,10 @@ type PostgreSQLSinkConnector struct {
 // NewPostgreSQLSinkConnector creates a new PostgreSQL sink connector
 func NewPostgreSQLSinkConnector(config *v1.PostgreSQLSinkSpec) *PostgreSQLSinkConnector {
 	return &PostgreSQLSinkConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "postgresql", connectorRole: "sink"},
+		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
 	}
 }
 
@@ -449,9 +413,7 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
 	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
 	if err != nil {
-		if p.namespace != "" && p.name != "" {
-			metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "sink", "connect", "connection_error")
-		}
+		p.RecordError("connect", "connection_error")
 		p.logger.Error(err, "Failed to connect to PostgreSQL", "table", p.config.Table)
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
@@ -459,26 +421,18 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 	p.conn = conn
 	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
 
-	if p.namespace != "" && p.name != "" {
-		metrics.SetConnectorConnectionStatus(p.namespace, p.name, "postgresql", "sink", true)
-	}
+	p.SetConnectionStatus(true)
 
 	// Auto-create table if enabled and RawMode (structure known at Connect time)
 	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable && p.rawMode() {
 		if err := p.ensureTable(ctx); err != nil {
-			if p.namespace != "" && p.name != "" {
-				metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "sink", "connect", "ensure_table_error")
-			}
+			p.RecordError("connect", "ensure_table_error")
 			p.logger.Error(err, "Failed to ensure table exists", "table", p.config.Table)
 			return fmt.Errorf("failed to ensure table exists: %w", err)
 		}
 	}
 
 	return nil
-}
-
-func (p *PostgreSQLSinkConnector) rawMode() bool {
-	return p.config.RawMode != nil && *p.config.RawMode
 }
 
 func (p *PostgreSQLSinkConnector) tableExists(ctx context.Context) (bool, error) {
@@ -710,16 +664,11 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		if err := retry.OnTimeout(batchCtx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
 			return p.executeBatch(batchCtx, batch)
 		}); err != nil {
-			if p.namespace != "" && p.name != "" {
-				metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "sink", "write", "batch_error")
-			}
+			p.RecordError("write", "batch_error")
 			return err
 		}
 		for _, m := range batchMessages {
-			if p.namespace != "" && p.name != "" {
-				route := getRouteFromMessage(m)
-				metrics.RecordConnectorMessageWritten(p.namespace, p.name, "postgresql", "sink", route)
-			}
+			p.RecordMessageWritten(getRouteFromMessage(m))
 			if m.Ack != nil {
 				m.Ack()
 			}
@@ -779,9 +728,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 				}
 				var data map[string]interface{}
 				if err := json.Unmarshal(msg.Data, &data); err != nil {
-					if p.namespace != "" && p.name != "" {
-						metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "sink", "write", "unmarshal_error")
-					}
+					p.RecordError("write", "unmarshal_error")
 					p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
 					continue
 				}
@@ -793,9 +740,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 
 				query, values, err := p.buildInsertForMessage(ctx, data, msg)
 				if err != nil {
-					if p.namespace != "" && p.name != "" {
-						metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "sink", "write", "build_insert_error")
-					}
+					p.RecordError("write", "build_insert_error")
 					p.logger.Error(err, "Failed to build insert", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
 					continue
 				}
@@ -848,9 +793,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 				}
 				var data map[string]interface{}
 				if err := json.Unmarshal(msg.Data, &data); err != nil {
-					if p.namespace != "" && p.name != "" {
-						metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "sink", "write", "unmarshal_error")
-					}
+					p.RecordError("write", "unmarshal_error")
 					p.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
 					continue
 				}
@@ -862,9 +805,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 
 				query, values, err := p.buildInsertForMessage(ctx, data, msg)
 				if err != nil {
-					if p.namespace != "" && p.name != "" {
-						metrics.RecordConnectorError(p.namespace, p.name, "postgresql", "sink", "write", "build_insert_error")
-					}
+					p.RecordError("write", "build_insert_error")
 					p.logger.Error(err, "Failed to build insert", logkeys.MessageID, types.MessageID(msg), "table", p.config.Table)
 					continue
 				}
@@ -1067,9 +1008,7 @@ func (p *PostgreSQLSinkConnector) Close() error {
 	}
 	defer p.Unlock()
 
-	if p.namespace != "" && p.name != "" {
-		metrics.SetConnectorConnectionStatus(p.namespace, p.name, "postgresql", "sink", false)
-	}
+	p.SetConnectionStatus(false)
 	p.logger.Info("Closing PostgreSQL sink connection", "table", p.config.Table)
 	if p.conn != nil {
 		return p.conn.Close(context.Background())

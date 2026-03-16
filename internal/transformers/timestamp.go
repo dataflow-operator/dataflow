@@ -18,12 +18,10 @@ package transformers
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
-	"github.com/tidwall/sjson"
 )
 
 // TimestampTransformer adds a timestamp field to messages
@@ -52,34 +50,14 @@ func (t *TimestampTransformer) Transform(ctx context.Context, message *types.Mes
 
 	timestamp := time.Now().Format(format)
 
-	// Parse JSON and add timestamp field
-	var data map[string]interface{}
-	if err := json.Unmarshal(message.Data, &data); err != nil {
-		// If data is not valid JSON, return original message unchanged
-		// This allows handling binary data or other formats
+	if _, ok := tryUnmarshalJSON(message); !ok {
 		return []*types.Message{message}, nil
 	}
 
-	data[fieldName] = timestamp
-
-	newData, err := json.Marshal(data)
+	result, err := sjsonSetWithFallback(string(message.Data), fieldName, timestamp)
 	if err != nil {
 		return nil, err
 	}
 
-	// Use sjson for more efficient JSON manipulation
-	jsonStr := string(message.Data)
-	result, err := sjson.Set(jsonStr, fieldName, timestamp)
-	if err != nil {
-		// Fallback to manual approach
-		newMsg := types.NewMessage(newData)
-		newMsg.Metadata = message.Metadata
-		newMsg.Timestamp = message.Timestamp
-		return []*types.Message{newMsg}, nil
-	}
-
-	newMsg := types.NewMessage([]byte(result))
-	newMsg.Metadata = message.Metadata
-	newMsg.Timestamp = message.Timestamp
-	return []*types.Message{newMsg}, nil
+	return []*types.Message{newMessageFrom(message, []byte(result))}, nil
 }

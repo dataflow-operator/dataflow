@@ -48,22 +48,7 @@ func (f *FilterTransformer) Transform(ctx context.Context, message *types.Messag
 		return []*types.Message{}, nil
 	}
 
-	// Check if the value is truthy
-	value := result.Value()
-	switch v := value.(type) {
-	case bool:
-		if !v {
-			return []*types.Message{}, nil
-		}
-	case string:
-		if v == "" || v == "false" {
-			return []*types.Message{}, nil
-		}
-	case float64:
-		if v == 0 {
-			return []*types.Message{}, nil
-		}
-	case nil:
+	if !isTruthy(result.Value()) {
 		return []*types.Message{}, nil
 	}
 

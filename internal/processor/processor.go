@@ -84,14 +84,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 		return nil, fmt.Errorf("failed to create source connector: %w", err)
 	}
 
-	// Set logger and metadata if connector supports it
-	if loggerConnector, ok := source.(interface{ SetLogger(logr.Logger) }); ok {
-		sourceLogger := logger.WithValues(logkeys.ConnectorType, spec.Source.Type+"-source")
-		loggerConnector.SetLogger(sourceLogger)
-	}
-	if metadataConnector, ok := source.(interface{ SetMetadata(string, string) }); ok {
-		metadataConnector.SetMetadata(namespace, name)
-	}
+	initConnector(source, logger.WithValues(logkeys.ConnectorType, spec.Source.Type+"-source"), namespace, name)
 
 	// Create sink connector
 	sink, err := connectors.CreateSinkConnector(&spec.Sink)
@@ -99,14 +92,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 		return nil, fmt.Errorf("failed to create sink connector: %w", err)
 	}
 
-	// Set logger and metadata if connector supports it
-	if loggerConnector, ok := sink.(interface{ SetLogger(logr.Logger) }); ok {
-		sinkLogger := logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink")
-		loggerConnector.SetLogger(sinkLogger)
-	}
-	if metadataConnector, ok := sink.(interface{ SetMetadata(string, string) }); ok {
-		metadataConnector.SetMetadata(namespace, name)
-	}
+	initConnector(sink, logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink"), namespace, name)
 
 	// Create error sink connector if specified
 	var errorSink connectors.SinkConnector
@@ -116,14 +102,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 			return nil, fmt.Errorf("failed to create error sink connector: %w", err)
 		}
 
-		// Set logger and metadata if connector supports it
-		if loggerConnector, ok := errorSink.(interface{ SetLogger(logr.Logger) }); ok {
-			errorSinkLogger := logger.WithValues(logkeys.ConnectorType, spec.Errors.Type+"-sink")
-			loggerConnector.SetLogger(errorSinkLogger)
-		}
-		if metadataConnector, ok := errorSink.(interface{ SetMetadata(string, string) }); ok {
-			metadataConnector.SetMetadata(namespace, name)
-		}
+		initConnector(errorSink, logger.WithValues(logkeys.ConnectorType, spec.Errors.Type+"-sink"), namespace, name)
 	}
 
 	// Create transformers
@@ -136,10 +115,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 			return nil, fmt.Errorf("failed to create transformer %s: %w", t.Type, err)
 		}
 
-		// Set logger if transformer supports it
-		if loggerTransformer, ok := transformer.(interface{ SetLogger(logr.Logger) }); ok {
-			loggerTransformer.SetLogger(logger)
-		}
+		initConnector(transformer, logger, "", "")
 
 		// Check if this is a router transformer
 		if t.Type == "router" {
@@ -184,7 +160,7 @@ func (p *Processor) Start(ctx context.Context) error {
 	p.logger.Info("Starting processor")
 
 	// Connect to source with retry on transient errors (connection refused, etc.)
-	if err := p.connectSourceWithRetry(ctx); err != nil {
+	if err := connectWithRetry(ctx, p.source, "source", 0, 30*time.Second, p.logger); err != nil {
 		p.logger.Error(err, "Failed to connect to source")
 		return fmt.Errorf("failed to connect to source: %w", err)
 	}
@@ -192,7 +168,7 @@ func (p *Processor) Start(ctx context.Context) error {
 	p.logger.Info("Connected to source")
 
 	// Connect to main sink with retry on transient errors (connection refused, HTTP 500, etc.)
-	if err := p.connectSinkWithRetry(ctx); err != nil {
+	if err := connectWithRetry(ctx, p.sink, "sink", 0, 30*time.Second, p.logger); err != nil {
 		p.logger.Error(err, "Failed to connect to sink")
 		return fmt.Errorf("failed to connect to sink: %w", err)
 	}
@@ -201,7 +177,7 @@ func (p *Processor) Start(ctx context.Context) error {
 
 	// Connect to error sink if specified (with retry on transient errors)
 	if p.errorSink != nil {
-		if err := p.connectConnectorWithRetry(ctx, p.errorSink); err != nil {
+		if err := connectWithRetry(ctx, p.errorSink, "error-sink", 0, 30*time.Second, p.logger); err != nil {
 			p.logger.Error(err, "Failed to connect to error sink")
 			return fmt.Errorf("failed to connect to error sink: %w", err)
 		}
@@ -228,23 +204,31 @@ func (p *Processor) Start(ctx context.Context) error {
 	return p.writeMessages(ctx, processedChan)
 }
 
-// connectSourceWithRetry connects to source, retrying on transient errors (connection refused,
-// timeout, etc.) until success or context cancellation. Prevents pod restart on temporary backend unavailability.
-func (p *Processor) connectSourceWithRetry(ctx context.Context) error {
-	const (
-		initialBackoff = 30 * time.Second
-		maxBackoff     = 5 * time.Minute
-	)
+// Connectable represents any connector that can establish a connection.
+type Connectable interface {
+	Connect(ctx context.Context) error
+}
+
+// connectWithRetry connects to a connector, retrying on transient errors until success,
+// maxRetries exhausted, or context cancellation. Pass maxRetries <= 0 for unlimited retries.
+func connectWithRetry(ctx context.Context, connector Connectable, connectorName string, maxRetries int, initialBackoff time.Duration, logger logr.Logger) error {
+	const maxBackoff = 5 * time.Minute
 	backoff := initialBackoff
+	attempt := 0
 	for {
-		err := p.source.Connect(ctx)
+		err := connector.Connect(ctx)
 		if err == nil {
 			return nil
 		}
 		if !retry.IsRetryableTransient(err) {
 			return err
 		}
-		p.logger.Info("Transient source connection error, retrying later",
+		attempt++
+		if maxRetries > 0 && attempt >= maxRetries {
+			return fmt.Errorf("connector %s: max retries (%d) exceeded: %w", connectorName, maxRetries, err)
+		}
+		logger.Info("Transient connection error, retrying later",
+			"connector", connectorName,
 			"error", err.Error(),
 			"backoff", backoff.String())
 		select {
@@ -261,42 +245,13 @@ func (p *Processor) connectSourceWithRetry(ctx context.Context) error {
 	}
 }
 
-// connectSinkWithRetry connects to sink, retrying on transient errors (connection refused,
-// HTTP 500, etc.) until success or context cancellation. Prevents pod restart on temporary backend unavailability.
-func (p *Processor) connectSinkWithRetry(ctx context.Context) error {
-	return p.connectConnectorWithRetry(ctx, p.sink)
-}
-
-// connectConnectorWithRetry connects a sink connector with retry on transient errors.
-// Used for main sink and router sinks.
-func (p *Processor) connectConnectorWithRetry(ctx context.Context, sink connectors.SinkConnector) error {
-	const (
-		initialBackoff = 30 * time.Second
-		maxBackoff     = 5 * time.Minute
-	)
-	backoff := initialBackoff
-	for {
-		err := sink.Connect(ctx)
-		if err == nil {
-			return nil
-		}
-		if !retry.IsRetryableTransient(err) {
-			return err
-		}
-		p.logger.Info("Transient connector connection error, retrying later",
-			"error", err.Error(),
-			"backoff", backoff.String())
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-			if backoff < maxBackoff {
-				backoff *= 2
-				if backoff > maxBackoff {
-					backoff = maxBackoff
-				}
-			}
-		}
+// initConnector sets logger and metadata on a connector if it supports the respective interfaces.
+func initConnector(connector interface{}, logger logr.Logger, namespace, name string) {
+	if lc, ok := connector.(interface{ SetLogger(logr.Logger) }); ok {
+		lc.SetLogger(logger)
+	}
+	if mc, ok := connector.(interface{ SetMetadata(string, string) }); ok {
+		mc.SetMetadata(namespace, name)
 	}
 }
 
@@ -606,16 +561,9 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 						return
 					}
 
-					// Set logger and metadata if connector supports it
-					if loggerConnector, ok := routeSink.(interface{ SetLogger(logr.Logger) }); ok {
-						routeLogger := p.logger.WithValues(logkeys.ConnectorType, spec.Type+"-sink")
-						loggerConnector.SetLogger(routeLogger)
-					}
-					if metadataConnector, ok := routeSink.(interface{ SetMetadata(string, string) }); ok {
-						metadataConnector.SetMetadata(p.namespace, p.name)
-					}
+					initConnector(routeSink, p.logger.WithValues(logkeys.ConnectorType, spec.Type+"-sink"), p.namespace, p.name)
 
-					if err := p.connectConnectorWithRetry(ctx, routeSink); err != nil {
+					if err := connectWithRetry(ctx, routeSink, "route-sink-"+cond, 0, 30*time.Second, p.logger); err != nil {
 						p.logger.Error(err, "Failed to connect to route sink", "condition", cond)
 						return
 					}

@@ -38,7 +38,6 @@ import (
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
-	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
@@ -75,8 +74,9 @@ type schemaRegistryClient struct {
 // NewKafkaSourceConnector creates a new Kafka source connector
 func NewKafkaSourceConnector(config *v1.KafkaSourceSpec) *KafkaSourceConnector {
 	return &KafkaSourceConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "kafka", connectorRole: "source"},
 	}
 }
 
@@ -119,10 +119,7 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 
 	consumer, err := sarama.NewConsumerGroup(k.config.Brokers, consumerGroup, saramaConfig)
 	if err != nil {
-		// Record error metric
-		if k.namespace != "" && k.name != "" {
-			metrics.RecordConnectorError(k.namespace, k.name, "kafka", "source", "connect", "consumer_group_error")
-		}
+		k.RecordError("connect", "consumer_group_error")
 		saslMechanism := "none"
 		if k.config.SASL != nil {
 			saslMechanism = k.config.SASL.Mechanism
@@ -146,11 +143,7 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 	}
 	k.consumer = consumer
 	k.logger.Info("Successfully connected to Kafka", "brokers", k.config.Brokers, "topic", k.config.Topic, "group", consumerGroup)
-
-	// Record connection status
-	if k.namespace != "" && k.name != "" {
-		metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "source", true)
-	}
+	k.SetConnectionStatus(true)
 
 	// Initialize Schema Registry client if configured
 	if k.config.Format == "avro" && k.config.SchemaRegistry != nil {
@@ -545,10 +538,7 @@ func (k *KafkaSourceConnector) Close() error {
 
 	k.logger.Info("Closing Kafka source connection", "brokers", k.config.Brokers, "topic", k.config.Topic)
 	if k.consumer != nil {
-		// Record connection status
-		if k.namespace != "" && k.name != "" {
-			metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "source", false)
-		}
+		k.SetConnectionStatus(false)
 		return k.consumer.Close()
 	}
 	return nil
@@ -622,15 +612,13 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 			msg.Metadata["partition"] = message.Partition
 			msg.Metadata["offset"] = message.Offset
 			msg.Metadata["key"] = string(message.Key)
+			msg.Metadata["timestamp"] = message.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 			// Commit offset only after the message is successfully written to the sink (called by sink connectors)
 			msg.Ack = func() { session.MarkMessage(message, "") }
 
 			select {
 			case h.msgChan <- msg:
-				// Record metrics (offset will be committed by sink after successful write)
-				if h.connector.namespace != "" && h.connector.name != "" {
-					metrics.RecordConnectorMessageRead(h.connector.namespace, h.connector.name, "kafka", "source")
-				}
+				h.connector.RecordMessageRead()
 			case <-session.Context().Done():
 				return nil
 			}
@@ -652,8 +640,9 @@ type KafkaSinkConnector struct {
 // NewKafkaSinkConnector creates a new Kafka sink connector
 func NewKafkaSinkConnector(config *v1.KafkaSinkSpec) *KafkaSinkConnector {
 	return &KafkaSinkConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "kafka", connectorRole: "sink"},
 	}
 }
 
@@ -686,10 +675,7 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 
 	producer, err := sarama.NewSyncProducer(k.config.Brokers, saramaConfig)
 	if err != nil {
-		// Record error metric
-		if k.namespace != "" && k.name != "" {
-			metrics.RecordConnectorError(k.namespace, k.name, "kafka", "sink", "connect", "producer_error")
-		}
+		k.RecordError("connect", "producer_error")
 		saslMechanism := "none"
 		if k.config.SASL != nil {
 			saslMechanism = k.config.SASL.Mechanism
@@ -712,11 +698,7 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 	}
 	k.producer = producer
 	k.logger.Info("Successfully connected to Kafka", "brokers", k.config.Brokers, "topic", k.config.Topic)
-
-	// Record connection status
-	if k.namespace != "" && k.name != "" {
-		metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "sink", true)
-	}
+	k.SetConnectionStatus(true)
 
 	return nil
 }
@@ -791,18 +773,11 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 				return nil
 			})
 			if err != nil {
-				// Record error metric
-				if k.namespace != "" && k.name != "" {
-					metrics.RecordConnectorError(k.namespace, k.name, "kafka", "sink", "write", "send_error")
-				}
+				k.RecordError("write", "send_error")
 				return fmt.Errorf("failed to send message: %w", err)
 			}
 
-			// Record metrics
-			if k.namespace != "" && k.name != "" {
-				route := getRouteFromMessage(msg)
-				metrics.RecordConnectorMessageWritten(k.namespace, k.name, "kafka", "sink", route)
-			}
+			k.RecordMessageWritten(getRouteFromMessage(msg))
 
 			msg.Metadata["partition"] = partition
 			msg.Metadata["offset"] = offset
@@ -823,10 +798,7 @@ func (k *KafkaSinkConnector) Close() error {
 
 	k.logger.Info("Closing Kafka sink connection", "brokers", k.config.Brokers, "topic", k.config.Topic)
 	if k.producer != nil {
-		// Record connection status
-		if k.namespace != "" && k.name != "" {
-			metrics.SetConnectorConnectionStatus(k.namespace, k.name, "kafka", "sink", false)
-		}
+		k.SetConnectionStatus(false)
 		return k.producer.Close()
 	}
 	return nil

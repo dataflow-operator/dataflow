@@ -1,6 +1,9 @@
 # Kafka → PostgreSQL (rawMode) для staging
 # Namespace: dataflow-staging (совпадает с staging-postgresql, staging-kafka)
 # Kafka: staging-kafka:9092 (как в conductor). Bitnami: staging-kafka-kafka-bootstrap:9092
+#
+# ВАЖНО: connectionString содержит пароль в открытом виде. Для production используйте
+# kafka-to-postgres-raw-secrets.yaml с connectionStringSecretRef.
 apiVersion: dataflow.dataflow.io/v1
 kind: DataFlow
 metadata:

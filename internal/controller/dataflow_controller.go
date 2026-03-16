@@ -314,128 +314,11 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		log.V(1).Info("Could not restore spec from last-applied-configuration", "error", err)
 	}
 
-	// Check if DataFlow is being deleted: run cleanup only when our finalizer is present
 	if !dataflow.DeletionTimestamp.IsZero() {
-		hasOurFinalizer := false
-		for _, f := range dataflow.Finalizers {
-			if f == DataFlowFinalizer {
-				hasOurFinalizer = true
-				break
-			}
-		}
-		if !hasOurFinalizer {
-			return ctrl.Result{}, nil
-		}
-
-		// Delete Deployment and ConfigMap when DataFlow is deleted
-		if err := r.cleanupResources(ctx, req); err != nil {
-			log.Error(err, "failed to cleanup resources")
-			if r.Recorder != nil {
-				r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "CleanupFailed", "Failed to cleanup resources: %v", err)
-				log.V(1).Info("Emitted Kubernetes event", "reason", "CleanupFailed", "object", req.NamespacedName)
-			}
-			return ctrl.Result{}, err
-		}
-		if r.Recorder != nil {
-			r.Recorder.Event(&dataflow, corev1.EventTypeNormal, "ResourcesDeleted", "Deleted Deployment and ConfigMap")
-			log.V(1).Info("Emitted Kubernetes event", "reason", "ResourcesDeleted", "object", req.NamespacedName)
-		}
-
-		if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-			df.Status.Phase = "Stopped"
-		}); err != nil {
-			log.Error(err, "unable to update DataFlow status")
-		}
-		metrics.SetDataFlowStatus(req.Namespace, req.Name, "Stopped")
-
-		if err := r.removeDataFlowFinalizer(ctx, req); err != nil {
-			log.Error(err, "unable to remove DataFlow finalizer")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.handleDeletion(ctx, req, &dataflow)
 	}
 
-	// Resolve secrets
-	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, req.Namespace, &dataflow.Spec)
-	if err != nil {
-		log.Error(err, "failed to resolve secrets")
-		if r.Recorder != nil {
-			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "SecretResolutionFailed", "Failed to resolve secrets: %v", err)
-			log.V(1).Info("Emitted Kubernetes event", "reason", "SecretResolutionFailed", "object", req.NamespacedName)
-		}
-		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-			df.Status.Phase = "Error"
-			df.Status.Message = fmt.Sprintf("Failed to resolve secrets: %v", err)
-		})
-		if updateErr != nil {
-			log.Error(updateErr, "unable to update DataFlow status")
-		}
-		return ctrl.Result{}, err
-	}
-
-	// Create or update ConfigMap with spec
-	if err := r.createOrUpdateConfigMap(ctx, req, resolvedSpec); err != nil {
-		log.Error(err, "failed to create or update ConfigMap")
-		if r.Recorder != nil {
-			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "ConfigMapFailed", "Failed to create or update ConfigMap: %v", err)
-			log.V(1).Info("Emitted Kubernetes event", "reason", "ConfigMapFailed", "object", req.NamespacedName)
-		}
-		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-			df.Status.Phase = "Error"
-			df.Status.Message = fmt.Sprintf("Failed to create ConfigMap: %v", err)
-		})
-		if updateErr != nil {
-			log.Error(updateErr, "unable to update DataFlow status")
-		}
-		return ctrl.Result{}, err
-	}
-
-	// Create checkpoint ConfigMap and RBAC when CheckpointPersistence is enabled (default: true)
-	if resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence {
-		if err := r.createOrUpdateCheckpointConfigMap(ctx, req, &dataflow); err != nil {
-			log.Error(err, "failed to create or update checkpoint ConfigMap")
-			if r.Recorder != nil {
-				r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "CheckpointConfigMapFailed", "Failed to create checkpoint ConfigMap: %v", err)
-			}
-			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-				df.Status.Phase = "Error"
-				df.Status.Message = fmt.Sprintf("Failed to create checkpoint ConfigMap: %v", err)
-			})
-			if updateErr != nil {
-				log.Error(updateErr, "unable to update DataFlow status")
-			}
-			return ctrl.Result{}, err
-		}
-		if err := r.createOrUpdateProcessorRBAC(ctx, req, &dataflow); err != nil {
-			log.Error(err, "failed to create or update processor RBAC")
-			if r.Recorder != nil {
-				r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "ProcessorRBACFailed", "Failed to create processor RBAC: %v", err)
-			}
-			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-				df.Status.Phase = "Error"
-				df.Status.Message = fmt.Sprintf("Failed to create processor RBAC: %v", err)
-			})
-			if updateErr != nil {
-				log.Error(updateErr, "unable to update DataFlow status")
-			}
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Create or update Deployment (pass resolvedSpec for checkpoint persistence)
-	if err := r.createOrUpdateDeployment(ctx, req, &dataflow, resolvedSpec); err != nil {
-		log.Error(err, "failed to create or update Deployment")
-		if r.Recorder != nil {
-			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "DeploymentFailed", "Failed to create or update Deployment: %v", err)
-			log.V(1).Info("Emitted Kubernetes event", "reason", "DeploymentFailed", "object", req.NamespacedName)
-		}
-		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
-			df.Status.Phase = "Error"
-			df.Status.Message = fmt.Sprintf("Failed to create Deployment: %v", err)
-		})
-		if updateErr != nil {
-			log.Error(updateErr, "unable to update DataFlow status")
-		}
+	if err := r.reconcileResources(ctx, req, &dataflow); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -504,6 +387,135 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// handleDeletion runs cleanup when DataFlow is being deleted and our finalizer is present.
+func (r *DataFlowReconciler) handleDeletion(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	hasOurFinalizer := false
+	for _, f := range dataflow.Finalizers {
+		if f == DataFlowFinalizer {
+			hasOurFinalizer = true
+			break
+		}
+	}
+	if !hasOurFinalizer {
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.cleanupResources(ctx, req); err != nil {
+		log.Error(err, "failed to cleanup resources")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "CleanupFailed", "Failed to cleanup resources: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "CleanupFailed", "object", req.NamespacedName)
+		}
+		return ctrl.Result{}, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Event(dataflow, corev1.EventTypeNormal, "ResourcesDeleted", "Deleted Deployment and ConfigMap")
+		log.V(1).Info("Emitted Kubernetes event", "reason", "ResourcesDeleted", "object", req.NamespacedName)
+	}
+
+	if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+		df.Status.Phase = "Stopped"
+	}); err != nil {
+		log.Error(err, "unable to update DataFlow status")
+	}
+	metrics.SetDataFlowStatus(req.Namespace, req.Name, "Stopped")
+
+	if err := r.removeDataFlowFinalizer(ctx, req); err != nil {
+		log.Error(err, "unable to remove DataFlow finalizer")
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileResources resolves secrets and creates/updates ConfigMap, RBAC, and Deployment.
+func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
+	log := log.FromContext(ctx)
+
+	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, req.Namespace, &dataflow.Spec)
+	if err != nil {
+		log.Error(err, "failed to resolve secrets")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "SecretResolutionFailed", "Failed to resolve secrets: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "SecretResolutionFailed", "object", req.NamespacedName)
+		}
+		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+			df.Status.Phase = "Error"
+			df.Status.Message = fmt.Sprintf("Failed to resolve secrets: %v", err)
+		})
+		if updateErr != nil {
+			log.Error(updateErr, "unable to update DataFlow status")
+		}
+		return err
+	}
+
+	if err := r.createOrUpdateConfigMap(ctx, req, resolvedSpec); err != nil {
+		log.Error(err, "failed to create or update ConfigMap")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "ConfigMapFailed", "Failed to create or update ConfigMap: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "ConfigMapFailed", "object", req.NamespacedName)
+		}
+		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+			df.Status.Phase = "Error"
+			df.Status.Message = fmt.Sprintf("Failed to create ConfigMap: %v", err)
+		})
+		if updateErr != nil {
+			log.Error(updateErr, "unable to update DataFlow status")
+		}
+		return err
+	}
+
+	if resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence {
+		if err := r.createOrUpdateCheckpointConfigMap(ctx, req, dataflow); err != nil {
+			log.Error(err, "failed to create or update checkpoint ConfigMap")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "CheckpointConfigMapFailed", "Failed to create checkpoint ConfigMap: %v", err)
+			}
+			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+				df.Status.Phase = "Error"
+				df.Status.Message = fmt.Sprintf("Failed to create checkpoint ConfigMap: %v", err)
+			})
+			if updateErr != nil {
+				log.Error(updateErr, "unable to update DataFlow status")
+			}
+			return err
+		}
+		if err := r.createOrUpdateProcessorRBAC(ctx, req, dataflow); err != nil {
+			log.Error(err, "failed to create or update processor RBAC")
+			if r.Recorder != nil {
+				r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "ProcessorRBACFailed", "Failed to create processor RBAC: %v", err)
+			}
+			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+				df.Status.Phase = "Error"
+				df.Status.Message = fmt.Sprintf("Failed to create processor RBAC: %v", err)
+			})
+			if updateErr != nil {
+				log.Error(updateErr, "unable to update DataFlow status")
+			}
+			return err
+		}
+	}
+
+	if err := r.createOrUpdateDeployment(ctx, req, dataflow, resolvedSpec); err != nil {
+		log.Error(err, "failed to create or update Deployment")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "DeploymentFailed", "Failed to create or update Deployment: %v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "DeploymentFailed", "object", req.NamespacedName)
+		}
+		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+			df.Status.Phase = "Error"
+			df.Status.Message = fmt.Sprintf("Failed to create Deployment: %v", err)
+		})
+		if updateErr != nil {
+			log.Error(updateErr, "unable to update DataFlow status")
+		}
+		return err
+	}
+
+	return nil
 }
 
 // createOrUpdateConfigMap creates or updates ConfigMap with spec.

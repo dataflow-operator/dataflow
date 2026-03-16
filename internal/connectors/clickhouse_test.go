@@ -158,25 +158,6 @@ func TestNewClickHouseSinkConnector_WithBatchFlushInterval(t *testing.T) {
 
 func ptr(i int32) *int32 { return &i }
 
-func TestClickHouseSinkConnector_rawMode(t *testing.T) {
-	falseVal, trueVal := false, true
-	tests := []struct {
-		name   string
-		spec   *v1.ClickHouseSinkSpec
-		expect bool
-	}{
-		{"nil", &v1.ClickHouseSinkSpec{}, false},
-		{"false", &v1.ClickHouseSinkSpec{RawMode: &falseVal}, false},
-		{"true", &v1.ClickHouseSinkSpec{RawMode: &trueVal}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := NewClickHouseSinkConnector(tt.spec)
-			assert.Equal(t, tt.expect, c.rawMode())
-		})
-	}
-}
-
 func TestInferClickHouseType(t *testing.T) {
 	tests := []struct {
 		v    interface{}

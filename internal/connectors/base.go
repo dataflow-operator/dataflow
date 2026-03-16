@@ -17,10 +17,15 @@ limitations under the License.
 package connectors
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/dataflow-operator/dataflow/internal/constants"
+	"github.com/dataflow-operator/dataflow/internal/metrics"
+	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 )
 
@@ -151,14 +156,63 @@ func (c *connectorLogger) SetLogger(logger logr.Logger) {
 
 // connectorMetadata provides SetMetadata for connectors. Embed in connectors that need metrics (namespace, name).
 type connectorMetadata struct {
-	namespace string
-	name      string
+	namespace     string
+	name          string
+	connectorType string // e.g. "kafka", "postgresql", "trino", "clickhouse", "nessie"
+	connectorRole string // "source" or "sink"
 }
 
 // SetMetadata sets the metadata for metrics.
 func (c *connectorMetadata) SetMetadata(namespace, name string) {
 	c.namespace = namespace
 	c.name = name
+}
+
+// SetConnectorInfo sets the connector type and role for metrics.
+func (c *connectorMetadata) SetConnectorInfo(connectorType, role string) {
+	c.connectorType = connectorType
+	c.connectorRole = role
+}
+
+func (c *connectorMetadata) hasMetadata() bool {
+	return c.namespace != "" && c.name != ""
+}
+
+// RecordError records a connector error metric if metadata is set.
+func (c *connectorMetadata) RecordError(operation, errorType string) {
+	if c.hasMetadata() {
+		metrics.RecordConnectorError(c.namespace, c.name, c.connectorType, c.connectorRole, operation, errorType)
+	}
+}
+
+// SetConnectionStatus records the connection status metric if metadata is set.
+func (c *connectorMetadata) SetConnectionStatus(connected bool) {
+	if c.hasMetadata() {
+		metrics.SetConnectorConnectionStatus(c.namespace, c.name, c.connectorType, c.connectorRole, connected)
+	}
+}
+
+// RecordMessageRead records a message read metric if metadata is set.
+func (c *connectorMetadata) RecordMessageRead() {
+	if c.hasMetadata() {
+		metrics.RecordConnectorMessageRead(c.namespace, c.name, c.connectorType, c.connectorRole)
+	}
+}
+
+// RecordMessageWritten records a message written metric if metadata is set.
+func (c *connectorMetadata) RecordMessageWritten(route string) {
+	if c.hasMetadata() {
+		metrics.RecordConnectorMessageWritten(c.namespace, c.name, c.connectorType, c.connectorRole, route)
+	}
+}
+
+// rawModeConfig provides the rawMode() method. Embed in sink connectors that support raw mode.
+type rawModeConfig struct {
+	RawMode *bool
+}
+
+func (r *rawModeConfig) rawMode() bool {
+	return r.RawMode != nil && *r.RawMode
 }
 
 // ParseTableRef splits "schema.table" into schema and table name for information_schema queries.
@@ -181,4 +235,25 @@ func quotePostgreSQLIdentifier(id string) string {
 func QuotePostgreSQLTableRef(table string) string {
 	schema, name := ParseTableRef(table)
 	return quotePostgreSQLIdentifier(schema) + "." + quotePostgreSQLIdentifier(name)
+}
+
+// runPollingRead creates a message channel and starts a goroutine that calls readFn
+// on a ticker, returning the channel. Used by polling-based source connectors.
+func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func(ctx context.Context, ch chan *types.Message)) <-chan *types.Message {
+	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+	go func() {
+		defer close(msgChan)
+		readFn(ctx, msgChan)
+		ticker := time.NewTicker(pollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				readFn(ctx, msgChan)
+			}
+		}
+	}()
+	return msgChan
 }

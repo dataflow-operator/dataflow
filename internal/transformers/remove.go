@@ -19,7 +19,6 @@ package transformers
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
 	"github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -47,17 +46,6 @@ func (r *RemoveTransformer) SetLogger(logger logr.Logger) {
 	r.logger = logger
 }
 
-// normalizeFieldPath normalizes JSONPath field (removes $. prefix if present)
-func (r *RemoveTransformer) normalizeFieldPath(field string) string {
-	// Remove $. prefix if present (sjson supports both formats)
-	if strings.HasPrefix(field, "$.") {
-		return field[2:]
-	} else if strings.HasPrefix(field, "$") {
-		return field[1:]
-	}
-	return field
-}
-
 // Transform removes the specified fields
 func (r *RemoveTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
 	jsonStr := string(message.Data)
@@ -67,7 +55,7 @@ func (r *RemoveTransformer) Transform(ctx context.Context, message *types.Messag
 		"messagePreview", string(message.Data)[:min(200, len(message.Data))])
 
 	for _, field := range r.config.Fields {
-		normalizedField := r.normalizeFieldPath(field)
+		normalizedField := normalizeFieldPath(field)
 
 		// Check if field exists before trying to delete
 		result := gjson.GetBytes(message.Data, normalizedField)
@@ -107,9 +95,7 @@ func (r *RemoveTransformer) Transform(ctx context.Context, message *types.Messag
 			"normalizedField", normalizedField)
 	}
 
-	newMsg := types.NewMessage([]byte(jsonStr))
-	newMsg.Metadata = message.Metadata
-	newMsg.Timestamp = message.Timestamp
+	newMsg := newMessageFrom(message, []byte(jsonStr))
 
 	r.logger.V(1).Info("Remove transformer completed",
 		"fieldsRemoved", len(r.config.Fields))

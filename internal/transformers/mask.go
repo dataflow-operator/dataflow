@@ -18,13 +18,11 @@ package transformers
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // MaskTransformer masks sensitive data fields
@@ -65,29 +63,11 @@ func (m *MaskTransformer) Transform(ctx context.Context, message *types.Message)
 		}
 
 		var err error
-		jsonStr, err = sjson.Set(jsonStr, field, maskedValue)
+		jsonStr, err = sjsonSetWithFallback(jsonStr, field, maskedValue)
 		if err != nil {
-			// Fallback to manual approach
-			var data map[string]interface{}
-			if err := json.Unmarshal(message.Data, &data); err != nil {
-				// If data is not valid JSON, return original message unchanged
-				// This allows handling binary data or other formats
-				return []*types.Message{message}, nil
-			}
-			// Simple field masking (doesn't support nested paths)
-			if _, ok := data[field]; ok {
-				data[field] = maskedValue
-			}
-			newData, _ := json.Marshal(data)
-			newMsg := types.NewMessage(newData)
-			newMsg.Metadata = message.Metadata
-			newMsg.Timestamp = message.Timestamp
-			return []*types.Message{newMsg}, nil
+			return []*types.Message{message}, nil
 		}
 	}
 
-	newMsg := types.NewMessage([]byte(jsonStr))
-	newMsg.Metadata = message.Metadata
-	newMsg.Timestamp = message.Timestamp
-	return []*types.Message{newMsg}, nil
+	return []*types.Message{newMessageFrom(message, []byte(jsonStr))}, nil
 }

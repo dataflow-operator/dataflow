@@ -64,8 +64,5 @@ func (s *SelectTransformer) Transform(ctx context.Context, message *types.Messag
 		return nil, err
 	}
 
-	newMsg := types.NewMessage(jsonData)
-	newMsg.Metadata = message.Metadata
-	newMsg.Timestamp = message.Timestamp
-	return []*types.Message{newMsg}, nil
+	return []*types.Message{newMessageFrom(message, jsonData)}, nil
 }

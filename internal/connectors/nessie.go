@@ -85,6 +85,7 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 type NessieSourceConnector struct {
 	baseConnectorRWMutex
 	connectorLogger
+	connectorMetadata
 	config *v1.NessieSourceSpec
 	cat    *rest.Catalog
 	tbl    *table.Table
@@ -93,8 +94,9 @@ type NessieSourceConnector struct {
 // NewNessieSourceConnector creates a new Nessie source connector.
 func NewNessieSourceConnector(config *v1.NessieSourceSpec) *NessieSourceConnector {
 	return &NessieSourceConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "source"},
 	}
 }
 
@@ -139,32 +141,12 @@ func (c *NessieSourceConnector) Read(ctx context.Context) (<-chan *types.Message
 	if c.tbl == nil {
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
-
 	c.logger.Info("Starting to read from Nessie", "namespace", c.config.Namespace, "table", c.config.Table)
-	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
-
 	pollInterval := 10 * time.Second
 	if c.config.PollInterval != nil && *c.config.PollInterval > 0 {
 		pollInterval = time.Duration(*c.config.PollInterval) * time.Second
 	}
-
-	go func() {
-		defer close(msgChan)
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-
-		c.readOnce(ctx, msgChan)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				c.readOnce(ctx, msgChan)
-			}
-		}
-	}()
-
-	return msgChan, nil
+	return runPollingRead(ctx, pollInterval, c.readOnce), nil
 }
 
 func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *types.Message) {
@@ -214,6 +196,7 @@ func (c *NessieSourceConnector) Close() error {
 type NessieSinkConnector struct {
 	baseConnector
 	connectorLogger
+	connectorMetadata
 	config *v1.NessieSinkSpec
 	cat    *rest.Catalog
 	tbl    *table.Table
@@ -222,8 +205,9 @@ type NessieSinkConnector struct {
 // NewNessieSinkConnector creates a new Nessie sink connector.
 func NewNessieSinkConnector(config *v1.NessieSinkSpec) *NessieSinkConnector {
 	return &NessieSinkConnector{
-		config:          config,
-		connectorLogger: connectorLogger{logger: logr.Discard()},
+		config:            config,
+		connectorLogger:   connectorLogger{logger: logr.Discard()},
+		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "sink"},
 	}
 }
 

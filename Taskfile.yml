@@ -96,6 +96,50 @@ tasks:
     deps: [manifests, generate, fmt, vet]
     cmds:
       - go run ./main.go
+  sync-crd-to-helm:
+    desc: Sync generated CRD into Helm chart template (wraps CRD with Helm conditionals)
+    deps: [manifests]
+    vars:
+      CRD_SOURCE: config/crd/bases/dataflow.dataflow.io_dataflows.yaml
+      HELM_TARGET: ../helm-charts/charts/dataflow-operator/templates/crd.yaml
+    cmds:
+      - |
+        HEADER='{{- if .Values.crds.install }}'
+        FOOTER='{{- end }}'
+        LABELS_BLOCK='  labels:
+            {{- include "dataflow-operator.labels" . | nindent 4 }}'
+        KEEP_BLOCK='    {{- if .Values.crds.keep }}
+            "helm.sh/resource-policy": keep
+            {{- end }}'
+
+        {
+          echo "$HEADER"
+          awk '
+            /^---$/ { next }
+            /^metadata:$/ {
+              print
+              getline
+              # annotations block
+              if ($0 ~ /^  annotations:/) {
+                print
+                # print existing annotations
+                while (getline > 0 && $0 ~ /^    [^ ]/) {
+                  print
+                }
+                # insert keep annotation block
+                printf "%s\n", "'"$KEEP_BLOCK"'"
+                # insert labels block
+                printf "%s\n", "'"$LABELS_BLOCK"'"
+                print
+              }
+              next
+            }
+            { print }
+          ' "{{.CRD_SOURCE}}"
+          echo "$FOOTER"
+        } > "{{.HELM_TARGET}}"
+        echo "Synced CRD to {{.HELM_TARGET}}"
+
   # Deployment tasks
   install:
     desc: Install CRDs into the K8s cluster specified in ~/.kube/config
@@ -146,6 +190,11 @@ tasks:
         fi
     preconditions:
       - test -d {{.LOCALBIN}} || mkdir -p {{.LOCALBIN}}
+
+  test-helm-crd:
+    desc: Run Helm CRD template tests (requires helm CLI)
+    cmds:
+      - bash ../helm-charts/charts/dataflow-operator/tests/crd_test.sh
 
   tidy:
     desc: Run go mod tidy

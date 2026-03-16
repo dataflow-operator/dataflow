@@ -31,6 +31,109 @@ func TestIsTimeoutError(t *testing.T) {
 	}
 }
 
+func TestOnRetry_SuccessFirstTry(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	err := OnRetry(ctx, 3, 10*time.Millisecond, func(error) bool { return true }, func() error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Errorf("OnRetry() err = %v, want nil", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call, got %d", calls)
+	}
+}
+
+func TestOnRetry_NonRetryableErrorNoRetry(t *testing.T) {
+	ctx := context.Background()
+	wantErr := errors.New("permanent error")
+	calls := 0
+	err := OnRetry(ctx, 3, 10*time.Millisecond, func(err error) bool { return false }, func() error {
+		calls++
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Errorf("OnRetry() err = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call (no retry on non-retryable), got %d", calls)
+	}
+}
+
+func TestOnRetry_RetryThenSuccess(t *testing.T) {
+	ctx := context.Background()
+	retryableErr := errors.New("transient")
+	calls := 0
+	err := OnRetry(ctx, 3, 5*time.Millisecond, func(err error) bool { return err == retryableErr }, func() error {
+		calls++
+		if calls < 2 {
+			return retryableErr
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("OnRetry() err = %v, want nil", err)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 calls (retry then success), got %d", calls)
+	}
+}
+
+func TestOnRetry_ExhaustRetries(t *testing.T) {
+	ctx := context.Background()
+	retryableErr := errors.New("transient")
+	calls := 0
+	err := OnRetry(ctx, 3, 5*time.Millisecond, func(err error) bool { return err == retryableErr }, func() error {
+		calls++
+		return retryableErr
+	})
+	if !errors.Is(err, retryableErr) {
+		t.Errorf("OnRetry() err = %v, want %v", err, retryableErr)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 calls (all retries exhausted), got %d", calls)
+	}
+}
+
+func TestOnRetry_ContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	retryableErr := errors.New("transient")
+	calls := 0
+	err := OnRetry(ctx, 3, 100*time.Millisecond, func(err error) bool { return err == retryableErr }, func() error {
+		calls++
+		return retryableErr
+	})
+	if err != context.Canceled {
+		t.Errorf("OnRetry() err = %v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call then context cancel, got %d", calls)
+	}
+}
+
+func TestOnRetry_MixedErrors(t *testing.T) {
+	ctx := context.Background()
+	retryableErr := errors.New("transient")
+	permanentErr := errors.New("permanent")
+	calls := 0
+	err := OnRetry(ctx, 5, 5*time.Millisecond, func(err error) bool { return err == retryableErr }, func() error {
+		calls++
+		if calls < 3 {
+			return retryableErr
+		}
+		return permanentErr
+	})
+	if !errors.Is(err, permanentErr) {
+		t.Errorf("OnRetry() err = %v, want %v", err, permanentErr)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 calls (2 retryable + 1 permanent), got %d", calls)
+	}
+}
+
 func TestOnTimeout_SuccessFirstTry(t *testing.T) {
 	ctx := context.Background()
 	calls := 0

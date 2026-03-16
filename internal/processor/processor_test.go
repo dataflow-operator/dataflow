@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -396,3 +397,129 @@ func TestProcessor_createErrorMessage_approximateMetadata(t *testing.T) {
 		assert.False(t, ok, "error_message_approximate must not be set when approximate is false")
 	})
 }
+
+// mockConnectable is a configurable mock for the Connectable interface.
+type mockConnectable struct {
+	connectErrs []error // errors to return on sequential Connect calls; nil = success
+	calls       int
+}
+
+func (m *mockConnectable) Connect(ctx context.Context) error {
+	if m.calls < len(m.connectErrs) {
+		err := m.connectErrs[m.calls]
+		m.calls++
+		return err
+	}
+	return nil
+}
+
+// transientError wraps a message so retry.IsRetryableTransient recognises it.
+type transientError struct{ msg string }
+
+func (e *transientError) Error() string { return e.msg }
+
+func TestConnectWithRetry_Success(t *testing.T) {
+	mc := &mockConnectable{}
+	err := connectWithRetry(context.Background(), mc, "test", 0, time.Millisecond, logr.Discard())
+	require.NoError(t, err)
+	assert.Equal(t, 0, mc.calls)
+}
+
+func TestConnectWithRetry_TransientThenSuccess(t *testing.T) {
+	mc := &mockConnectable{
+		connectErrs: []error{
+			&transientError{"connection refused"},
+			&transientError{"connection refused"},
+		},
+	}
+	err := connectWithRetry(context.Background(), mc, "test", 0, time.Millisecond, logr.Discard())
+	require.NoError(t, err)
+	assert.Equal(t, 2, mc.calls)
+}
+
+func TestConnectWithRetry_NonRetryableError(t *testing.T) {
+	permanent := errors.New("invalid credentials")
+	mc := &mockConnectable{connectErrs: []error{permanent}}
+	err := connectWithRetry(context.Background(), mc, "test", 0, time.Millisecond, logr.Discard())
+	require.ErrorIs(t, err, permanent)
+}
+
+func TestConnectWithRetry_MaxRetriesExceeded(t *testing.T) {
+	mc := &mockConnectable{
+		connectErrs: []error{
+			&transientError{"connection refused"},
+			&transientError{"connection refused"},
+			&transientError{"connection refused"},
+		},
+	}
+	err := connectWithRetry(context.Background(), mc, "my-sink", 2, time.Millisecond, logr.Discard())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max retries")
+	assert.Contains(t, err.Error(), "my-sink")
+}
+
+func TestConnectWithRetry_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	mc := &mockConnectable{
+		connectErrs: []error{&transientError{"connection refused"}},
+	}
+	err := connectWithRetry(ctx, mc, "test", 0, time.Millisecond, logr.Discard())
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+// mockLoggableConnector implements both SetLogger and SetMetadata.
+type mockLoggableConnector struct {
+	logger    logr.Logger
+	loggerSet bool
+	ns, name  string
+}
+
+func (m *mockLoggableConnector) SetLogger(l logr.Logger) {
+	m.logger = l
+	m.loggerSet = true
+}
+
+func (m *mockLoggableConnector) SetMetadata(ns, name string) {
+	m.ns = ns
+	m.name = name
+}
+
+// mockPlainConnector implements neither SetLogger nor SetMetadata.
+type mockPlainConnector struct{}
+
+func TestInitConnector_SetsLoggerAndMetadata(t *testing.T) {
+	mc := &mockLoggableConnector{}
+	logger := logr.Discard()
+	initConnector(mc, logger, "ns1", "pipeline1")
+
+	assert.True(t, mc.loggerSet)
+	assert.Equal(t, "ns1", mc.ns)
+	assert.Equal(t, "pipeline1", mc.name)
+}
+
+func TestInitConnector_NoopForPlainConnector(t *testing.T) {
+	mc := &mockPlainConnector{}
+	assert.NotPanics(t, func() {
+		initConnector(mc, logr.Discard(), "ns", "name")
+	})
+}
+
+// mockLoggerOnlyConnector implements only SetLogger.
+type mockLoggerOnlyConnector struct {
+	loggerSet bool
+}
+
+func (m *mockLoggerOnlyConnector) SetLogger(_ logr.Logger) { m.loggerSet = true }
+
+func TestInitConnector_PartialInterface(t *testing.T) {
+	mc := &mockLoggerOnlyConnector{}
+	initConnector(mc, logr.Discard(), "ns", "name")
+	assert.True(t, mc.loggerSet)
+}
+
+// Ensure Connectable is satisfied by both SourceConnector and SinkConnector mocks.
+var (
+	_ Connectable = &mockSourceConnector{}
+	_ Connectable = &mockSinkConnector{}
+)

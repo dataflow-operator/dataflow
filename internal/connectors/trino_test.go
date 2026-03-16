@@ -355,25 +355,6 @@ func TestTrinoSinkConnector_formatValueForType_ROW_ARRAY_invalidValReturnsNULL(t
 	assert.Equal(t, "NULL", result)
 }
 
-func TestTrinoSinkConnector_rawMode(t *testing.T) {
-	ptrBool := func(v bool) *bool { return &v }
-	tests := []struct {
-		name   string
-		config *v1.TrinoSinkSpec
-		want   bool
-	}{
-		{"nil", &v1.TrinoSinkSpec{}, false},
-		{"false", &v1.TrinoSinkSpec{RawMode: ptrBool(false)}, false},
-		{"true", &v1.TrinoSinkSpec{RawMode: ptrBool(true)}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := NewTrinoSinkConnector(tt.config)
-			assert.Equal(t, tt.want, c.rawMode())
-		})
-	}
-}
-
 func TestExtractDataAndMetadata(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -557,7 +538,7 @@ func TestTrinoSinkConnector_executeBatchRaw_valueColumn(t *testing.T) {
 		Table:     "tbl",
 	})
 	connector.SetLogger(logr.Discard())
-	connector.httpClient = server.Client()
+	connector.client = newTrinoClientForTest(server.URL, "test", "test", server.Client())
 
 	msg := &types.Message{
 		Data:     []byte(`{"requestBody":{"id":1},"requestHeader":{"type":"EVENT"}}`),
@@ -595,5 +576,16 @@ func TestQuoteTrinoIdentifier(t *testing.T) {
 			got := quoteTrinoIdentifier(tt.in)
 			assert.Equal(t, tt.want, got)
 		})
+	}
+}
+
+// newTrinoClientForTest creates a trinoClient with custom HTTP client for tests.
+func newTrinoClientForTest(serverURL, catalog, schema string, hc *http.Client) *trinoClient {
+	return &trinoClient{
+		serverURL:  serverURL,
+		catalog:    catalog,
+		schema:     schema,
+		httpClient: hc,
+		logger:     logr.Discard(),
 	}
 }

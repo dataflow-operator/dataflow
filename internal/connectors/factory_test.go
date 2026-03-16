@@ -28,12 +28,7 @@ import (
 )
 
 func TestCreateSourceConnector_Kafka(t *testing.T) {
-	tests := []struct {
-		name        string
-		source      *v1.SourceSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
 		{
 			name: "valid kafka source",
 			source: func() *v1.SourceSpec {
@@ -45,7 +40,6 @@ func TestCreateSourceConnector_Kafka(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SourceSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "valid kafka source with raw config",
@@ -58,7 +52,6 @@ func TestCreateSourceConnector_Kafka(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SourceSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "kafka source without config",
@@ -68,32 +61,11 @@ func TestCreateSourceConnector_Kafka(t *testing.T) {
 			wantErr:     true,
 			errContains: "kafka source configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSourceConnector(tt.source)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSourceConnector_PostgreSQL(t *testing.T) {
-	tests := []struct {
-		name        string
-		source      *v1.SourceSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
 		{
 			name: "valid postgresql source",
 			source: func() *v1.SourceSpec {
@@ -104,7 +76,6 @@ func TestCreateSourceConnector_PostgreSQL(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SourceSpec{Type: "postgresql", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "postgresql source without config",
@@ -114,43 +85,12 @@ func TestCreateSourceConnector_PostgreSQL(t *testing.T) {
 			wantErr:     true,
 			errContains: "postgresql source configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSourceConnector(tt.source)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSourceConnector_Iceberg(t *testing.T) {
-	tests := []struct {
-		name        string
-		source      *v1.SourceSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
 		// TODO: Iceberg source is not yet implemented, using Trino instead
-		// {
-		// 	name: "valid iceberg source",
-		// 	source: &v1.SourceSpec{
-		// 		Type: "iceberg",
-		// 		Iceberg: &v1.IcebergSourceSpec{
-		// 			RESTCatalogURL: "http://localhost:8181",
-		// 			Namespace:      "test_namespace",
-		// 			Table:          "test_table",
-		// 		},
-		// 	},
 		{
 			name: "valid trino source",
 			source: func() *v1.SourceSpec {
@@ -163,17 +103,7 @@ func TestCreateSourceConnector_Iceberg(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SourceSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
-		// TODO: Iceberg source is not yet implemented
-		// {
-		// 	name: "iceberg source without config",
-		// 	source: &v1.SourceSpec{
-		// 		Type: "iceberg",
-		// 	},
-		// 	wantErr:     true,
-		// 	errContains: "iceberg source configuration is required",
-		// },
 		{
 			name: "trino source without config",
 			source: &v1.SourceSpec{
@@ -182,32 +112,11 @@ func TestCreateSourceConnector_Iceberg(t *testing.T) {
 			wantErr:     true,
 			errContains: "trino source configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSourceConnector(tt.source)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSourceConnector_Nessie(t *testing.T) {
-	tests := []struct {
-		name        string
-		source      *v1.SourceSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
 		{
 			name: "valid nessie source",
 			source: func() *v1.SourceSpec {
@@ -220,7 +129,6 @@ func TestCreateSourceConnector_Nessie(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SourceSpec{Type: "nessie", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "nessie source without config",
@@ -230,22 +138,7 @@ func TestCreateSourceConnector_Nessie(t *testing.T) {
 			wantErr:     true,
 			errContains: "nessie source configuration is required",
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSourceConnector(tt.source)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSourceConnector_UnsupportedType(t *testing.T) {
@@ -260,12 +153,7 @@ func TestCreateSourceConnector_UnsupportedType(t *testing.T) {
 }
 
 func TestCreateSinkConnector_Kafka(t *testing.T) {
-	tests := []struct {
-		name        string
-		sink        *v1.SinkSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSinkConnectorTests(t, []sinkConnectorTestCase{
 		{
 			name: "valid kafka sink",
 			sink: func() *v1.SinkSpec {
@@ -273,7 +161,6 @@ func TestCreateSinkConnector_Kafka(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SinkSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "kafka sink without config",
@@ -283,32 +170,11 @@ func TestCreateSinkConnector_Kafka(t *testing.T) {
 			wantErr:     true,
 			errContains: "kafka sink configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSinkConnector(tt.sink)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSinkConnector_PostgreSQL(t *testing.T) {
-	tests := []struct {
-		name        string
-		sink        *v1.SinkSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSinkConnectorTests(t, []sinkConnectorTestCase{
 		{
 			name: "valid postgresql sink",
 			sink: func() *v1.SinkSpec {
@@ -319,7 +185,6 @@ func TestCreateSinkConnector_PostgreSQL(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SinkSpec{Type: "postgresql", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "postgresql sink without config",
@@ -329,32 +194,11 @@ func TestCreateSinkConnector_PostgreSQL(t *testing.T) {
 			wantErr:     true,
 			errContains: "postgresql sink configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSinkConnector(tt.sink)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSinkConnector_Nessie(t *testing.T) {
-	tests := []struct {
-		name        string
-		sink        *v1.SinkSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSinkConnectorTests(t, []sinkConnectorTestCase{
 		{
 			name: "valid nessie sink",
 			sink: func() *v1.SinkSpec {
@@ -367,7 +211,6 @@ func TestCreateSinkConnector_Nessie(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SinkSpec{Type: "nessie", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "nessie sink without config",
@@ -377,31 +220,11 @@ func TestCreateSinkConnector_Nessie(t *testing.T) {
 			wantErr:     true,
 			errContains: "nessie sink configuration is required",
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSinkConnector(tt.sink)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSinkConnector_Trino(t *testing.T) {
-	tests := []struct {
-		name        string
-		sink        *v1.SinkSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSinkConnectorTests(t, []sinkConnectorTestCase{
 		{
 			name: "valid trino sink",
 			sink: func() *v1.SinkSpec {
@@ -414,7 +237,6 @@ func TestCreateSinkConnector_Trino(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SinkSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "trino sink with keycloak",
@@ -436,7 +258,6 @@ func TestCreateSinkConnector_Trino(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SinkSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "trino sink without config",
@@ -446,32 +267,11 @@ func TestCreateSinkConnector_Trino(t *testing.T) {
 			wantErr:     true,
 			errContains: "trino sink configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSinkConnector(tt.sink)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSourceConnector_ClickHouse(t *testing.T) {
-	tests := []struct {
-		name        string
-		source      *v1.SourceSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
 		{
 			name: "valid clickhouse source",
 			source: func() *v1.SourceSpec {
@@ -482,7 +282,6 @@ func TestCreateSourceConnector_ClickHouse(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SourceSpec{Type: "clickhouse", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "clickhouse source without config",
@@ -492,32 +291,11 @@ func TestCreateSourceConnector_ClickHouse(t *testing.T) {
 			wantErr:     true,
 			errContains: "clickhouse source configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSourceConnector(tt.source)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
 
 func TestCreateSinkConnector_ClickHouse(t *testing.T) {
-	tests := []struct {
-		name        string
-		sink        *v1.SinkSpec
-		wantErr     bool
-		errContains string
-	}{
+	runCreateSinkConnectorTests(t, []sinkConnectorTestCase{
 		{
 			name: "valid clickhouse sink",
 			sink: func() *v1.SinkSpec {
@@ -528,7 +306,6 @@ func TestCreateSinkConnector_ClickHouse(t *testing.T) {
 				raw, _ := json.Marshal(cfg)
 				return &v1.SinkSpec{Type: "clickhouse", Config: &runtime.RawExtension{Raw: raw}}
 			}(),
-			wantErr: false,
 		},
 		{
 			name: "clickhouse sink without config",
@@ -538,21 +315,5 @@ func TestCreateSinkConnector_ClickHouse(t *testing.T) {
 			wantErr:     true,
 			errContains: "clickhouse sink configuration is required",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			connector, err := CreateSinkConnector(tt.sink)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				assert.Nil(t, connector)
-			} else {
-				require.NoError(t, err)
-				assert.NotNil(t, connector)
-			}
-		})
-	}
+	})
 }
