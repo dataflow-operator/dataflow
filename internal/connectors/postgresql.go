@@ -45,6 +45,7 @@ type PostgreSQLSourceConnector struct {
 	checkpointMu       sync.Mutex // Protects lastReadChangeTime when advancing from Ack (different goroutine)
 	checkpointStore    checkpoint.Store
 	sourceType         string
+	channelBufferSize  int
 }
 
 // NewPostgreSQLSourceConnector creates a new PostgreSQL source connector
@@ -68,6 +69,13 @@ func NewPostgreSQLSourceConnectorWithOptions(config *v1.PostgreSQLSourceSpec, op
 		if len(opts.InitialCheckpoint) > 0 {
 			p.applyInitialCheckpoint(opts.InitialCheckpoint)
 		}
+		if opts.ChannelBufferSize > 0 {
+			p.channelBufferSize = opts.ChannelBufferSize
+		} else {
+			p.channelBufferSize = constants.DefaultChannelBufferSize
+		}
+	} else {
+		p.channelBufferSize = constants.DefaultChannelBufferSize
 	}
 	return p
 }
@@ -172,7 +180,7 @@ func (p *PostgreSQLSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 	if p.config.PollInterval != nil {
 		pollInterval = time.Duration(*p.config.PollInterval) * time.Second
 	}
-	return runPollingRead(ctx, pollInterval, p.readRows), nil
+	return runPollingRead(ctx, pollInterval, p.readRows, p.channelBufferSize), nil
 }
 
 func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {

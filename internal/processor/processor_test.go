@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
@@ -176,6 +177,41 @@ func TestNewProcessor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProcessor_ChannelBufferSize(t *testing.T) {
+	t.Run("default when nil", func(t *testing.T) {
+		spec := &v1.DataFlowSpec{
+			Source: v1.SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
+			},
+			Sink: v1.SinkSpec{
+				Type:   "kafka",
+				Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
+			},
+		}
+		p, err := NewProcessor(spec)
+		require.NoError(t, err)
+		assert.Equal(t, constants.DefaultChannelBufferSize, p.channelBufferSize())
+	})
+	t.Run("custom when set", func(t *testing.T) {
+		size := int32(500)
+		spec := &v1.DataFlowSpec{
+			ChannelBufferSize: &size,
+			Source: v1.SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(v1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
+			},
+			Sink: v1.SinkSpec{
+				Type:   "kafka",
+				Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
+			},
+		}
+		p, err := NewProcessor(spec)
+		require.NoError(t, err)
+		assert.Equal(t, 500, p.channelBufferSize())
+	})
 }
 
 func TestProcessor_GetStats(t *testing.T) {

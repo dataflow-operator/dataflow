@@ -31,7 +31,9 @@ type sourceConnectorFactory func(raw *runtime.RawExtension, options *SourceConne
 type sinkConnectorFactory func(raw *runtime.RawExtension) (SinkConnector, error)
 
 var sourceConnectorRegistry = map[string]sourceConnectorFactory{
-	"kafka": createSourceConnector[v1.KafkaSourceSpec]("kafka source", func(cfg *v1.KafkaSourceSpec) SourceConnector { return NewKafkaSourceConnector(cfg) }),
+	"kafka": createSourceConnectorWithOptions[v1.KafkaSourceSpec]("kafka source", func(cfg *v1.KafkaSourceSpec, opts *SourceConnectorOptions) SourceConnector {
+		return NewKafkaSourceConnectorWithOptions(cfg, opts)
+	}),
 	"postgresql": createSourceConnectorWithOptions[v1.PostgreSQLSourceSpec]("postgresql source", func(cfg *v1.PostgreSQLSourceSpec, opts *SourceConnectorOptions) SourceConnector {
 		return NewPostgreSQLSourceConnectorWithOptions(cfg, opts)
 	}),
@@ -41,7 +43,9 @@ var sourceConnectorRegistry = map[string]sourceConnectorFactory{
 	"clickhouse": createSourceConnectorWithOptions[v1.ClickHouseSourceSpec]("clickhouse source", func(cfg *v1.ClickHouseSourceSpec, opts *SourceConnectorOptions) SourceConnector {
 		return NewClickHouseSourceConnectorWithOptions(cfg, opts)
 	}),
-	"nessie": createSourceConnector[v1.NessieSourceSpec]("nessie source", func(cfg *v1.NessieSourceSpec) SourceConnector { return NewNessieSourceConnector(cfg) }),
+	"nessie": createSourceConnectorWithOptions[v1.NessieSourceSpec]("nessie source", func(cfg *v1.NessieSourceSpec, opts *SourceConnectorOptions) SourceConnector {
+		return NewNessieSourceConnectorWithOptions(cfg, opts)
+	}),
 }
 
 var sinkConnectorRegistry = map[string]sinkConnectorFactory{

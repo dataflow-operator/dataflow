@@ -86,18 +86,30 @@ type NessieSourceConnector struct {
 	baseConnectorRWMutex
 	connectorLogger
 	connectorMetadata
-	config *v1.NessieSourceSpec
-	cat    *rest.Catalog
-	tbl    *table.Table
+	config            *v1.NessieSourceSpec
+	cat               *rest.Catalog
+	tbl               *table.Table
+	channelBufferSize int
 }
 
 // NewNessieSourceConnector creates a new Nessie source connector.
 func NewNessieSourceConnector(config *v1.NessieSourceSpec) *NessieSourceConnector {
-	return &NessieSourceConnector{
+	return NewNessieSourceConnectorWithOptions(config, nil)
+}
+
+// NewNessieSourceConnectorWithOptions creates a new Nessie source connector with optional settings.
+func NewNessieSourceConnectorWithOptions(config *v1.NessieSourceSpec, opts *SourceConnectorOptions) *NessieSourceConnector {
+	c := &NessieSourceConnector{
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "source"},
 	}
+	if opts != nil && opts.ChannelBufferSize > 0 {
+		c.channelBufferSize = opts.ChannelBufferSize
+	} else {
+		c.channelBufferSize = constants.DefaultChannelBufferSize
+	}
+	return c
 }
 
 // Connect establishes connection to Nessie and loads the Iceberg table.
@@ -146,7 +158,7 @@ func (c *NessieSourceConnector) Read(ctx context.Context) (<-chan *types.Message
 	if c.config.PollInterval != nil && *c.config.PollInterval > 0 {
 		pollInterval = time.Duration(*c.config.PollInterval) * time.Second
 	}
-	return runPollingRead(ctx, pollInterval, c.readOnce), nil
+	return runPollingRead(ctx, pollInterval, c.readOnce, c.channelBufferSize), nil
 }
 
 func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *types.Message) {

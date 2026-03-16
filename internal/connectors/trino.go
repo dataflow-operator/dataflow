@@ -42,8 +42,9 @@ type TrinoSourceConnector struct {
 	client          *trinoClient
 	lastReadID      interface{} // advanced only on Ack (after sink write)
 	readStateMu     sync.Mutex  // protects lastReadID
-	checkpointStore checkpoint.Store
-	sourceType      string
+	checkpointStore   checkpoint.Store
+	sourceType        string
+	channelBufferSize int
 }
 
 // NewTrinoSourceConnector creates a new Trino source connector
@@ -67,6 +68,13 @@ func NewTrinoSourceConnectorWithOptions(config *v1.TrinoSourceSpec, opts *Source
 		if len(opts.InitialCheckpoint) > 0 {
 			t.applyInitialCheckpoint(opts.InitialCheckpoint)
 		}
+		if opts.ChannelBufferSize > 0 {
+			t.channelBufferSize = opts.ChannelBufferSize
+		} else {
+			t.channelBufferSize = constants.DefaultChannelBufferSize
+		}
+	} else {
+		t.channelBufferSize = constants.DefaultChannelBufferSize
 	}
 	return t
 }
@@ -130,7 +138,7 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 		if err := t.readRows(ctx, ch); err != nil {
 			t.logger.Error(err, "Failed to read rows")
 		}
-	}), nil
+	}, t.channelBufferSize), nil
 }
 
 func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {

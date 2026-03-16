@@ -75,6 +75,12 @@ type DataFlowSpec struct {
 	// Default: true. Set to false to disable.
 	// +optional
 	CheckpointPersistence *bool `json:"checkpointPersistence,omitempty"`
+
+	// ChannelBufferSize is the buffer size for message channels between source, processor, and sink.
+	// Larger values reduce blocking when sink is slower than source (e.g. high Kafka throughput).
+	// Default: 100. Recommended for high throughput: 500–1000.
+	// +optional
+	ChannelBufferSize *int32 `json:"channelBufferSize,omitempty"`
 }
 
 // SourceSpec defines the source configuration (type + config).

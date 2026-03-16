@@ -45,16 +45,17 @@ var checkpointSourceTypes = map[string]bool{
 	"trino":      true,
 }
 
-// buildSourceConnectorOptions builds connector options for CreateSourceConnector when checkpoint is enabled.
-func buildSourceConnectorOptions(ctx context.Context, sourceType string, store checkpoint.Store) []connectors.SourceConnectorOption {
-	if store == nil || !checkpointSourceTypes[sourceType] {
-		return nil
+// buildSourceConnectorOptions builds connector options for CreateSourceConnector.
+func buildSourceConnectorOptions(ctx context.Context, sourceType string, store checkpoint.Store, channelBufferSize *int32) []connectors.SourceConnectorOption {
+	var opts []connectors.SourceConnectorOption
+	if store != nil && checkpointSourceTypes[sourceType] {
+		opts = append(opts, connectors.WithCheckpointStore(store, sourceType))
+		if data, err := connectors.LoadInitialCheckpoint(ctx, store, sourceType); err == nil && len(data) > 0 {
+			opts = append(opts, connectors.WithInitialCheckpoint(data))
+		}
 	}
-	opts := []connectors.SourceConnectorOption{
-		connectors.WithCheckpointStore(store, sourceType),
-	}
-	if data, err := connectors.LoadInitialCheckpoint(ctx, store, sourceType); err == nil && len(data) > 0 {
-		opts = append(opts, connectors.WithInitialCheckpoint(data))
+	if channelBufferSize != nil && *channelBufferSize > 0 {
+		opts = append(opts, connectors.WithChannelBufferSize(int(*channelBufferSize)))
 	}
 	return opts
 }

@@ -26,21 +26,29 @@ import (
 
 func TestBuildSourceConnectorOptions_NoStore(t *testing.T) {
 	ctx := context.Background()
-	opts := buildSourceConnectorOptions(ctx, "postgresql", nil)
+	opts := buildSourceConnectorOptions(ctx, "postgresql", nil, nil)
 	assert.Nil(t, opts)
 }
 
 func TestBuildSourceConnectorOptions_NonCheckpointSource(t *testing.T) {
 	ctx := context.Background()
 	store := checkpoint.NoopStore{}
-	opts := buildSourceConnectorOptions(ctx, "kafka", store)
+	opts := buildSourceConnectorOptions(ctx, "kafka", store, nil)
 	assert.Nil(t, opts)
 }
 
 func TestBuildSourceConnectorOptions_PostgreSQL(t *testing.T) {
 	ctx := context.Background()
 	store := checkpoint.NoopStore{}
-	opts := buildSourceConnectorOptions(ctx, "postgresql", store)
+	opts := buildSourceConnectorOptions(ctx, "postgresql", store, nil)
 	assert.NotNil(t, opts)
 	assert.GreaterOrEqual(t, len(opts), 1)
+}
+
+func TestBuildSourceConnectorOptions_ChannelBufferSize(t *testing.T) {
+	ctx := context.Background()
+	size := int32(500)
+	opts := buildSourceConnectorOptions(ctx, "kafka", nil, &size)
+	assert.NotNil(t, opts)
+	assert.Equal(t, 1, len(opts))
 }

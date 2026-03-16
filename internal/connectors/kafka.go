@@ -50,9 +50,10 @@ type KafkaSourceConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
-	config       *v1.KafkaSourceSpec
-	consumer     sarama.ConsumerGroup
-	avroSchema   avro.Schema           // Avro schema for deserialization (when not using Schema Registry)
+	config            *v1.KafkaSourceSpec
+	consumer          sarama.ConsumerGroup
+	channelBufferSize int
+	avroSchema        avro.Schema           // Avro schema for deserialization (when not using Schema Registry)
 	schemaCache  *schemaCache          // Cache for schemas from Schema Registry
 	schemaClient *schemaRegistryClient // Client for Schema Registry
 }
@@ -73,11 +74,22 @@ type schemaRegistryClient struct {
 
 // NewKafkaSourceConnector creates a new Kafka source connector
 func NewKafkaSourceConnector(config *v1.KafkaSourceSpec) *KafkaSourceConnector {
-	return &KafkaSourceConnector{
+	return NewKafkaSourceConnectorWithOptions(config, nil)
+}
+
+// NewKafkaSourceConnectorWithOptions creates a new Kafka source connector with optional settings.
+func NewKafkaSourceConnectorWithOptions(config *v1.KafkaSourceSpec, opts *SourceConnectorOptions) *KafkaSourceConnector {
+	k := &KafkaSourceConnector{
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "kafka", connectorRole: "source"},
 	}
+	if opts != nil && opts.ChannelBufferSize > 0 {
+		k.channelBufferSize = opts.ChannelBufferSize
+	} else {
+		k.channelBufferSize = constants.DefaultChannelBufferSize
+	}
+	return k
 }
 
 // Connect establishes connection to Kafka
@@ -464,7 +476,7 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
 
-	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+	msgChan := make(chan *types.Message, k.channelBufferSize)
 	errorChan := make(chan error, constants.DefaultSingleValueChannelBufferSize)
 
 	handler := &kafkaConsumerGroupHandler{

@@ -951,6 +951,13 @@ spec:
                         x-kubernetes-list-type: atomic
                     type: object
                 type: object
+              channelBufferSize:
+                description: |-
+                  ChannelBufferSize is the buffer size for message channels between source, processor, and sink.
+                  Larger values reduce blocking when sink is slower than source (e.g. high Kafka throughput).
+                  Default: 100. Recommended for high throughput: 500–1000.
+                format: int32
+                type: integer
               checkpointPersistence:
                 description: |-
                   CheckpointPersistence enables persisting source checkpoint (lastReadID, lastReadChangeTime) to a ConfigMap.

@@ -239,8 +239,12 @@ func QuotePostgreSQLTableRef(table string) string {
 
 // runPollingRead creates a message channel and starts a goroutine that calls readFn
 // on a ticker, returning the channel. Used by polling-based source connectors.
-func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func(ctx context.Context, ch chan *types.Message)) <-chan *types.Message {
-	msgChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+// bufferSize: channel buffer size; 0 uses DefaultChannelBufferSize.
+func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func(ctx context.Context, ch chan *types.Message), bufferSize int) <-chan *types.Message {
+	if bufferSize <= 0 {
+		bufferSize = constants.DefaultChannelBufferSize
+	}
+	msgChan := make(chan *types.Message, bufferSize)
 	go func() {
 		defer close(msgChan)
 		readFn(ctx, msgChan)

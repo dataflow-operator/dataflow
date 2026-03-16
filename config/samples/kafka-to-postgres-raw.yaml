@@ -10,6 +10,7 @@ metadata:
   name: kafka-to-postgres-raw
   namespace: dataflow-staging
 spec:
+  channelBufferSize: 500   # буфер каналов source→processor→sink (по умолчанию 100)
   source:
     type: kafka
     config:
@@ -22,5 +23,7 @@ spec:
     config:
       connectionString: "postgres://postgres:dataflow@staging-postgresql:5432/dataflow?sslmode=disable"
       table: kafka-to-postgres-raw-events
+      batchSize: 10000                    # было 1
+      batchFlushIntervalSeconds: 2      # flush чаще при низком трафике
       autoCreateTable: true
       rawMode: true

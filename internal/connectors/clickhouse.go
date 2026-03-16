@@ -47,8 +47,9 @@ type ClickHouseSourceConnector struct {
 	lastReadID      int64      // Track last read ID to avoid duplicates
 	lastReadTime    *time.Time // Track last read time to avoid duplicates
 	readStateMu     sync.Mutex // protects lastReadID, lastReadTime (separate from conn to avoid blocking Connect/Close)
-	checkpointStore checkpoint.Store
-	sourceType      string
+	checkpointStore   checkpoint.Store
+	sourceType        string
+	channelBufferSize int
 }
 
 // NewClickHouseSourceConnector creates a new ClickHouse source connector
@@ -72,6 +73,13 @@ func NewClickHouseSourceConnectorWithOptions(config *v1.ClickHouseSourceSpec, op
 		if len(opts.InitialCheckpoint) > 0 {
 			c.applyInitialCheckpoint(opts.InitialCheckpoint)
 		}
+		if opts.ChannelBufferSize > 0 {
+			c.channelBufferSize = opts.ChannelBufferSize
+		} else {
+			c.channelBufferSize = constants.DefaultChannelBufferSize
+		}
+	} else {
+		c.channelBufferSize = constants.DefaultChannelBufferSize
 	}
 	return c
 }
@@ -139,7 +147,7 @@ func (c *ClickHouseSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 	if c.config.PollInterval != nil {
 		pollInterval = time.Duration(*c.config.PollInterval) * time.Second
 	}
-	return runPollingRead(ctx, pollInterval, c.readRows), nil
+	return runPollingRead(ctx, pollInterval, c.readRows, c.channelBufferSize), nil
 }
 
 func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {

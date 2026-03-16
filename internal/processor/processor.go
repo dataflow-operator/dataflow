@@ -76,7 +76,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 	}
 
 	ctx := context.Background()
-	sourceOpts := buildSourceConnectorOptions(ctx, spec.Source.Type, options.CheckpointStore)
+	sourceOpts := buildSourceConnectorOptions(ctx, spec.Source.Type, options.CheckpointStore, spec.ChannelBufferSize)
 
 	// Create source connector
 	source, err := connectors.CreateSourceConnector(&spec.Source, sourceOpts...)
@@ -196,7 +196,7 @@ func (p *Processor) Start(ctx context.Context) error {
 	p.logger.Info("Started reading from source")
 
 	// Process messages
-	processedChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+	processedChan := make(chan *types.Message, p.channelBufferSize())
 	go p.processMessages(ctx, msgChan, processedChan)
 
 	// Write messages to sink(s)
@@ -243,6 +243,14 @@ func connectWithRetry(ctx context.Context, connector Connectable, connectorName 
 			}
 		}
 	}
+}
+
+// channelBufferSize returns the configured channel buffer size for the processor (default: constants.DefaultChannelBufferSize).
+func (p *Processor) channelBufferSize() int {
+	if p.spec != nil && p.spec.ChannelBufferSize != nil && *p.spec.ChannelBufferSize > 0 {
+		return int(*p.spec.ChannelBufferSize)
+	}
+	return constants.DefaultChannelBufferSize
 }
 
 // initConnector sets logger and metadata on a connector if it supports the respective interfaces.
@@ -477,9 +485,9 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 		// Route messages to different sinks
 		routerChans := make(map[string]chan *types.Message)
 		for condition := range p.routerSinks {
-			routerChans[condition] = make(chan *types.Message, constants.DefaultChannelBufferSize)
+			routerChans[condition] = make(chan *types.Message, p.channelBufferSize())
 		}
-		defaultChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+		defaultChan := make(chan *types.Message, p.channelBufferSize())
 
 		// Route messages
 		go func() {
@@ -621,7 +629,7 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 	// Process messages with error handling
 	// Since Write interface doesn't allow per-message error handling,
 	// we'll use a wrapper that processes messages individually
-	errorChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+	errorChan := make(chan *types.Message, p.channelBufferSize())
 	var wg sync.WaitGroup
 	hasErrors := false
 	var hasErrorsMu sync.Mutex
@@ -637,7 +645,7 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 
 	// Process messages individually to catch errors
 	// We'll use a buffered channel approach to handle errors
-	mainSinkChan := make(chan *types.Message, constants.DefaultChannelBufferSize)
+	mainSinkChan := make(chan *types.Message, p.channelBufferSize())
 	writeErrChan := make(chan error, constants.DefaultSingleValueChannelBufferSize)
 
 	// Start main sink writer in goroutine
