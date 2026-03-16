@@ -1,3 +1,5 @@
+## [1.0.9](https://github.com/dataflow-operator/dataflow/compare/v1.0.8...v1.0.9) (2026-03-16)
+
 ### Added
 
 - **channelBufferSize** in DataFlow spec: configurable buffer size for message channels between source, processor, and sink. Default 100; use 500–1000 for high Kafka throughput to reduce blocking when the sink is slower than the source.
