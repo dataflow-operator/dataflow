@@ -333,6 +333,19 @@ type ClickHouseSourceSpec struct {
 // NessieSourceSpec defines Nessie (Iceberg REST catalog) source configuration.
 // All catalog operations (load table, read) are performed in the context of the given branch.
 // URI for Nessie Iceberg REST: {baseURL}/iceberg[/{branch}][|{warehouse}].
+type NessieAuthenticationType string
+
+const (
+	// NessieAuthenticationAuto uses Bearer when token is configured, otherwise Basic when credentials are configured.
+	NessieAuthenticationAuto NessieAuthenticationType = "AUTO"
+	// NessieAuthenticationBearer forces Bearer token authentication.
+	NessieAuthenticationBearer NessieAuthenticationType = "BEARER"
+	// NessieAuthenticationBasic forces HTTP Basic authentication.
+	NessieAuthenticationBasic NessieAuthenticationType = "BASIC"
+	// NessieAuthenticationNone disables Authorization header.
+	NessieAuthenticationNone NessieAuthenticationType = "NONE"
+)
+
 type NessieSourceSpec struct {
 	// BaseURL is the Nessie server base URL (e.g. https://nessie:19120).
 	BaseURL string `json:"baseURL"`
@@ -366,6 +379,11 @@ type NessieSourceSpec struct {
 	// BearerToken for Nessie (optional if TokenSecretRef is set).
 	// +optional
 	BearerToken string `json:"bearerToken,omitempty"`
+
+	// AuthenticationType controls how Authorization header is sent to Nessie/Iceberg REST.
+	// Supported: AUTO (default), BEARER, BASIC, NONE.
+	// +optional
+	AuthenticationType NessieAuthenticationType `json:"authenticationType,omitempty"`
 
 	// BaseURLSecretRef references a Kubernetes secret for base URL.
 	// +optional
@@ -518,6 +536,11 @@ type NessieSinkSpec struct {
 	// BearerToken for Nessie (optional if TokenSecretRef is set).
 	// +optional
 	BearerToken string `json:"bearerToken,omitempty"`
+
+	// AuthenticationType controls how Authorization header is sent to Nessie/Iceberg REST.
+	// Supported: AUTO (default), BEARER, BASIC, NONE.
+	// +optional
+	AuthenticationType NessieAuthenticationType `json:"authenticationType,omitempty"`
 
 	// BaseURLSecretRef references a Kubernetes secret for base URL.
 	// +optional

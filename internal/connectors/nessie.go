@@ -20,8 +20,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -54,16 +57,146 @@ func buildNessieIcebergURI(baseURL, branch, warehouse string) string {
 	return path
 }
 
-func nessieAuthOptions(bearerToken string, basicAuth *v1.BasicAuthConfig) []rest.Option {
-	var opts []rest.Option
-	if bearerToken != "" {
-		opts = append(opts, rest.WithOAuthToken(bearerToken))
+func resolveNessieAuthentication(authType v1.NessieAuthenticationType, bearerToken string, basicAuth *v1.BasicAuthConfig) (token string, basic string) {
+	mode := strings.ToUpper(strings.TrimSpace(string(authType)))
+	if mode == "" {
+		mode = string(v1.NessieAuthenticationAuto)
 	}
-	if basicAuth != nil && basicAuth.Username != "" && basicAuth.Password != "" {
-		basic := "Basic " + base64.StdEncoding.EncodeToString([]byte(basicAuth.Username+":"+basicAuth.Password))
+	switch mode {
+	case string(v1.NessieAuthenticationNone):
+		return "", ""
+	case string(v1.NessieAuthenticationBearer):
+		return bearerToken, ""
+	case string(v1.NessieAuthenticationBasic):
+		if basicAuth != nil && basicAuth.Username != "" && basicAuth.Password != "" {
+			return "", "Basic " + base64.StdEncoding.EncodeToString([]byte(basicAuth.Username+":"+basicAuth.Password))
+		}
+		return "", ""
+	case string(v1.NessieAuthenticationAuto):
+		fallthrough
+	default:
+		if bearerToken != "" {
+			return bearerToken, ""
+		}
+		if basicAuth != nil && basicAuth.Username != "" && basicAuth.Password != "" {
+			return "", "Basic " + base64.StdEncoding.EncodeToString([]byte(basicAuth.Username+":"+basicAuth.Password))
+		}
+		return "", ""
+	}
+}
+
+func nessieAuthOptions(authType v1.NessieAuthenticationType, bearerToken string, basicAuth *v1.BasicAuthConfig) []rest.Option {
+	var opts []rest.Option
+	token, basic := resolveNessieAuthentication(authType, bearerToken, basicAuth)
+	if token != "" {
+		opts = append(opts, rest.WithOAuthToken(token))
+	}
+	if basic != "" {
 		opts = append(opts, rest.WithCustomTransport(&basicAuthTransport{base: http.DefaultTransport, auth: basic}))
 	}
 	return opts
+}
+
+const (
+	nessiePreflightTimeout = 5 * time.Second
+	maxPreflightBodyBytes  = 4096
+)
+
+type nessiePreflightConfig struct {
+	baseURL     string
+	branch      string
+	authType    v1.NessieAuthenticationType
+	bearerToken string
+	basicAuth   *v1.BasicAuthConfig
+}
+
+func (c *NessieSourceConnector) preflightConfig() nessiePreflightConfig {
+	return nessiePreflightConfig{
+		baseURL:     c.config.BaseURL,
+		branch:      c.config.Branch,
+		authType:    c.config.AuthenticationType,
+		bearerToken: c.config.BearerToken,
+		basicAuth:   c.config.BasicAuth,
+	}
+}
+
+func (c *NessieSinkConnector) preflightConfig() nessiePreflightConfig {
+	return nessiePreflightConfig{
+		baseURL:     c.config.BaseURL,
+		branch:      c.config.Branch,
+		authType:    c.config.AuthenticationType,
+		bearerToken: c.config.BearerToken,
+		basicAuth:   c.config.BasicAuth,
+	}
+}
+
+func runNessiePreflight(ctx context.Context, cfg nessiePreflightConfig) error {
+	baseURL := strings.TrimSuffix(strings.TrimSpace(cfg.baseURL), "/")
+	if baseURL == "" {
+		return fmt.Errorf("nessie preflight: baseURL is empty")
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("nessie preflight: invalid baseURL %q: %w", cfg.baseURL, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("nessie preflight: baseURL must include scheme and host, got %q", cfg.baseURL)
+	}
+
+	preflightCtx, cancel := context.WithTimeout(ctx, nessiePreflightTimeout)
+	defer cancel()
+	client := &http.Client{}
+
+	if err := nessiePreflightRequest(preflightCtx, client, baseURL+"/api/v2/config", cfg, "server config"); err != nil {
+		return err
+	}
+
+	branch := cfg.branch
+	if branch == "" {
+		branch = "main"
+	}
+	refURL := fmt.Sprintf("%s/api/v2/trees/%s", baseURL, url.PathEscape(branch))
+	if err := nessiePreflightRequest(preflightCtx, client, refURL, cfg, fmt.Sprintf("branch %q", branch)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func nessiePreflightRequest(ctx context.Context, client *http.Client, endpoint string, cfg nessiePreflightConfig, what string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("nessie preflight: failed to prepare %s request: %w", what, err)
+	}
+	token, basic := resolveNessieAuthentication(cfg.authType, cfg.bearerToken, cfg.basicAuth)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if basic != "" {
+		req.Header.Set("Authorization", basic)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("nessie preflight: timeout while checking %s at %s", what, endpoint)
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("nessie preflight: context canceled while checking %s at %s: %w", what, endpoint, ctx.Err())
+		}
+		return fmt.Errorf("nessie preflight: failed to reach %s at %s: %w", what, endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxPreflightBodyBytes))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("nessie preflight: %s check failed (%s): %s", what, endpoint, msg)
+	}
+
+	return nil
 }
 
 // basicAuthTransport adds Authorization header to outgoing requests.
@@ -125,8 +258,11 @@ func (c *NessieSourceConnector) Connect(ctx context.Context) error {
 	}
 	uri := buildNessieIcebergURI(c.config.BaseURL, branch, c.config.Warehouse)
 	c.logger.Info("Connecting to Nessie", "uri", uri, "namespace", c.config.Namespace, "table", c.config.Table)
+	if err := runNessiePreflight(ctx, c.preflightConfig()); err != nil {
+		return err
+	}
 
-	opts := nessieAuthOptions(c.config.BearerToken, c.config.BasicAuth)
+	opts := nessieAuthOptions(c.config.AuthenticationType, c.config.BearerToken, c.config.BasicAuth)
 	if c.config.Warehouse != "" {
 		opts = append(opts, rest.WithWarehouseLocation(c.config.Warehouse))
 	}
@@ -236,8 +372,11 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 	}
 	uri := buildNessieIcebergURI(c.config.BaseURL, branch, c.config.Warehouse)
 	c.logger.Info("Connecting to Nessie sink", "uri", uri, "namespace", c.config.Namespace, "table", c.config.Table)
+	if err := runNessiePreflight(ctx, c.preflightConfig()); err != nil {
+		return err
+	}
 
-	opts := nessieAuthOptions(c.config.BearerToken, c.config.BasicAuth)
+	opts := nessieAuthOptions(c.config.AuthenticationType, c.config.BearerToken, c.config.BasicAuth)
 	if c.config.Warehouse != "" {
 		opts = append(opts, rest.WithWarehouseLocation(c.config.Warehouse))
 	}

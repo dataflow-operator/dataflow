@@ -1,0 +1,21 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: nessie-to-kafka
+spec:
+  source:
+    type: nessie
+    config:
+      baseURL: "http://nessie:19120"
+      branch: main
+      authenticationType: BEARER
+      bearerToken: "replace-with-token"
+      namespace: analytics
+      table: events
+      pollInterval: 10
+  sink:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: output-topic

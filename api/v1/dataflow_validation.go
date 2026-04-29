@@ -18,6 +18,7 @@ package v1
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/dataflow-operator/dataflow/internal/providers"
 	corev1 "k8s.io/api/core/v1"
@@ -192,6 +193,7 @@ func validateNessieSource(n *NessieSourceSpec, f *field.Path) field.ErrorList {
 	if n.TokenSecretRef != nil {
 		all = append(all, validateSecretRef(n.TokenSecretRef, f.Child("tokenSecretRef"))...)
 	}
+	all = append(all, validateNessieAuthConfig(string(n.AuthenticationType), n.BearerToken, n.TokenSecretRef, n.BasicAuth, f)...)
 	return all
 }
 
@@ -220,6 +222,44 @@ func validateNessieSink(n *NessieSinkSpec, f *field.Path) field.ErrorList {
 	}
 	if n.TokenSecretRef != nil {
 		all = append(all, validateSecretRef(n.TokenSecretRef, f.Child("tokenSecretRef"))...)
+	}
+	all = append(all, validateNessieAuthConfig(string(n.AuthenticationType), n.BearerToken, n.TokenSecretRef, n.BasicAuth, f)...)
+	return all
+}
+
+func validateNessieAuthConfig(authType, bearerToken string, tokenSecretRef *SecretRef, basicAuth *BasicAuthConfig, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+
+	normalized := strings.ToUpper(strings.TrimSpace(authType))
+	if normalized == "" {
+		normalized = string(NessieAuthenticationAuto)
+	}
+	allowed := []string{
+		string(NessieAuthenticationAuto),
+		string(NessieAuthenticationBearer),
+		string(NessieAuthenticationBasic),
+		string(NessieAuthenticationNone),
+	}
+	switch normalized {
+	case string(NessieAuthenticationAuto), string(NessieAuthenticationNone):
+		return all
+	case string(NessieAuthenticationBearer):
+		if bearerToken == "" && tokenSecretRef == nil {
+			all = append(all, field.Required(f.Child("bearerToken"), "bearerToken or tokenSecretRef is required when authenticationType=BEARER"))
+		}
+	case string(NessieAuthenticationBasic):
+		if basicAuth == nil {
+			all = append(all, field.Required(f.Child("basicAuth"), "basicAuth is required when authenticationType=BASIC"))
+			return all
+		}
+		if basicAuth.Username == "" && basicAuth.UsernameSecretRef == nil {
+			all = append(all, field.Required(f.Child("basicAuth", "username"), "username or usernameSecretRef is required when authenticationType=BASIC"))
+		}
+		if basicAuth.Password == "" && basicAuth.PasswordSecretRef == nil {
+			all = append(all, field.Required(f.Child("basicAuth", "password"), "password or passwordSecretRef is required when authenticationType=BASIC"))
+		}
+	default:
+		all = append(all, field.NotSupported(f.Child("authenticationType"), authType, allowed))
 	}
 	return all
 }
