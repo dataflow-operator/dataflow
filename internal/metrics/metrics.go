@@ -246,6 +246,33 @@ var (
 		},
 		[]string{"namespace", "name", "stage", "error_type"},
 	)
+
+	// ControllerReconcileDuration — reconcile duration by result.
+	ControllerReconcileDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dataflow_controller_reconcile_duration_seconds",
+			Help:    "Duration of DataFlow controller reconcile loop",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"result"},
+	)
+
+	// ControllerReconcileErrors — reconcile errors by stage.
+	ControllerReconcileErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dataflow_controller_reconcile_errors_total",
+			Help: "Total number of DataFlow controller reconcile errors by stage",
+		},
+		[]string{"stage"},
+	)
+
+	// ControllerReconcileInflight — currently running reconcile loops.
+	ControllerReconcileInflight = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dataflow_controller_reconcile_inflight",
+			Help: "Number of in-flight DataFlow reconciles",
+		},
+	)
 )
 
 func init() {
@@ -275,6 +302,9 @@ func init() {
 		TaskQueueWaitTime,
 		TaskOperationsTotal,
 		TaskStageErrors,
+		ControllerReconcileDuration,
+		ControllerReconcileErrors,
+		ControllerReconcileInflight,
 	)
 }
 
@@ -416,4 +446,14 @@ func RecordTaskOperation(namespace, name, operation, status string) {
 // RecordTaskStageError records error at processing stage.
 func RecordTaskStageError(namespace, name, stage, errorType string) {
 	TaskStageErrors.WithLabelValues(namespace, name, stage, errorType).Inc()
+}
+
+// ObserveControllerReconcileDuration records reconcile duration with result label.
+func ObserveControllerReconcileDuration(result string, durationSeconds float64) {
+	ControllerReconcileDuration.WithLabelValues(result).Observe(durationSeconds)
+}
+
+// RecordControllerReconcileError increments reconcile error counter for a stage.
+func RecordControllerReconcileError(stage string) {
+	ControllerReconcileErrors.WithLabelValues(stage).Inc()
 }

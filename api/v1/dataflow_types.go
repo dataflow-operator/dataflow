@@ -918,6 +918,14 @@ type DataFlowStatus struct {
 	// ErrorCount is the number of errors encountered
 	// +optional
 	ErrorCount int64 `json:"errorCount,omitempty"`
+
+	// Conditions represent the latest available observations of the DataFlow state.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 //+kubebuilder:object:root=true

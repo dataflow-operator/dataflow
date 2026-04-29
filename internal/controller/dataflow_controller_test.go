@@ -29,6 +29,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -132,30 +133,63 @@ func (c *deploymentUpdateConflictClient) Update(ctx context.Context, obj client.
 	return c.Client.Update(ctx, obj, opts...)
 }
 
+type listErrorClient struct {
+	client.Client
+	err error
+}
+
+func (c *listErrorClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return c.err
+}
+
 func TestNewDataFlowReconciler(t *testing.T) {
 	tests := []struct {
 		name                 string
 		setProcessorImageEnv string
+		setWatchSecretsEnv   string
 		wantImage            string
+		wantWatchSecrets     bool
 	}{
 		{
 			name:                 "default processor image from version",
 			setProcessorImageEnv: "",
+			setWatchSecretsEnv:   "",
 			wantImage:            version.DefaultProcessorImage(),
+			wantWatchSecrets:     true,
 		},
 		{
 			name:                 "custom processor image from env",
 			setProcessorImageEnv: "my.registry/dataflow-processor:v1.2.3",
+			setWatchSecretsEnv:   "",
 			wantImage:            "my.registry/dataflow-processor:v1.2.3",
+			wantWatchSecrets:     true,
+		},
+		{
+			name:                 "can disable secrets watch",
+			setProcessorImageEnv: "",
+			setWatchSecretsEnv:   "false",
+			wantImage:            version.DefaultProcessorImage(),
+			wantWatchSecrets:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prev := os.Getenv("PROCESSOR_IMAGE")
-			defer func() { _ = os.Setenv("PROCESSOR_IMAGE", prev) }()
+			prevWatchSecrets := os.Getenv("WATCH_SECRETS")
+			defer func() {
+				_ = os.Setenv("PROCESSOR_IMAGE", prev)
+				_ = os.Setenv("WATCH_SECRETS", prevWatchSecrets)
+			}()
 			if tt.setProcessorImageEnv != "" {
 				require.NoError(t, os.Setenv("PROCESSOR_IMAGE", tt.setProcessorImageEnv))
+			} else {
+				require.NoError(t, os.Unsetenv("PROCESSOR_IMAGE"))
+			}
+			if tt.setWatchSecretsEnv != "" {
+				require.NoError(t, os.Setenv("WATCH_SECRETS", tt.setWatchSecretsEnv))
+			} else {
+				require.NoError(t, os.Unsetenv("WATCH_SECRETS"))
 			}
 
 			scheme := runtime.NewScheme()
@@ -168,6 +202,7 @@ func TestNewDataFlowReconciler(t *testing.T) {
 			assert.Equal(t, fakeClient, reconciler.Client)
 			assert.Equal(t, scheme, reconciler.Scheme)
 			assert.Equal(t, tt.wantImage, reconciler.processorImage)
+			assert.Equal(t, tt.wantWatchSecrets, reconciler.watchSecrets)
 		})
 	}
 }
@@ -260,6 +295,145 @@ func TestEnqueueAllDataFlowsForOperatorUpdate(t *testing.T) {
 	otherDeployment.SetNamespace(opNs)
 	reqs2 := reconciler.enqueueAllDataFlowsForOperatorUpdate(ctx, otherDeployment)
 	assert.Nil(t, reqs2)
+}
+
+func TestShouldEnqueueOnOperatorDeploymentUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := &DataFlowReconciler{
+		Client:                      fakeClient,
+		Scheme:                      scheme,
+		operatorDeploymentName:      "dataflow-operator",
+		operatorDeploymentNamespace: "dataflow-system",
+	}
+
+	base := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "dataflow-operator",
+			Namespace:  "dataflow-system",
+			Generation: 2,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "operator", Image: "repo/operator:v1"}},
+				},
+			},
+		},
+	}
+
+	t.Run("ignores status-only update", func(t *testing.T) {
+		oldDep := base.DeepCopy()
+		newDep := base.DeepCopy()
+		newDep.Status.ReadyReplicas = 1
+		assert.False(t, reconciler.shouldEnqueueOnOperatorDeploymentUpdate(oldDep, newDep))
+	})
+
+	t.Run("accepts generation change", func(t *testing.T) {
+		oldDep := base.DeepCopy()
+		newDep := base.DeepCopy()
+		newDep.Generation = 3
+		assert.True(t, reconciler.shouldEnqueueOnOperatorDeploymentUpdate(oldDep, newDep))
+	})
+
+	t.Run("accepts spec template change", func(t *testing.T) {
+		oldDep := base.DeepCopy()
+		newDep := base.DeepCopy()
+		newDep.Spec.Template.Spec.Containers[0].Image = "repo/operator:v2"
+		assert.True(t, reconciler.shouldEnqueueOnOperatorDeploymentUpdate(oldDep, newDep))
+	})
+
+	t.Run("ignores non-operator deployment", func(t *testing.T) {
+		oldDep := base.DeepCopy()
+		newDep := base.DeepCopy()
+		newDep.Name = "other"
+		newDep.Generation = 3
+		assert.False(t, reconciler.shouldEnqueueOnOperatorDeploymentUpdate(oldDep, newDep))
+	})
+}
+
+func TestEnqueueAllDataFlowsForOperatorUpdate_ListErrorReturnsNil(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := &DataFlowReconciler{
+		Client:                      &listErrorClient{Client: fakeClient, err: fmt.Errorf("list failed")},
+		Scheme:                      scheme,
+		operatorDeploymentName:      "dataflow-operator",
+		operatorDeploymentNamespace: "dataflow-system",
+	}
+
+	operatorDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "dataflow-operator", Namespace: "dataflow-system"},
+	}
+	reqs := reconciler.enqueueAllDataFlowsForOperatorUpdate(context.Background(), operatorDeployment)
+	assert.Nil(t, reqs)
+}
+
+func TestEnqueueAllDataFlowsForSecretUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	df1 := &dataflowv1.DataFlow{ObjectMeta: metav1.ObjectMeta{Name: "df1", Namespace: "default"}}
+	df2 := &dataflowv1.DataFlow{ObjectMeta: metav1.ObjectMeta{Name: "df2", Namespace: "default"}}
+	dfOtherNamespace := &dataflowv1.DataFlow{ObjectMeta: metav1.ObjectMeta{Name: "df3", Namespace: "other"}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(df1, df2, dfOtherNamespace).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "default"}}
+	reqs := reconciler.enqueueAllDataFlowsForSecretUpdate(context.Background(), secret)
+	assert.Len(t, reqs, 2)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		names[r.Namespace+"/"+r.Name] = true
+	}
+	assert.True(t, names["default/df1"])
+	assert.True(t, names["default/df2"])
+	assert.False(t, names["other/df3"])
+}
+
+func TestShouldEnqueueOnSecretUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+
+	base := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "default"},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("secret"),
+		},
+		Type: corev1.SecretTypeOpaque,
+	}
+
+	t.Run("ignores metadata-only update", func(t *testing.T) {
+		oldSecret := base.DeepCopy()
+		newSecret := base.DeepCopy()
+		newSecret.Annotations = map[string]string{"x": "y"}
+		assert.False(t, reconciler.shouldEnqueueOnSecretUpdate(oldSecret, newSecret))
+	})
+
+	t.Run("accepts data change", func(t *testing.T) {
+		oldSecret := base.DeepCopy()
+		newSecret := base.DeepCopy()
+		newSecret.Data["password"] = []byte("new-secret")
+		assert.True(t, reconciler.shouldEnqueueOnSecretUpdate(oldSecret, newSecret))
+	})
+
+	t.Run("accepts type change", func(t *testing.T) {
+		oldSecret := base.DeepCopy()
+		newSecret := base.DeepCopy()
+		newSecret.Type = corev1.SecretTypeDockerConfigJson
+		assert.True(t, reconciler.shouldEnqueueOnSecretUpdate(oldSecret, newSecret))
+	})
 }
 
 func TestUpdateStatusWithRetry_SuccessOnFirstAttempt(t *testing.T) {
@@ -436,6 +610,48 @@ func TestReconcileTimeout(t *testing.T) {
 	})
 }
 
+func TestPendingRequeueAfter(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv("RECONCILE_PENDING_REQUEUE_SECONDS", "")
+		d := pendingRequeueAfter()
+		assert.Equal(t, 20*time.Second, d)
+	})
+	t.Run("valid", func(t *testing.T) {
+		t.Setenv("RECONCILE_PENDING_REQUEUE_SECONDS", "30")
+		d := pendingRequeueAfter()
+		assert.Equal(t, 30*time.Second, d)
+	})
+	t.Run("invalid_fallback_to_default", func(t *testing.T) {
+		t.Setenv("RECONCILE_PENDING_REQUEUE_SECONDS", "invalid")
+		d := pendingRequeueAfter()
+		assert.Equal(t, 20*time.Second, d)
+	})
+	t.Run("zero_fallback_to_default", func(t *testing.T) {
+		t.Setenv("RECONCILE_PENDING_REQUEUE_SECONDS", "0")
+		d := pendingRequeueAfter()
+		assert.Equal(t, 20*time.Second, d)
+	})
+}
+
+func TestMaxConcurrentReconciles(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv("MAX_CONCURRENT_RECONCILES", "")
+		assert.Equal(t, 1, maxConcurrentReconciles())
+	})
+	t.Run("valid", func(t *testing.T) {
+		t.Setenv("MAX_CONCURRENT_RECONCILES", "4")
+		assert.Equal(t, 4, maxConcurrentReconciles())
+	})
+	t.Run("invalid_fallback_to_default", func(t *testing.T) {
+		t.Setenv("MAX_CONCURRENT_RECONCILES", "invalid")
+		assert.Equal(t, 1, maxConcurrentReconciles())
+	})
+	t.Run("zero_fallback_to_default", func(t *testing.T) {
+		t.Setenv("MAX_CONCURRENT_RECONCILES", "0")
+		assert.Equal(t, 1, maxConcurrentReconciles())
+	})
+}
+
 func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := dataflowv1.AddToScheme(scheme)
@@ -488,7 +704,6 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	getErr := fakeClient.Get(ctx, req.NamespacedName, &updatedDataflow)
 	require.NoError(t, getErr, "DataFlow should exist after reconcile")
 	assert.Contains(t, updatedDataflow.Finalizers, DataFlowFinalizer, "DataFlow should have finalizer after creating Deployment/ConfigMap")
-
 	// Verify Deployment was created
 	var deployment appsv1.Deployment
 	deploymentName := types.NamespacedName{
@@ -534,6 +749,7 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	assert.Contains(t, configMap.Data, "spec.json")
 
 	assert.Equal(t, ctrl.Result{}, result)
+	assert.False(t, result.Requeue)
 }
 
 func TestDataFlowReconciler_Reconcile_ProcessorGetsSentryEnvWhenSet(t *testing.T) {
@@ -744,6 +960,7 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow(t *testing.T) {
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
+	assert.False(t, result.Requeue)
 }
 
 // TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer verifies that when DataFlow
@@ -830,6 +1047,9 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer(t *testing.T)
 	require.NoError(t, err)
 	assert.NotContains(t, df.Finalizers, DataFlowFinalizer, "finalizer should be removed")
 	assert.Equal(t, "Stopped", df.Status.Phase)
+	readyCond := meta.FindStatusCondition(df.Status.Conditions, conditionReady)
+	require.NotNil(t, readyCond)
+	assert.Equal(t, "Stopped", readyCond.Reason)
 }
 
 func TestEnsureDataFlowFinalizer(t *testing.T) {
@@ -1031,6 +1251,7 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 	assert.Equal(t, []string{"/bin/sh", "-c", "sleep 5"}, container.Lifecycle.PreStop.Exec.Command)
 
 	assert.Equal(t, ctrl.Result{}, result)
+	assert.False(t, result.Requeue)
 }
 
 // TestCreateOrUpdateDeployment_NoUpdateWhenSpecUnchanged verifies that on second reconcile
@@ -1493,6 +1714,7 @@ func TestDataFlowReconciler_Reconcile_NotFound(t *testing.T) {
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
+	assert.False(t, result.Requeue)
 }
 
 func TestReconcileEmitsEvents(t *testing.T) {

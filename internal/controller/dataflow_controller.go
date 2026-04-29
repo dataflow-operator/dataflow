@@ -35,6 +35,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,6 +45,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -59,6 +62,69 @@ import (
 // is not removed from etcd; the controller runs cleanup (Deployment, ConfigMap) and
 // then removes this finalizer so deletion can complete.
 const DataFlowFinalizer = "dataflow.dataflow.io/finalizer"
+
+const (
+	conditionReady                    = "Ready"
+	conditionProcessorDeploymentReady = "ProcessorDeploymentReady"
+	conditionSpecResolved             = "SpecResolved"
+)
+
+func buildStatusConditions(phase, message string, specResolved bool, deploymentReady bool, deploymentReason string) []metav1.Condition {
+	now := metav1.Now()
+	readyStatus := metav1.ConditionFalse
+	readyReason := "NotReady"
+	if phase == "Running" {
+		readyStatus = metav1.ConditionTrue
+		readyReason = "Running"
+	}
+	if phase == "Stopped" {
+		readyReason = "Stopped"
+	}
+	if phase == "Error" {
+		readyReason = "Error"
+	}
+
+	specStatus := metav1.ConditionFalse
+	specReason := "ResolutionFailed"
+	specMessage := "DataFlow spec resolution failed"
+	if specResolved {
+		specStatus = metav1.ConditionTrue
+		specReason = "Resolved"
+		specMessage = "DataFlow spec resolved"
+	}
+
+	deploymentStatus := metav1.ConditionFalse
+	if deploymentReady {
+		deploymentStatus = metav1.ConditionTrue
+	}
+	if deploymentReason == "" {
+		deploymentReason = "Unknown"
+	}
+
+	conditions := []metav1.Condition{}
+	meta.SetStatusCondition(&conditions, metav1.Condition{
+		Type:               conditionReady,
+		Status:             readyStatus,
+		Reason:             readyReason,
+		Message:            message,
+		LastTransitionTime: now,
+	})
+	meta.SetStatusCondition(&conditions, metav1.Condition{
+		Type:               conditionSpecResolved,
+		Status:             specStatus,
+		Reason:             specReason,
+		Message:            specMessage,
+		LastTransitionTime: now,
+	})
+	meta.SetStatusCondition(&conditions, metav1.Condition{
+		Type:               conditionProcessorDeploymentReady,
+		Status:             deploymentStatus,
+		Reason:             deploymentReason,
+		Message:            message,
+		LastTransitionTime: now,
+	})
+	return conditions
+}
 
 // dataflowRefForEvent returns a minimal DataFlow object for use as involvedObject in events
 // when the full object is unavailable (e.g. FailedGet). Implements runtime.Object for EventRecorder.
@@ -85,6 +151,7 @@ type DataFlowReconciler struct {
 	// operatorDeploymentName/Namespace — for watching the operator Deployment; when it updates we reconcile all DataFlows.
 	operatorDeploymentName      string
 	operatorDeploymentNamespace string
+	watchSecrets                bool
 }
 
 func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder) *DataFlowReconciler {
@@ -105,6 +172,7 @@ func NewDataFlowReconciler(client client.Client, scheme *runtime.Scheme, recorde
 		processorImage:              processorImage,
 		operatorDeploymentName:      os.Getenv("OPERATOR_DEPLOYMENT_NAME"),
 		operatorDeploymentNamespace: os.Getenv("OPERATOR_NAMESPACE"),
+		watchSecrets:                os.Getenv("WATCH_SECRETS") != "false",
 	}
 }
 
@@ -233,6 +301,38 @@ func reconcileTimeout() time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
+// pendingRequeueAfter returns requeue interval for waiting phases from env RECONCILE_PENDING_REQUEUE_SECONDS (default 20s).
+func pendingRequeueAfter() time.Duration {
+	const defaultSeconds = 20
+	s := os.Getenv("RECONCILE_PENDING_REQUEUE_SECONDS")
+	if s == "" {
+		return defaultSeconds * time.Second
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec <= 0 {
+		return defaultSeconds * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// maxConcurrentReconciles returns controller concurrency from env MAX_CONCURRENT_RECONCILES (default 1).
+func maxConcurrentReconciles() int {
+	const defaultValue = 1
+	s := os.Getenv("MAX_CONCURRENT_RECONCILES")
+	if s == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return defaultValue
+	}
+	return n
+}
+
+func shouldRequeueAfterPhase(phase string) bool {
+	return phase == "Pending"
+}
+
 // genReconcileID returns a short hex string for correlating logs within one reconcile.
 func genReconcileID() string {
 	b := make([]byte, 4)
@@ -297,6 +397,12 @@ func restoreSpecFromLastApplied(dataflow *dataflowv1.DataFlow) error {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	start := time.Now()
+	metrics.ControllerReconcileInflight.Inc()
+	defer func() {
+		metrics.ControllerReconcileInflight.Dec()
+	}()
+
 	reconcileID := genReconcileID()
 	reconcileLogger := log.FromContext(ctx).WithValues(
 		logkeys.DataflowName, req.Name,
@@ -312,6 +418,8 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	var dataflow dataflowv1.DataFlow
 	if err := r.Get(ctx, req.NamespacedName, &dataflow); err != nil {
+		metrics.RecordControllerReconcileError("get_dataflow")
+		metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
 		log.Error(err, "unable to fetch DataFlow")
 		if r.Recorder != nil && !apierrors.IsNotFound(err) {
 			// Use minimal object reference for event (we don't have UID/ResourceVersion since Get failed)
@@ -330,10 +438,19 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if !dataflow.DeletionTimestamp.IsZero() {
-		return r.handleDeletion(ctx, req, &dataflow)
+		res, err := r.handleDeletion(ctx, req, &dataflow)
+		result := "success"
+		if err != nil {
+			result = "error"
+			metrics.RecordControllerReconcileError("handle_deletion")
+		}
+		metrics.ObserveControllerReconcileDuration(result, time.Since(start).Seconds())
+		return res, err
 	}
 
 	if err := r.reconcileResources(ctx, req, &dataflow); err != nil {
+		metrics.RecordControllerReconcileError("reconcile_resources")
+		metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
 		return ctrl.Result{}, err
 	}
 
@@ -344,7 +461,10 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if apierrors.IsNotFound(err) {
 			dataflow.Status.Phase = "Pending"
 			dataflow.Status.Message = "Deployment not found"
+			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, "DeploymentNotFound")
 		} else {
+			metrics.RecordControllerReconcileError("get_deployment")
+			metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
 			log.Error(err, "failed to get Deployment")
 			return ctrl.Result{}, err
 		}
@@ -353,12 +473,15 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if deployment.Status.ReadyReplicas > 0 {
 			dataflow.Status.Phase = "Running"
 			dataflow.Status.Message = "Processor pod is running"
+			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, true, "DeploymentReady")
 		} else if deployment.Status.Replicas > 0 {
 			dataflow.Status.Phase = "Pending"
 			dataflow.Status.Message = "Processor pod is starting"
+			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, "DeploymentStarting")
 		} else {
 			dataflow.Status.Phase = "Error"
 			dataflow.Status.Message = "No replicas available"
+			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, "DeploymentUnavailable")
 		}
 	}
 
@@ -373,6 +496,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	statusProcessedCount := dataflow.Status.ProcessedCount
 	statusErrorCount := dataflow.Status.ErrorCount
 	statusLastProcessedTime := dataflow.Status.LastProcessedTime
+	statusConditions := dataflow.Status.Conditions
 
 	if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 		df.Status.Phase = statusPhase
@@ -380,7 +504,9 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		df.Status.ProcessedCount = statusProcessedCount
 		df.Status.ErrorCount = statusErrorCount
 		df.Status.LastProcessedTime = statusLastProcessedTime
+		df.Status.Conditions = statusConditions
 	}); err != nil {
+		metrics.RecordControllerReconcileError("update_status")
 		log.Error(err, "unable to update DataFlow status")
 		if r.Recorder != nil {
 			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "StatusUpdateFailed", "Unable to update DataFlow status: %v", err)
@@ -388,19 +514,29 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 		// Don't return error if context was canceled or timed out, just requeue
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
 			return ctrl.Result{Requeue: true}, nil
 		}
 		// Object may have been deleted between reconcile start and status update — don't return error
 		if apierrors.IsNotFound(err) {
+			metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
 			return ctrl.Result{}, nil
 		}
 		// If conflict, schedule retry
 		if apierrors.IsConflict(err) {
+			metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
 			return ctrl.Result{Requeue: true}, nil
 		}
+		metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
 		return ctrl.Result{}, err
 	}
 
+	if shouldRequeueAfterPhase(statusPhase) {
+		metrics.ObserveControllerReconcileDuration("success", time.Since(start).Seconds())
+		return ctrl.Result{RequeueAfter: pendingRequeueAfter()}, nil
+	}
+
+	metrics.ObserveControllerReconcileDuration("success", time.Since(start).Seconds())
 	return ctrl.Result{}, nil
 }
 
@@ -434,6 +570,8 @@ func (r *DataFlowReconciler) handleDeletion(ctx context.Context, req ctrl.Reques
 
 	if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 		df.Status.Phase = "Stopped"
+		df.Status.Message = "DataFlow resources are cleaned up"
+		df.Status.Conditions = buildStatusConditions(df.Status.Phase, df.Status.Message, true, false, "DeploymentDeleted")
 	}); err != nil {
 		log.Error(err, "unable to update DataFlow status")
 	}
@@ -460,6 +598,7 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
 			df.Status.Message = fmt.Sprintf("Failed to resolve secrets: %v", err)
+			df.Status.Conditions = buildStatusConditions(df.Status.Phase, df.Status.Message, false, false, "Unknown")
 		})
 		if updateErr != nil {
 			log.Error(updateErr, "unable to update DataFlow status")
@@ -476,6 +615,7 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
 			df.Status.Message = fmt.Sprintf("Failed to create ConfigMap: %v", err)
+			df.Status.Conditions = buildStatusConditions(df.Status.Phase, df.Status.Message, true, false, "Unknown")
 		})
 		if updateErr != nil {
 			log.Error(updateErr, "unable to update DataFlow status")
@@ -492,6 +632,7 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 				df.Status.Phase = "Error"
 				df.Status.Message = fmt.Sprintf("Failed to create checkpoint ConfigMap: %v", err)
+				df.Status.Conditions = buildStatusConditions(df.Status.Phase, df.Status.Message, true, false, "Unknown")
 			})
 			if updateErr != nil {
 				log.Error(updateErr, "unable to update DataFlow status")
@@ -506,6 +647,7 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 			updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 				df.Status.Phase = "Error"
 				df.Status.Message = fmt.Sprintf("Failed to create processor RBAC: %v", err)
+				df.Status.Conditions = buildStatusConditions(df.Status.Phase, df.Status.Message, true, false, "Unknown")
 			})
 			if updateErr != nil {
 				log.Error(updateErr, "unable to update DataFlow status")
@@ -523,6 +665,7 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 			df.Status.Phase = "Error"
 			df.Status.Message = fmt.Sprintf("Failed to create Deployment: %v", err)
+			df.Status.Conditions = buildStatusConditions(df.Status.Phase, df.Status.Message, true, false, "Unknown")
 		})
 		if updateErr != nil {
 			log.Error(updateErr, "unable to update DataFlow status")
@@ -1037,6 +1180,10 @@ func (r *DataFlowReconciler) enqueueAllDataFlowsForOperatorUpdate(ctx context.Co
 	}
 	list := &dataflowv1.DataFlowList{}
 	if err := r.List(ctx, list); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list DataFlows for operator deployment update",
+			"operatorDeploymentNamespace", o.GetNamespace(),
+			"operatorDeploymentName", o.GetName(),
+		)
 		return nil
 	}
 	reqs := make([]reconcile.Request, 0, len(list.Items))
@@ -1048,19 +1195,101 @@ func (r *DataFlowReconciler) enqueueAllDataFlowsForOperatorUpdate(ctx context.Co
 	return reqs
 }
 
+// shouldEnqueueOnOperatorDeploymentUpdate returns true only for meaningful operator Deployment updates.
+func (r *DataFlowReconciler) shouldEnqueueOnOperatorDeploymentUpdate(oldObj, newObj client.Object) bool {
+	oldDep, oldOK := oldObj.(*appsv1.Deployment)
+	newDep, newOK := newObj.(*appsv1.Deployment)
+	if !oldOK || !newOK {
+		return false
+	}
+	if !r.isOperatorDeployment(newDep) {
+		return false
+	}
+
+	// Generation changes on spec updates; template compare is an additional guard for clarity.
+	return oldDep.Generation != newDep.Generation ||
+		!equality.Semantic.DeepEqual(oldDep.Spec.Template, newDep.Spec.Template)
+}
+
+// enqueueAllDataFlowsForSecretUpdate returns reconcile requests for all DataFlows in the same namespace as Secret.
+func (r *DataFlowReconciler) enqueueAllDataFlowsForSecretUpdate(ctx context.Context, o client.Object) []reconcile.Request {
+	secret, ok := o.(*corev1.Secret)
+	if !ok {
+		return nil
+	}
+	if secret.Namespace == "" {
+		return nil
+	}
+	list := &dataflowv1.DataFlowList{}
+	if err := r.List(ctx, list, client.InNamespace(secret.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list DataFlows for secret update",
+			"secretNamespace", secret.Namespace,
+			"secretName", secret.Name,
+		)
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name: list.Items[i].Name, Namespace: list.Items[i].Namespace,
+		}})
+	}
+	return reqs
+}
+
+// shouldEnqueueOnSecretUpdate returns true only for meaningful Secret updates.
+func (r *DataFlowReconciler) shouldEnqueueOnSecretUpdate(oldObj, newObj client.Object) bool {
+	oldSecret, oldOK := oldObj.(*corev1.Secret)
+	newSecret, newOK := newObj.(*corev1.Secret)
+	if !oldOK || !newOK {
+		return false
+	}
+	return !equality.Semantic.DeepEqual(oldSecret.Data, newSecret.Data) ||
+		!equality.Semantic.DeepEqual(oldSecret.StringData, newSecret.StringData) ||
+		!equality.Semantic.DeepEqual(oldSecret.Type, newSecret.Type)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DataFlowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&dataflowv1.DataFlow{}).
 		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.ConfigMap{})
+		Owns(&corev1.ConfigMap{}).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: maxConcurrentReconciles(),
+		})
 
 	// When operator Deployment is updated, reconcile all DataFlows so processor pods get the new image.
 	if r.operatorDeploymentName != "" && r.operatorDeploymentNamespace != "" {
 		b = b.Watches(
 			&appsv1.Deployment{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueAllDataFlowsForOperatorUpdate),
-			builder.WithPredicates(predicate.NewPredicateFuncs(r.isOperatorDeployment)),
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc:  func(_ event.CreateEvent) bool { return false },
+				DeleteFunc:  func(_ event.DeleteEvent) bool { return false },
+				GenericFunc: func(_ event.GenericEvent) bool { return false },
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return r.shouldEnqueueOnOperatorDeploymentUpdate(e.ObjectOld, e.ObjectNew)
+				},
+			}),
+		)
+	}
+
+	// Watch Secret changes to refresh DataFlow specs with secret refs.
+	if r.watchSecrets {
+		b = b.Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueAllDataFlowsForSecretUpdate),
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc: func(_ event.CreateEvent) bool { return true },
+				DeleteFunc: func(_ event.DeleteEvent) bool { return true },
+				GenericFunc: func(_ event.GenericEvent) bool {
+					return false
+				},
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return r.shouldEnqueueOnSecretUpdate(e.ObjectOld, e.ObjectNew)
+				},
+			}),
 		)
 	}
 
