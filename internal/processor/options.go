@@ -21,6 +21,7 @@ import (
 
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/connectors"
+	"github.com/dataflow-operator/dataflow/internal/providers"
 )
 
 // ProcessorOption configures the processor.
@@ -38,17 +39,10 @@ func WithCheckpointStore(store checkpoint.Store) ProcessorOption {
 	}
 }
 
-// sourceTypes that support checkpoint persistence
-var checkpointSourceTypes = map[string]bool{
-	"postgresql": true,
-	"clickhouse": true,
-	"trino":      true,
-}
-
 // buildSourceConnectorOptions builds connector options for CreateSourceConnector.
 func buildSourceConnectorOptions(ctx context.Context, sourceType string, store checkpoint.Store, channelBufferSize *int32) []connectors.SourceConnectorOption {
 	var opts []connectors.SourceConnectorOption
-	if store != nil && checkpointSourceTypes[sourceType] {
+	if store != nil && providers.SourceSupportsCheckpoint(sourceType) {
 		opts = append(opts, connectors.WithCheckpointStore(store, sourceType))
 		if data, err := connectors.LoadInitialCheckpoint(ctx, store, sourceType); err == nil && len(data) > 0 {
 			opts = append(opts, connectors.WithInitialCheckpoint(data))

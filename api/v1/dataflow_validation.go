@@ -19,15 +19,11 @@ package v1
 import (
 	"encoding/json"
 
+	"github.com/dataflow-operator/dataflow/internal/providers"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
-
-// Valid source types (must match connectors/factory.go).
-var validSourceTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true, "nessie": true}
-
-// Valid sink types (must match connectors/factory.go).
-var validSinkTypes = map[string]bool{"kafka": true, "postgresql": true, "trino": true, "clickhouse": true, "nessie": true}
 
 // Valid transformation types (must match transformers/factory.go).
 var validTransformationTypes = map[string]bool{
@@ -62,68 +58,13 @@ func validateSource(s *SourceSpec, f *field.Path) field.ErrorList {
 		all = append(all, field.Required(f.Child("type"), "source type is required"))
 		return all
 	}
-	if !validSourceTypes[s.Type] {
-		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse", "nessie"}))
+	validTypes := providers.ListSourceTypes()
+	validator := providers.SourceValidator(s.Type)
+	if validator == nil {
+		all = append(all, field.NotSupported(f.Child("type"), s.Type, validTypes))
 		return all
 	}
-	hasConfig := s.Config != nil && len(s.Config.Raw) > 0
-	switch s.Type {
-	case "kafka":
-		if hasConfig {
-			var cfg KafkaSourceSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid kafka config: "+err.Error()))
-			} else {
-				all = append(all, validateKafkaSource(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "kafka source configuration is required"))
-		}
-	case "postgresql":
-		if hasConfig {
-			var cfg PostgreSQLSourceSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid postgresql config: "+err.Error()))
-			} else {
-				all = append(all, validatePostgreSQLSource(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "postgresql source configuration is required"))
-		}
-	case "trino":
-		if hasConfig {
-			var cfg TrinoSourceSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid trino config: "+err.Error()))
-			} else {
-				all = append(all, validateTrinoSource(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "trino source configuration is required"))
-		}
-	case "clickhouse":
-		if hasConfig {
-			var cfg ClickHouseSourceSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid clickhouse config: "+err.Error()))
-			} else {
-				all = append(all, validateClickHouseSource(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "clickhouse source configuration is required"))
-		}
-	case "nessie":
-		if hasConfig {
-			var cfg NessieSourceSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid nessie config: "+err.Error()))
-			} else {
-				all = append(all, validateNessieSource(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "nessie source configuration is required"))
-		}
-	}
+	all = append(all, validator(safeRawConfig(s.Config), f.Child("config"))...)
 	return all
 }
 
@@ -208,69 +149,21 @@ func validateSink(s *SinkSpec, f *field.Path) field.ErrorList {
 		all = append(all, field.Required(f.Child("type"), "sink type is required"))
 		return all
 	}
-	if !validSinkTypes[s.Type] {
-		all = append(all, field.NotSupported(f.Child("type"), s.Type, []string{"kafka", "postgresql", "trino", "clickhouse", "nessie"}))
+	validTypes := providers.ListSinkTypes()
+	validator := providers.SinkValidator(s.Type)
+	if validator == nil {
+		all = append(all, field.NotSupported(f.Child("type"), s.Type, validTypes))
 		return all
 	}
-	hasConfig := s.Config != nil && len(s.Config.Raw) > 0
-	switch s.Type {
-	case "kafka":
-		if hasConfig {
-			var cfg KafkaSinkSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid kafka config: "+err.Error()))
-			} else {
-				all = append(all, validateKafkaSink(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "kafka sink configuration is required"))
-		}
-	case "postgresql":
-		if hasConfig {
-			var cfg PostgreSQLSinkSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid postgresql config: "+err.Error()))
-			} else {
-				all = append(all, validatePostgreSQLSink(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "postgresql sink configuration is required"))
-		}
-	case "trino":
-		if hasConfig {
-			var cfg TrinoSinkSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid trino config: "+err.Error()))
-			} else {
-				all = append(all, validateTrinoSink(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "trino sink configuration is required"))
-		}
-	case "clickhouse":
-		if hasConfig {
-			var cfg ClickHouseSinkSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid clickhouse config: "+err.Error()))
-			} else {
-				all = append(all, validateClickHouseSink(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "clickhouse sink configuration is required"))
-		}
-	case "nessie":
-		if hasConfig {
-			var cfg NessieSinkSpec
-			if err := json.Unmarshal(s.Config.Raw, &cfg); err != nil {
-				all = append(all, field.Invalid(f.Child("config"), string(s.Config.Raw), "invalid nessie config: "+err.Error()))
-			} else {
-				all = append(all, validateNessieSink(&cfg, f.Child("config"))...)
-			}
-		} else {
-			all = append(all, field.Required(f.Child("config"), "nessie sink configuration is required"))
-		}
-	}
+	all = append(all, validator(safeRawConfig(s.Config), f.Child("config"))...)
 	return all
+}
+
+func safeRawConfig(rawConfig *runtime.RawExtension) []byte {
+	if rawConfig == nil {
+		return nil
+	}
+	return rawConfig.Raw
 }
 
 func validateNessieSource(n *NessieSourceSpec, f *field.Path) field.ErrorList {

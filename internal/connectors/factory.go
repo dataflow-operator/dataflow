@@ -19,8 +19,10 @@ package connectors
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/providers"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -30,30 +32,39 @@ type sourceConnectorFactory func(raw *runtime.RawExtension, options *SourceConne
 // sinkConnectorFactory creates a SinkConnector from raw config.
 type sinkConnectorFactory func(raw *runtime.RawExtension) (SinkConnector, error)
 
-var sourceConnectorRegistry = map[string]sourceConnectorFactory{
-	"kafka": createSourceConnectorWithOptions[v1.KafkaSourceSpec]("kafka source", func(cfg *v1.KafkaSourceSpec, opts *SourceConnectorOptions) SourceConnector {
-		return NewKafkaSourceConnectorWithOptions(cfg, opts)
-	}),
-	"postgresql": createSourceConnectorWithOptions[v1.PostgreSQLSourceSpec]("postgresql source", func(cfg *v1.PostgreSQLSourceSpec, opts *SourceConnectorOptions) SourceConnector {
-		return NewPostgreSQLSourceConnectorWithOptions(cfg, opts)
-	}),
-	"trino": createSourceConnectorWithOptions[v1.TrinoSourceSpec]("trino source", func(cfg *v1.TrinoSourceSpec, opts *SourceConnectorOptions) SourceConnector {
-		return NewTrinoSourceConnectorWithOptions(cfg, opts)
-	}),
-	"clickhouse": createSourceConnectorWithOptions[v1.ClickHouseSourceSpec]("clickhouse source", func(cfg *v1.ClickHouseSourceSpec, opts *SourceConnectorOptions) SourceConnector {
-		return NewClickHouseSourceConnectorWithOptions(cfg, opts)
-	}),
-	"nessie": createSourceConnectorWithOptions[v1.NessieSourceSpec]("nessie source", func(cfg *v1.NessieSourceSpec, opts *SourceConnectorOptions) SourceConnector {
-		return NewNessieSourceConnectorWithOptions(cfg, opts)
-	}),
+var (
+	registryMu              sync.RWMutex
+	sourceConnectorRegistry = map[string]sourceConnectorFactory{}
+	sinkConnectorRegistry   = map[string]sinkConnectorFactory{}
+)
+
+func registerSourceConnector(sourceType string, factory sourceConnectorFactory, supportsCheckpoint bool) {
+	if sourceType == "" {
+		panic("connectors: source type is required")
+	}
+	if factory == nil {
+		panic("connectors: source factory is required")
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	sourceConnectorRegistry[sourceType] = factory
+	providers.RegisterSource(providers.SourceDefinition{
+		Type:               sourceType,
+		SupportsCheckpoint: supportsCheckpoint,
+	})
 }
 
-var sinkConnectorRegistry = map[string]sinkConnectorFactory{
-	"kafka":      createSinkConnector[v1.KafkaSinkSpec]("kafka sink", func(cfg *v1.KafkaSinkSpec) SinkConnector { return NewKafkaSinkConnector(cfg) }),
-	"postgresql": createSinkConnector[v1.PostgreSQLSinkSpec]("postgresql sink", func(cfg *v1.PostgreSQLSinkSpec) SinkConnector { return NewPostgreSQLSinkConnector(cfg) }),
-	"trino":      createSinkConnector[v1.TrinoSinkSpec]("trino sink", func(cfg *v1.TrinoSinkSpec) SinkConnector { return NewTrinoSinkConnector(cfg) }),
-	"clickhouse": createSinkConnector[v1.ClickHouseSinkSpec]("clickhouse sink", func(cfg *v1.ClickHouseSinkSpec) SinkConnector { return NewClickHouseSinkConnector(cfg) }),
-	"nessie":     createSinkConnector[v1.NessieSinkSpec]("nessie sink", func(cfg *v1.NessieSinkSpec) SinkConnector { return NewNessieSinkConnector(cfg) }),
+func registerSinkConnector(sinkType string, factory sinkConnectorFactory) {
+	if sinkType == "" {
+		panic("connectors: sink type is required")
+	}
+	if factory == nil {
+		panic("connectors: sink factory is required")
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	sinkConnectorRegistry[sinkType] = factory
+	providers.RegisterSink(providers.SinkDefinition{Type: sinkType})
 }
 
 // unmarshalConfig unmarshals raw extension into T. Returns (nil, nil) if raw is nil or empty.
@@ -119,7 +130,9 @@ func CreateSourceConnector(source *v1.SourceSpec, opts ...SourceConnectorOption)
 		opt(options)
 	}
 
+	registryMu.RLock()
 	factory, ok := sourceConnectorRegistry[source.Type]
+	registryMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unsupported source type: %s", source.Type)
 	}
@@ -129,7 +142,9 @@ func CreateSourceConnector(source *v1.SourceSpec, opts ...SourceConnectorOption)
 // CreateSinkConnector creates a sink connector based on the sink spec.
 // Supports both config (type+config) and legacy (type+kafka/postgresql/etc) formats.
 func CreateSinkConnector(sink *v1.SinkSpec) (SinkConnector, error) {
+	registryMu.RLock()
 	factory, ok := sinkConnectorRegistry[sink.Type]
+	registryMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unsupported sink type: %s", sink.Type)
 	}
