@@ -19,6 +19,7 @@ package connectors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,112 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 )
+
+// testConsumerGroup is a minimal sarama.ConsumerGroup for Read tests (Consume is overridden via testConsumeFunc).
+type testConsumerGroup struct {
+	errorsCh <-chan error
+}
+
+func (testConsumerGroup) Consume(context.Context, []string, sarama.ConsumerGroupHandler) error {
+	panic("testConsumerGroup.Consume must be replaced by KafkaSourceConnector.testConsumeFunc in tests")
+}
+
+func (t testConsumerGroup) Errors() <-chan error    { return t.errorsCh }
+func (testConsumerGroup) Pause(map[string][]int32)  {}
+func (testConsumerGroup) Resume(map[string][]int32) {}
+func (testConsumerGroup) PauseAll()                 {}
+func (testConsumerGroup) ResumeAll()                {}
+func (testConsumerGroup) Close() error              { return nil }
+
+func TestKafkaRead_ConsumeFatalErrorBeforeSetup_ReturnsError(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.testConsumeFunc = func(context.Context, []string, sarama.ConsumerGroupHandler) error {
+		return errors.New("unknown topic or partition")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := k.Read(ctx)
+		readDone <- err
+	}()
+
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("expected Read error for fatal Consume failure before Setup")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Read blocked; expected quick return on fatal Consume error before Setup")
+	}
+}
+
+func TestKafkaRead_AuthorizationErrorRetriesThenReady(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.consumeRetryDelay = 5 * time.Millisecond
+
+	var calls int
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("broker: %w", sarama.ErrTopicAuthorizationFailed)
+		}
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan struct {
+		ch  <-chan *types.Message
+		err error
+	}, 1)
+	go func() {
+		msgCh, err := k.Read(ctx)
+		readDone <- struct {
+			ch  <-chan *types.Message
+			err error
+		}{ch: msgCh, err: err}
+	}()
+
+	var msgCh <-chan *types.Message
+	select {
+	case res := <-readDone:
+		if res.err != nil {
+			t.Fatalf("Read: %v", res.err)
+		}
+		msgCh = res.ch
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read blocked; expected success after authorization retry and Setup")
+	}
+
+	if msgCh == nil {
+		t.Fatal("expected non-nil message channel")
+	}
+	if calls != 2 {
+		t.Fatalf("Consume calls = %d, want 2 (one auth failure, one success)", calls)
+	}
+
+	cancel()
+}
 
 func TestIsCoordinatorUnavailableError(t *testing.T) {
 	tests := []struct {
@@ -49,6 +156,43 @@ func TestIsCoordinatorUnavailableError(t *testing.T) {
 				t.Errorf("isCoordinatorUnavailableError() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsKafkaAuthorizationError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"KError topic", sarama.ErrTopicAuthorizationFailed, true},
+		{"KError group", sarama.ErrGroupAuthorizationFailed, true},
+		{"KError cluster", sarama.ErrClusterAuthorizationFailed, true},
+		{"wrapped KError", fmt.Errorf("upstream: %w", sarama.ErrTopicAuthorizationFailed), true},
+		{"not authorized string", errors.New("not authorized to access this topic"), true},
+		{"TOPIC_AUTHORIZATION_FAILED text", errors.New("TOPIC_AUTHORIZATION_FAILED"), true},
+		{"other", errors.New("connection refused"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isKafkaAuthorizationError(tt.err); got != tt.want {
+				t.Errorf("isKafkaAuthorizationError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsKafkaConsumeRetriableError(t *testing.T) {
+	authWrapped := fmt.Errorf("wrap: %w", sarama.ErrGroupAuthorizationFailed)
+	if !isKafkaConsumeRetriableError(authWrapped) {
+		t.Error("authorization error should be retriable")
+	}
+	if !isKafkaConsumeRetriableError(errors.New("kafka server: The coordinator is not available")) {
+		t.Error("coordinator error should be retriable")
+	}
+	if isKafkaConsumeRetriableError(errors.New("some permanent failure")) {
+		t.Error("non-retriable error should be false")
 	}
 }
 

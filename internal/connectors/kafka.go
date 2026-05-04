@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -56,6 +57,12 @@ type KafkaSourceConnector struct {
 	avroSchema        avro.Schema           // Avro schema for deserialization (when not using Schema Registry)
 	schemaCache       *schemaCache          // Cache for schemas from Schema Registry
 	schemaClient      *schemaRegistryClient // Client for Schema Registry
+
+	// consumeRetryDelay, if non-zero, is a fixed delay between Consume retries (coordinator/authorization),
+	// instead of exponential backoff (kafkaConsumeRetryInitialBackoff / kafkaConsumeRetryMaxBackoff). Used in tests.
+	consumeRetryDelay time.Duration
+	// testConsumeFunc, if set, replaces consumer.Consume in Read (unit tests only).
+	testConsumeFunc func(ctx context.Context, topics []string, handler sarama.ConsumerGroupHandler) error
 }
 
 // schemaCache caches Avro schemas by ID
@@ -470,6 +477,13 @@ func (k *KafkaSourceConnector) deserializeAvro(ctx context.Context, data []byte)
 	return jsonData, nil
 }
 
+// Backoff for Kafka consumer group Consume(): exponential delay capped at kafkaConsumeRetryMaxBackoff,
+// repeating until the parent context is cancelled (no fixed attempt limit).
+const (
+	kafkaConsumeRetryInitialBackoff = 1 * time.Second
+	kafkaConsumeRetryMaxBackoff     = 2 * time.Minute
+)
+
 // Read returns a channel of messages from Kafka
 func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message, error) {
 	if k.consumer == nil {
@@ -477,7 +491,7 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	}
 
 	msgChan := make(chan *types.Message, k.channelBufferSize)
-	errorChan := make(chan error, constants.DefaultSingleValueChannelBufferSize)
+	errCh := make(chan error, constants.DefaultSingleValueChannelBufferSize)
 
 	handler := &kafkaConsumerGroupHandler{
 		connector: k,
@@ -485,46 +499,94 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 		ready:     make(chan bool),
 	}
 
-	const coordinatorRetryAttempts = 5
-	const coordinatorRetryDelay = 10 * time.Second
+	consumeFn := func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		return k.consumer.Consume(cctx, topics, h)
+	}
+	if k.testConsumeFunc != nil {
+		consumeFn = k.testConsumeFunc
+	}
+
 	go func() {
-		var consumeErr error
-		for attempt := 0; attempt <= coordinatorRetryAttempts; attempt++ {
+		backoff := kafkaConsumeRetryInitialBackoff
+		if k.consumeRetryDelay > 0 {
+			backoff = k.consumeRetryDelay
+		}
+		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-			consumeErr = k.consumer.Consume(ctx, []string{k.config.Topic}, handler)
+			consumeErr := consumeFn(ctx, []string{k.config.Topic}, handler)
 			if consumeErr == nil {
 				return
 			}
-			if isCoordinatorUnavailableError(consumeErr) && attempt < coordinatorRetryAttempts {
-				k.logger.Info("Kafka consumer coordinator unavailable, retrying",
-					"topic", k.config.Topic, "attempt", attempt+1, "maxAttempts", coordinatorRetryAttempts+1)
+			if errors.Is(consumeErr, context.Canceled) {
+				return
+			}
+			if errors.Is(consumeErr, context.DeadlineExceeded) {
+				errWrap := fmt.Errorf("error from consumer: %w", consumeErr)
+				k.logger.Error(errWrap, "Kafka consumer Consume failed", "topic", k.config.Topic)
+				errCh <- errWrap
+				return
+			}
+			if isKafkaConsumeRetriableError(consumeErr) {
+				var delay time.Duration
+				if k.consumeRetryDelay > 0 {
+					delay = k.consumeRetryDelay
+				} else {
+					delay = backoff
+					if delay > kafkaConsumeRetryMaxBackoff {
+						delay = kafkaConsumeRetryMaxBackoff
+					}
+				}
+				reason := "transient"
+				if isKafkaAuthorizationError(consumeErr) {
+					reason = "authorization"
+				} else if isCoordinatorUnavailableError(consumeErr) {
+					reason = "coordinator_unavailable"
+				}
+				k.logger.Info("Kafka consumer Consume failed, retrying with backoff",
+					"topic", k.config.Topic, "reason", reason, "backoff", delay, "err", consumeErr)
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(coordinatorRetryDelay):
+				case <-time.After(delay):
+				}
+				if k.consumeRetryDelay <= 0 {
+					next := backoff * 2
+					if next < backoff { // overflow
+						backoff = kafkaConsumeRetryMaxBackoff
+					} else if next > kafkaConsumeRetryMaxBackoff {
+						backoff = kafkaConsumeRetryMaxBackoff
+					} else {
+						backoff = next
+					}
 				}
 				continue
 			}
 			errWrap := fmt.Errorf("error from consumer: %w", consumeErr)
 			k.logger.Error(errWrap, "Kafka consumer Consume failed", "topic", k.config.Topic)
-			errorChan <- errWrap
+			errCh <- errWrap
 			return
 		}
 	}()
 
-	// Wait for consumer to be ready
-	<-handler.ready
+	// Wait until Setup closes ready, Consume reports a fatal error, or context ends (avoid deadlock if Consume fails before Setup).
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case err := <-errCh:
+		return nil, err
+	case <-handler.ready:
+	}
 
 	// Handle errors
 	go func() {
 		for err := range k.consumer.Errors() {
 			errWrap := fmt.Errorf("consumer error: %w", err)
 			k.logger.Error(errWrap, "Kafka consumer error", "topic", k.config.Topic)
-			errorChan <- errWrap
+			errCh <- errWrap
 		}
 	}()
 
@@ -539,6 +601,37 @@ func isCoordinatorUnavailableError(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "coordinator is not available") ||
 		strings.Contains(s, "CoordinatorNotAvailable")
+}
+
+// isKafkaAuthorizationError reports topic/group (and related) authorization failures that may clear
+// when ACLs are fixed without redeploying the operator.
+func isKafkaAuthorizationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ke sarama.KError
+	if errors.As(err, &ke) {
+		switch ke {
+		case sarama.ErrTopicAuthorizationFailed,
+			sarama.ErrGroupAuthorizationFailed,
+			sarama.ErrClusterAuthorizationFailed,
+			sarama.ErrTransactionalIDAuthorizationFailed,
+			sarama.ErrDelegationTokenAuthorizationFailed:
+			return true
+		}
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "topic_authorization_failed") ||
+		strings.Contains(lower, "group_authorization_failed") ||
+		strings.Contains(lower, "cluster_authorization_failed") ||
+		strings.Contains(lower, "not authorized") ||
+		strings.Contains(lower, "authorization failed")
+}
+
+// isKafkaConsumeRetriableError reports coordinator-unavailable and topic/group authorization failures.
+// Read retries those with exponential backoff capped at kafkaConsumeRetryMaxBackoff until ctx is cancelled.
+func isKafkaConsumeRetriableError(err error) bool {
+	return isCoordinatorUnavailableError(err) || isKafkaAuthorizationError(err)
 }
 
 // Close closes the Kafka connection

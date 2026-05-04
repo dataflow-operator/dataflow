@@ -134,11 +134,10 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	if t.config.PollInterval != nil {
 		pollInterval = time.Duration(*t.config.PollInterval) * time.Second
 	}
-	return runPollingRead(ctx, pollInterval, func(ctx context.Context, ch chan *types.Message) {
-		if err := t.readRows(ctx, ch); err != nil {
-			t.logger.Error(err, "Failed to read rows")
-		}
-	}, t.channelBufferSize), nil
+	return runPollingRead(ctx, pollInterval, t.readRows, t.channelBufferSize, &pollingReadOpts{
+		logger: t.logger,
+		meta:   &t.connectorMetadata,
+	}), nil
 }
 
 func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
@@ -165,6 +164,7 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 
 	rows, err := t.client.executeQuery(ctx, query)
 	if err != nil {
+		t.RecordError("read", "query_error")
 		return err
 	}
 

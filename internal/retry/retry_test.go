@@ -242,6 +242,56 @@ func TestIsRetryableTransient(t *testing.T) {
 	}
 }
 
+func TestIsRetryableDelayedAccess(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"PG permission denied for table", errors.New(`ERROR: permission denied for table orders (SQLSTATE 42501)`), true},
+		{"PG insufficient privilege text", errors.New("insufficient_privilege"), true},
+		{"Trino HTTP 403", errors.New("Trino query failed with status 403: <html>Forbidden</html>"), true},
+		{"Trino access denied", errors.New(`Access Denied: Cannot execute query`), true},
+		{"Trino PERMISSION_DENIED", errors.New("Error: PERMISSION_DENIED, Code: 4"), true},
+		{"ClickHouse not enough privileges", errors.New("Not enough privileges: default: Not enough privileges"), true},
+		{"REST not authorized", errors.New("not authorized to load table"), true},
+		{"OAuth invalid_token", errors.New(`{"error":"invalid_token"}`), true},
+		{"401 Keycloak", errors.New("Keycloak token request failed with status 401: unauthorized"), true},
+		{"password auth failed not retryable", errors.New("password authentication failed for user \"u\""), false},
+		{"invalid_grant not retryable", errors.New("failed to get token: oauth2: invalid_grant"), false},
+		{"syntax still false", errors.New("syntax error at line 1"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRetryableDelayedAccess(tt.err); got != tt.want {
+				t.Errorf("IsRetryableDelayedAccess() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsRetryableForConnect(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"transient", errors.New("connection refused"), true},
+		{"delayed PG", errors.New("permission denied for relation t"), true},
+		{"delayed + permanent blocked", errors.New("password authentication failed"), false},
+		{"invalid_grant blocked", errors.New("invalid_grant"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRetryableForConnect(tt.err); got != tt.want {
+				t.Errorf("IsRetryableForConnect() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsTransientTrinoError(t *testing.T) {
 	tests := []struct {
 		name string

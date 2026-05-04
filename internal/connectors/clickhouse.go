@@ -147,21 +147,24 @@ func (c *ClickHouseSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 	if c.config.PollInterval != nil {
 		pollInterval = time.Duration(*c.config.PollInterval) * time.Second
 	}
-	return runPollingRead(ctx, pollInterval, c.readRows, c.channelBufferSize), nil
+	return runPollingRead(ctx, pollInterval, c.readRows, c.channelBufferSize, &pollingReadOpts{
+		logger: c.logger,
+		meta:   &c.connectorMetadata,
+	}), nil
 }
 
-func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {
+func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
 	// Read conn and state under RLock; release before long-running query so Connect/Close are not blocked
 	c.RLock()
 	if c.Closed() {
 		c.RUnlock()
-		return
+		return nil
 	}
 	conn := c.conn
 	c.RUnlock()
 
 	if conn == nil {
-		return
+		return nil
 	}
 
 	c.readStateMu.Lock()
@@ -195,15 +198,15 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		return qerr
 	})
 	if err != nil {
-		c.logger.Error(err, "Failed to execute ClickHouse query", "query", query, "table", c.config.Table)
-		return
+		c.RecordError("read", "query_error")
+		return fmt.Errorf("clickhouse query: %w", err)
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		c.logger.Error(err, "Failed to get columns", "table", c.config.Table)
-		return
+		c.RecordError("read", "columns_error")
+		return fmt.Errorf("clickhouse columns: %w", err)
 	}
 
 	var idIndex = -1
@@ -285,9 +288,10 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		select {
 		case msgChan <- msg:
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		}
 	}
+	return nil
 }
 
 // extractRowCheckpoint returns (id, created_at) for checkpoint advancement.

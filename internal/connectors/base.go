@@ -19,6 +19,7 @@ package connectors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -192,6 +193,13 @@ func (c *connectorMetadata) SetConnectionStatus(connected bool) {
 	}
 }
 
+// SetSourcePollHealthy records the last polling read outcome for source connectors.
+func (c *connectorMetadata) SetSourcePollHealthy(healthy bool) {
+	if c.hasMetadata() {
+		metrics.SetConnectorSourcePollHealthy(c.namespace, c.name, c.connectorType, c.connectorRole, healthy)
+	}
+}
+
 // RecordMessageRead records a message read metric if metadata is set.
 func (c *connectorMetadata) RecordMessageRead() {
 	if c.hasMetadata() {
@@ -237,25 +245,99 @@ func QuotePostgreSQLTableRef(table string) string {
 	return quotePostgreSQLIdentifier(schema) + "." + quotePostgreSQLIdentifier(name)
 }
 
+const maxPollingReadBackoff = 5 * time.Minute
+
+// pollFailureWait returns how long to wait before the next poll after repeated failures.
+// consecutiveFailures counts failures in the current streak (>=1).
+func pollFailureWait(base time.Duration, consecutiveFailures int) time.Duration {
+	if consecutiveFailures <= 1 {
+		return base
+	}
+	shift := consecutiveFailures - 1
+	if shift > 12 {
+		shift = 12
+	}
+	d := base * (1 << uint(shift))
+	if d > maxPollingReadBackoff {
+		return maxPollingReadBackoff
+	}
+	return d
+}
+
+func shouldLogPollFailure(now, lastLog time.Time, consecutiveFailures int, pollInterval time.Duration) bool {
+	if consecutiveFailures == 1 {
+		return true
+	}
+	if consecutiveFailures%10 == 0 {
+		return true
+	}
+	minGap := 30 * time.Second
+	if g := 5 * pollInterval; g > minGap {
+		minGap = g
+	}
+	return now.Sub(lastLog) >= minGap
+}
+
+// pollingReadOpts configures logging and metrics for runPollingRead. All fields are optional.
+type pollingReadOpts struct {
+	logger logr.Logger
+	meta   *connectorMetadata
+}
+
 // runPollingRead creates a message channel and starts a goroutine that calls readFn
-// on a ticker, returning the channel. Used by polling-based source connectors.
+// on a schedule, returning the channel. Used by polling-based source connectors.
+// readFn returns nil on success; a non-nil error triggers exponential backoff between attempts
+// (capped) and throttled error logging when opts is set.
 // bufferSize: channel buffer size; 0 uses DefaultChannelBufferSize.
-func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func(ctx context.Context, ch chan *types.Message), bufferSize int) <-chan *types.Message {
+func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func(ctx context.Context, ch chan *types.Message) error, bufferSize int, opts *pollingReadOpts) <-chan *types.Message {
 	if bufferSize <= 0 {
 		bufferSize = constants.DefaultChannelBufferSize
 	}
 	msgChan := make(chan *types.Message, bufferSize)
 	go func() {
 		defer close(msgChan)
-		readFn(ctx, msgChan)
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
+		var consecutiveFailures int
+		var lastFailLog time.Time
+		first := true
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				readFn(ctx, msgChan)
+			if !first {
+				wait := pollInterval
+				if consecutiveFailures > 0 {
+					wait = pollFailureWait(pollInterval, consecutiveFailures)
+				}
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+			first = false
+
+			err := readFn(ctx, msgChan)
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				consecutiveFailures++
+				if opts != nil && opts.meta != nil {
+					opts.meta.SetSourcePollHealthy(false)
+				}
+				if opts != nil {
+					now := time.Now()
+					if shouldLogPollFailure(now, lastFailLog, consecutiveFailures, pollInterval) {
+						opts.logger.Error(err, "source poll read failed",
+							"consecutiveFailures", consecutiveFailures,
+							"nextWait", pollFailureWait(pollInterval, consecutiveFailures))
+						lastFailLog = now
+					}
+				}
+				continue
+			}
+			consecutiveFailures = 0
+			if opts != nil && opts.meta != nil {
+				opts.meta.SetSourcePollHealthy(true)
 			}
 		}
 	}()

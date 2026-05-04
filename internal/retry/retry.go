@@ -41,7 +41,7 @@ func IsTimeoutError(err error) bool {
 }
 
 // IsRetryableTransient returns true for generic transient errors (connection refused, timeout, HTTP 5xx).
-// Used by connectWithRetry for all connector types.
+// Used by connectWithRetry for all connector types (via IsRetryableForConnect).
 func IsRetryableTransient(err error) bool {
 	if err == nil {
 		return false
@@ -60,6 +60,103 @@ func IsRetryableTransient(err error) bool {
 		strings.Contains(lower, "bad gateway") ||
 		strings.Contains(lower, "service temporarily unavailable") ||
 		(strings.Contains(lower, "temporary") && strings.Contains(lower, "unavailable"))
+}
+
+// isPermanentConnectAuthFailure returns true for credential / OAuth client misconfiguration errors
+// that connectWithRetry must not mask with backoff (wrong password, invalid_grant, etc.).
+func isPermanentConnectAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "password authentication failed") ||
+		strings.Contains(lower, "sasl authentication failed") ||
+		strings.Contains(lower, "invalid password") ||
+		strings.Contains(lower, "invalid credentials") ||
+		strings.Contains(lower, "invalid_grant") ||
+		strings.Contains(lower, "unauthorized_client") ||
+		strings.Contains(lower, "client authentication failed")
+}
+
+// IsRetryableDelayedAccess returns true when the failure may resolve after IAM, ACL, OAuth role,
+// or object privileges propagate — same operational intent as retrying Kafka authorization/coordinator issues.
+// Covers PostgreSQL (42501, permission denied), Trino (PERMISSION_DENIED, HTTP 403), ClickHouse
+// (privilege / ACCESS_DENIED), Nessie/REST (403, catalog access), and selected OAuth token states.
+func IsRetryableDelayedAccess(err error) bool {
+	if err == nil || isPermanentConnectAuthFailure(err) {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+
+	// PostgreSQL: insufficient_privilege / SQLSTATE 42501 (object privileges not yet granted).
+	if strings.Contains(lower, "permission denied for") ||
+		strings.Contains(lower, "42501") ||
+		strings.Contains(lower, "insufficient_privilege") ||
+		strings.Contains(lower, "insufficient privilege") {
+		return true
+	}
+
+	// HTTP 403 / Forbidden (Trino "query failed with status 403", proxies, Nessie REST, Keycloak-protected HTTP).
+	if strings.Contains(lower, "status 403") ||
+		strings.Contains(lower, "http 403") ||
+		strings.Contains(lower, "http/403") {
+		return true
+	}
+	if strings.Contains(lower, "403 forbidden") || strings.Contains(lower, "forbidden: 403") {
+		return true
+	}
+
+	// Trino engine / HTTP error text.
+	if strings.Contains(lower, "access denied") ||
+		strings.Contains(lower, "permission_denied") {
+		return true
+	}
+
+	// ClickHouse: privilege and access control (error messages from clickhouse-go / server).
+	if strings.Contains(lower, "not enough privileges") ||
+		strings.Contains(lower, "not enough privilege") ||
+		strings.Contains(lower, "access_denied") ||
+		strings.Contains(lower, "not enough rights") {
+		return true
+	}
+
+	// REST / Iceberg / Nessie style (also appears in wrapped errors from Apache Iceberg clients).
+	if strings.Contains(lower, "not authorized") ||
+		strings.Contains(lower, "forbidden to") {
+		return true
+	}
+
+	// OAuth2 / OIDC: token or role not ready yet (avoid classifying invalid_grant as retryable — see isPermanentConnectAuthFailure).
+	if strings.Contains(lower, "invalid_token") ||
+		strings.Contains(lower, "token expired") ||
+		strings.Contains(lower, "token not active") {
+		return true
+	}
+	// 401 on token or Trino/Keycloak round-trip (transient until role or token is valid).
+	if strings.Contains(lower, "status 401") || strings.Contains(lower, "http/401") || strings.Contains(lower, "http 401") {
+		if strings.Contains(lower, "unauthorized") ||
+			strings.Contains(lower, "oauth") ||
+			strings.Contains(lower, "bearer") ||
+			strings.Contains(lower, "keycloak") ||
+			strings.Contains(lower, "openid") ||
+			strings.Contains(lower, "jwt") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsRetryableForConnect returns true if Connect should be retried by connectWithRetry (transient network,
+// HTTP 5xx, or delayed access / privilege / OAuth propagation). Permanent credential failures are excluded.
+func IsRetryableForConnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isPermanentConnectAuthFailure(err) {
+		return false
+	}
+	return IsRetryableTransient(err) || IsRetryableDelayedAccess(err)
 }
 
 // IsTransientClickHouseError returns true if err looks like a transient ClickHouse error

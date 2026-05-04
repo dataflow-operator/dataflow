@@ -294,27 +294,30 @@ func (c *NessieSourceConnector) Read(ctx context.Context) (<-chan *types.Message
 	if c.config.PollInterval != nil && *c.config.PollInterval > 0 {
 		pollInterval = time.Duration(*c.config.PollInterval) * time.Second
 	}
-	return runPollingRead(ctx, pollInterval, c.readOnce, c.channelBufferSize), nil
+	return runPollingRead(ctx, pollInterval, c.readOnce, c.channelBufferSize, &pollingReadOpts{
+		logger: c.logger,
+		meta:   &c.connectorMetadata,
+	}), nil
 }
 
-func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *types.Message) {
+func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *types.Message) error {
 	c.RLock()
 	closed := c.Closed()
 	tbl := c.tbl
 	c.RUnlock()
 	if closed || tbl == nil {
-		return
+		return nil
 	}
 
 	if err := tbl.Refresh(ctx); err != nil {
-		c.logger.Error(err, "Failed to refresh table", "table", c.config.Table)
-		return
+		c.RecordError("read", "refresh_error")
+		return fmt.Errorf("nessie refresh: %w", err)
 	}
 
 	arrowTbl, err := tbl.Scan().ToArrowTable(ctx)
 	if err != nil {
-		c.logger.Error(err, "Failed to scan table", "table", c.config.Table)
-		return
+		c.RecordError("read", "scan_error")
+		return fmt.Errorf("nessie scan: %w", err)
 	}
 	defer arrowTbl.Release()
 
@@ -323,9 +326,10 @@ func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *type
 		select {
 		case msgChan <- msg:
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		}
 	}
+	return nil
 }
 
 // Close closes the Nessie source connector.

@@ -88,6 +88,15 @@ var (
 		[]string{"namespace", "name", "connector_type", "connector_name"},
 	)
 
+	// ConnectorSourcePollHealthy — last polling read attempt for source connectors (1 = success, 0 = error)
+	ConnectorSourcePollHealthy = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dataflow_connector_source_poll_healthy",
+			Help: "Whether the last polling read attempt succeeded (1 = success, 0 = failure)",
+		},
+		[]string{"namespace", "name", "connector_type", "connector_name"},
+	)
+
 	// TransformerExecutions — transformer execution count
 	TransformerExecutions = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -285,6 +294,7 @@ func init() {
 		ConnectorMessagesWritten,
 		ConnectorErrors,
 		ConnectorConnectionStatus,
+		ConnectorSourcePollHealthy,
 		TransformerExecutions,
 		TransformerErrors,
 		TransformerDuration,
@@ -340,6 +350,15 @@ func SetConnectorConnectionStatus(namespace, name, connectorType, connectorName 
 		status = 1.0
 	}
 	ConnectorConnectionStatus.WithLabelValues(namespace, name, connectorType, connectorName).Set(status)
+}
+
+// SetConnectorSourcePollHealthy sets whether the last polling source read attempt succeeded.
+func SetConnectorSourcePollHealthy(namespace, name, connectorType, connectorName string, healthy bool) {
+	v := 0.0
+	if healthy {
+		v = 1.0
+	}
+	ConnectorSourcePollHealthy.WithLabelValues(namespace, name, connectorType, connectorName).Set(v)
 }
 
 // RecordTransformerExecution records transformer execution metric.

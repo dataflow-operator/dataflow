@@ -449,7 +449,7 @@ func (m *mockConnectable) Connect(ctx context.Context) error {
 	return nil
 }
 
-// transientError wraps a message so retry.IsRetryableTransient recognises it.
+// transientError wraps a message so retry.IsRetryableForConnect recognises it.
 type transientError struct{ msg string }
 
 func (e *transientError) Error() string { return e.msg }
@@ -471,6 +471,26 @@ func TestConnectWithRetry_TransientThenSuccess(t *testing.T) {
 	err := connectWithRetry(context.Background(), mc, "test", 0, time.Millisecond, logr.Discard())
 	require.NoError(t, err)
 	assert.Equal(t, 2, mc.calls)
+}
+
+func TestConnectWithRetry_DelayedAccessThenSuccess(t *testing.T) {
+	mc := &mockConnectable{
+		connectErrs: []error{
+			errors.New(`ERROR: permission denied for table orders (SQLSTATE 42501)`),
+			nil,
+		},
+	}
+	err := connectWithRetry(context.Background(), mc, "test", 0, time.Millisecond, logr.Discard())
+	require.NoError(t, err)
+	assert.Equal(t, 2, mc.calls)
+}
+
+func TestConnectWithRetry_PasswordAuthNotRetried(t *testing.T) {
+	authErr := errors.New("password authentication failed for user \"app\"")
+	mc := &mockConnectable{connectErrs: []error{authErr, nil}}
+	err := connectWithRetry(context.Background(), mc, "test", 0, time.Millisecond, logr.Discard())
+	require.ErrorIs(t, err, authErr)
+	assert.Equal(t, 1, mc.calls)
 }
 
 func TestConnectWithRetry_NonRetryableError(t *testing.T) {
@@ -552,6 +572,53 @@ func TestInitConnector_PartialInterface(t *testing.T) {
 	mc := &mockLoggerOnlyConnector{}
 	initConnector(mc, logr.Discard(), "ns", "name")
 	assert.True(t, mc.loggerSet)
+}
+
+func TestProcessor_Ready_NotStarted(t *testing.T) {
+	proc := &Processor{logger: logr.Discard()}
+	assert.False(t, proc.Ready())
+}
+
+func TestProcessor_Ready_ReadFails_StaysFalse(t *testing.T) {
+	ctx := context.Background()
+	src := &mockSourceConnector{readErr: errors.New("read failed")}
+	sink := &mockSinkConnector{}
+	proc := &Processor{
+		source:       src,
+		sink:         sink,
+		transformers: nil,
+		routerSinks:  map[string]v1.SinkSpec{},
+		logger:       logr.Discard(),
+		spec:         &v1.DataFlowSpec{},
+	}
+	err := proc.Start(ctx)
+	require.Error(t, err)
+	assert.False(t, proc.Ready())
+}
+
+func TestProcessor_Ready_BecomesTrueAfterRead(t *testing.T) {
+	ctx := context.Background()
+
+	src := &mockSourceConnector{messages: []*types.Message{types.NewMessage([]byte("x"))}}
+	sink := &mockSinkConnector{}
+	proc := &Processor{
+		source:       src,
+		sink:         sink,
+		transformers: nil,
+		routerSinks:  map[string]v1.SinkSpec{},
+		logger:       logr.Discard(),
+		spec:         &v1.DataFlowSpec{},
+	}
+	require.False(t, proc.Ready())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proc.Start(ctx) }()
+
+	require.Eventually(t, func() bool { return proc.Ready() }, 2*time.Second, 5*time.Millisecond)
+
+	err := <-errCh
+	assert.NoError(t, err)
+	assert.True(t, proc.Ready())
 }
 
 // Ensure Connectable is satisfied by both SourceConnector and SinkConnector mocks.

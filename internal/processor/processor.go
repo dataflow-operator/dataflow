@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
@@ -51,6 +52,8 @@ type Processor struct {
 	name            string
 	spec            *v1.DataFlowSpec
 	checkpointStore checkpoint.Store // for graceful shutdown flush
+	// ready is set to true after source.Read succeeds (pipeline is consuming).
+	ready atomic.Bool
 }
 
 // NewProcessor creates a new processor
@@ -147,6 +150,12 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 	return p, nil
 }
 
+// Ready reports whether the processor has completed startup through source.Read
+// (connect + read loop running). Used by HTTP /readyz for Kubernetes probes.
+func (p *Processor) Ready() bool {
+	return p.ready.Load()
+}
+
 // FlushCheckpoint persists any pending checkpoint to storage. Call before shutdown.
 func (p *Processor) FlushCheckpoint(ctx context.Context) error {
 	if p.checkpointStore != nil {
@@ -193,6 +202,7 @@ func (p *Processor) Start(ctx context.Context) error {
 		p.logger.Error(err, "Failed to read from source")
 		return fmt.Errorf("failed to read from source: %w", err)
 	}
+	p.ready.Store(true)
 	p.logger.Info("Started reading from source")
 
 	// Process messages
@@ -220,7 +230,7 @@ func connectWithRetry(ctx context.Context, connector Connectable, connectorName 
 		if err == nil {
 			return nil
 		}
-		if !retry.IsRetryableTransient(err) {
+		if !retry.IsRetryableForConnect(err) {
 			return err
 		}
 		attempt++

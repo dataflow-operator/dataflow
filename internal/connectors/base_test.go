@@ -17,10 +17,15 @@ limitations under the License.
 package connectors
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -191,4 +196,53 @@ func TestQuotePostgreSQLTableRef(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestPollFailureWait(t *testing.T) {
+	base := time.Second
+	assert.Equal(t, time.Second, pollFailureWait(base, 1))
+	assert.Equal(t, 2*time.Second, pollFailureWait(base, 2))
+	assert.Equal(t, 4*time.Second, pollFailureWait(base, 3))
+	assert.Equal(t, maxPollingReadBackoff, pollFailureWait(base, 32))
+}
+
+func TestShouldLogPollFailure(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	assert.True(t, shouldLogPollFailure(start, start, 1, time.Second))
+	assert.False(t, shouldLogPollFailure(start.Add(10*time.Second), start, 2, time.Second))
+	assert.True(t, shouldLogPollFailure(start.Add(31*time.Second), start, 2, time.Second))
+	assert.True(t, shouldLogPollFailure(start.Add(time.Second), start, 10, time.Second))
+}
+
+func TestRunPollingRead_RepeatedErrorsUntilCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int32
+	readFn := func(ctx context.Context, ch chan *types.Message) error {
+		n := calls.Add(1)
+		if n >= 3 {
+			cancel()
+		}
+		return errors.New("poll failed")
+	}
+	ch := runPollingRead(ctx, 5*time.Millisecond, readFn, 4, nil)
+	for range ch {
+	}
+	require.GreaterOrEqual(t, calls.Load(), int32(3))
+}
+
+func TestRunPollingRead_SuccessResetsBackoff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	var calls atomic.Int32
+	readFn := func(ctx context.Context, ch chan *types.Message) error {
+		n := calls.Add(1)
+		if n == 1 {
+			return errors.New("first failure")
+		}
+		return nil
+	}
+	ch := runPollingRead(ctx, 10*time.Millisecond, readFn, 4, nil)
+	for range ch {
+	}
+	require.GreaterOrEqual(t, calls.Load(), int32(2))
 }

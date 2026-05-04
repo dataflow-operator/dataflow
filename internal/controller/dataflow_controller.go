@@ -40,6 +40,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -962,6 +963,18 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 							),
 							Ports: []corev1.ContainerPort{
 								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
+							},
+							StartupProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/readyz",
+										Port: intstr.FromInt(9090),
+									},
+								},
+								PeriodSeconds:    10,
+								TimeoutSeconds:   5,
+								FailureThreshold: 120,
+								SuccessThreshold: 1,
 							},
 							Lifecycle: &corev1.Lifecycle{
 								PreStop: &corev1.LifecycleHandler{

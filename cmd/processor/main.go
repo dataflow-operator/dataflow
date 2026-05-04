@@ -116,6 +116,21 @@ func main() {
 	// Start metrics HTTP server (must be before proc.Start so /metrics is available from the start)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if proc.Ready() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok\n"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready\n"))
+	})
 	metricsServer := &http.Server{Addr: metricsPort, Handler: mux}
 	go func() {
 		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

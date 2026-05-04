@@ -180,10 +180,13 @@ func (p *PostgreSQLSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 	if p.config.PollInterval != nil {
 		pollInterval = time.Duration(*p.config.PollInterval) * time.Second
 	}
-	return runPollingRead(ctx, pollInterval, p.readRows, p.channelBufferSize), nil
+	return runPollingRead(ctx, pollInterval, p.readRows, p.channelBufferSize, &pollingReadOpts{
+		logger: p.logger,
+		meta:   &p.connectorMetadata,
+	}), nil
 }
 
-func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) {
+func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
 	p.Lock()
 	defer p.Unlock()
 
@@ -208,8 +211,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		rows, err := p.conn.Query(ctx, query)
 		if err != nil {
 			p.RecordError("read", "query_error")
-			p.logger.Error(err, "Failed to execute PostgreSQL query", "query", query, "table", p.config.Table)
-			return
+			return fmt.Errorf("postgresql query: %w", err)
 		}
 
 		fieldNames := rows.FieldDescriptions()
@@ -234,9 +236,8 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			values, err := rows.Values()
 			if err != nil {
 				p.RecordError("read", "scan_error")
-				p.logger.Error(err, "Failed to read row values", "table", p.config.Table)
 				rows.Close()
-				return
+				return fmt.Errorf("postgresql scan row: %w", err)
 			}
 
 			rowMap := make(map[string]interface{})
@@ -286,7 +287,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				p.RecordMessageRead()
 			case <-ctx.Done():
 				rows.Close()
-				return
+				return ctx.Err()
 			}
 			rowCount++
 		}
@@ -300,6 +301,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			break
 		}
 	}
+	return nil
 }
 
 func (p *PostgreSQLSourceConnector) getChangeTrackingColumn() string {
