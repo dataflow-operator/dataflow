@@ -1,0 +1,26 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-debezium-to-postgres
+spec:
+  source:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: dbserver1.inventory.customers
+      consumerGroup: dataflow-debezium-group
+  transformations:
+    - type: debeziumUnwrap
+      config:
+        inferDeleteFromTombstone: true
+        includeSourceInMetadata: true
+        snapshotOperation: insert
+  sink:
+    type: postgresql
+    config:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: customers
+      upsertMode: true
+      conflictKey: id
+      softDeleteColumn: deleted_at

@@ -808,7 +808,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -860,6 +860,11 @@ func (t *TransformationSpec) GetSnakeCaseConfig() (*SnakeCaseTransformation, err
 // GetCamelCaseConfig returns CamelCase transformation config.
 func (t *TransformationSpec) GetCamelCaseConfig() (*CamelCaseTransformation, error) {
 	return getTypedConfig[CamelCaseTransformation](t.Config)
+}
+
+// GetDebeziumUnwrapConfig returns DebeziumUnwrap transformation config.
+func (t *TransformationSpec) GetDebeziumUnwrapConfig() (*DebeziumUnwrapTransformation, error) {
+	return getTypedConfig[DebeziumUnwrapTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -938,6 +943,21 @@ type CamelCaseTransformation struct {
 	// Deep indicates whether to convert nested objects recursively
 	// +optional
 	Deep bool `json:"deep,omitempty"`
+}
+
+// DebeziumUnwrapTransformation unwraps Debezium envelope messages into row payloads.
+type DebeziumUnwrapTransformation struct {
+	// InferDeleteFromTombstone converts Kafka tombstone records into operation=delete messages using metadata.key JSON.
+	// +optional
+	InferDeleteFromTombstone bool `json:"inferDeleteFromTombstone,omitempty"`
+
+	// IncludeSourceInMetadata copies payload.source fields into metadata with source_ prefix.
+	// +optional
+	IncludeSourceInMetadata bool `json:"includeSourceInMetadata,omitempty"`
+
+	// SnapshotOperation defines operation for Debezium snapshot records (op="r"): insert (default) or update.
+	// +optional
+	SnapshotOperation string `json:"snapshotOperation,omitempty"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow

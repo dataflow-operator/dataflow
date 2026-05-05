@@ -236,6 +236,29 @@ func TestCreateTransformer_CamelCase(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_DebeziumUnwrap(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid debeziumUnwrap transformation",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.DebeziumUnwrap,
+				Config: mustConfig(v1.DebeziumUnwrapTransformation{
+					InferDeleteFromTombstone: true,
+					IncludeSourceInMetadata:  true,
+				}),
+			},
+		},
+		{
+			name: "debeziumUnwrap without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.DebeziumUnwrap,
+			},
+			wantErr:     true,
+			errContains: "debeziumUnwrap transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",

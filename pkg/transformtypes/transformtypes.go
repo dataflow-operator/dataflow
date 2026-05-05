@@ -24,15 +24,16 @@ import (
 
 // Canonical transformation type keys (processor registry + API validation).
 const (
-	Timestamp = "timestamp"
-	Flatten   = "flatten"
-	Filter    = "filter"
-	Mask      = "mask"
-	Router    = "router"
-	Select    = "select"
-	Remove    = "remove"
-	SnakeCase = "snakeCase"
-	CamelCase = "camelCase"
+	Timestamp      = "timestamp"
+	Flatten        = "flatten"
+	Filter         = "filter"
+	Mask           = "mask"
+	Router         = "router"
+	Select         = "select"
+	Remove         = "remove"
+	SnakeCase      = "snakeCase"
+	CamelCase      = "camelCase"
+	DebeziumUnwrap = "debeziumUnwrap"
 )
 
 // keys is built from constants only — add a new transformer: new const, append here, register in factory.
@@ -46,6 +47,7 @@ var keys = []string{
 	Remove,
 	SnakeCase,
 	CamelCase,
+	DebeziumUnwrap,
 }
 
 var keySet map[string]struct{}

@@ -40,6 +40,11 @@ var transformerRegistry = map[string]transformerEntry{
 	transformtypes.Remove:    {create: createTransformer[v1.RemoveTransformation](transformtypes.Remove, func(cfg *v1.RemoveTransformation) Transformer { return NewRemoveTransformer(cfg) })},
 	transformtypes.SnakeCase: {create: createTransformer[v1.SnakeCaseTransformation](transformtypes.SnakeCase, func(cfg *v1.SnakeCaseTransformation) Transformer { return NewSnakeCaseTransformer(cfg) })},
 	transformtypes.CamelCase: {create: createTransformer[v1.CamelCaseTransformation](transformtypes.CamelCase, func(cfg *v1.CamelCaseTransformation) Transformer { return NewCamelCaseTransformer(cfg) })},
+	transformtypes.DebeziumUnwrap: {
+		create: createTransformer[v1.DebeziumUnwrapTransformation](transformtypes.DebeziumUnwrap, func(cfg *v1.DebeziumUnwrapTransformation) Transformer {
+			return NewDebeziumUnwrapTransformer(cfg)
+		}),
+	},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.

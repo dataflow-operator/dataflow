@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/dataflow-operator/dataflow/pkg/transformtypes"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -96,5 +97,31 @@ func TestDataFlow_ValidateDelete(t *testing.T) {
 	}
 	if len(warnings) != 0 {
 		t.Errorf("ValidateDelete: unexpected warnings: %v", warnings)
+	}
+}
+
+func TestDataFlow_ValidateCreate_DebeziumUnwrapInvalidSnapshotOperation(t *testing.T) {
+	df := &DataFlow{}
+	df.Spec = DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustConfig(KafkaSinkSpec{Brokers: []string{"b"}, Topic: "out"}),
+		},
+		Transformations: []TransformationSpec{
+			{
+				Type: transformtypes.DebeziumUnwrap,
+				Config: mustConfig(DebeziumUnwrapTransformation{
+					SnapshotOperation: "delete",
+				}),
+			},
+		},
+	}
+	_, err := df.ValidateCreate(context.Background(), df)
+	if err == nil {
+		t.Fatal("ValidateCreate: expected validation error for invalid snapshotOperation")
 	}
 }

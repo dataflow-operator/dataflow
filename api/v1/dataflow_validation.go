@@ -540,6 +540,17 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "camelCase transformation configuration is required"))
 			}
+		case transformtypes.DebeziumUnwrap:
+			if hasConfig {
+				var cfg DebeziumUnwrapTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid debeziumUnwrap config: "+err.Error()))
+				} else if cfg.SnapshotOperation != "" && cfg.SnapshotOperation != "insert" && cfg.SnapshotOperation != "update" {
+					all = append(all, field.NotSupported(idx.Child("config", "snapshotOperation"), cfg.SnapshotOperation, []string{"insert", "update"}))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "debeziumUnwrap transformation configuration is required"))
+			}
 		}
 	}
 	return all

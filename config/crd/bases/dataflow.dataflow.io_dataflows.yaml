@@ -1166,7 +1166,7 @@ spec:
                       x-kubernetes-preserve-unknown-fields: true
                     type:
                       description: 'Type of transformation: timestamp, flatten, filter,
-                        mask, router, select, remove, snakeCase, camelCase'
+                        mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap'
                       type: string
                   required:
                   - type
