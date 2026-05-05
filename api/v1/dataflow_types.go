@@ -557,6 +557,26 @@ type NessieSinkSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name.
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// S3Endpoint is the S3-compatible API endpoint URL for iceberg-go/AWS SDK (e.g. https://storage.yandexcloud.net).
+	// When empty on AWS, the SDK uses default endpoints.
+	// +optional
+	S3Endpoint string `json:"s3Endpoint,omitempty"`
+
+	// S3Region is the region passed as AWS_REGION for object storage operations (e.g. ru-central1).
+	// +optional
+	S3Region string `json:"s3Region,omitempty"`
+
+	// AccessKeySecretRef references a Kubernetes Secret key for the S3 access key ID (maps to AWS_ACCESS_KEY_ID in the processor pod).
+	// Values must not reference Secrets outside the DataFlow namespace — pods can only mount env from same-namespace Secrets.
+	// The operator does not resolve this into the spec ConfigMap; credentials are injected only via pod env.
+	// +optional
+	AccessKeySecretRef *SecretRef `json:"accessKeySecretRef,omitempty"`
+
+	// SecretAccessKeySecretRef references a Kubernetes Secret key for the S3 secret access key (maps to AWS_SECRET_ACCESS_KEY in the processor pod).
+	// Same namespace rules as AccessKeySecretRef.
+	// +optional
+	SecretAccessKeySecretRef *SecretRef `json:"secretAccessKeySecretRef,omitempty"`
 }
 
 // KafkaSinkSpec defines Kafka sink configuration

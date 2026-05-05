@@ -223,6 +223,17 @@ func validateNessieSink(n *NessieSinkSpec, f *field.Path) field.ErrorList {
 	if n.TokenSecretRef != nil {
 		all = append(all, validateSecretRef(n.TokenSecretRef, f.Child("tokenSecretRef"))...)
 	}
+	hasAK := n.AccessKeySecretRef != nil
+	hasSK := n.SecretAccessKeySecretRef != nil
+	if hasAK != hasSK {
+		all = append(all, field.Invalid(f.Child("accessKeySecretRef"), n.AccessKeySecretRef, "accessKeySecretRef and secretAccessKeySecretRef must both be set or both omitted"))
+	}
+	if n.AccessKeySecretRef != nil {
+		all = append(all, validateSecretRef(n.AccessKeySecretRef, f.Child("accessKeySecretRef"))...)
+	}
+	if n.SecretAccessKeySecretRef != nil {
+		all = append(all, validateSecretRef(n.SecretAccessKeySecretRef, f.Child("secretAccessKeySecretRef"))...)
+	}
 	all = append(all, validateNessieAuthConfig(string(n.AuthenticationType), n.BearerToken, n.TokenSecretRef, n.BasicAuth, f)...)
 	return all
 }

@@ -28,6 +28,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1779,4 +1780,141 @@ done:
 	}
 	assert.True(t, hasConfigMapCreated, "expected event containing ConfigMapCreated, got events: %v", events)
 	assert.True(t, hasDeploymentCreated, "expected event containing DeploymentCreated, got events: %v", events)
+}
+
+func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageEnvAndRBAC(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	cpOff := false
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "nessie-s3-test", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			CheckpointPersistence: &cpOff,
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "nessie",
+				Config: mustConfig(dataflowv1.NessieSinkSpec{
+					BaseURL:    "https://nessie.example",
+					Namespace:  "ns",
+					Table:      "tbl",
+					S3Endpoint: "https://storage.yandexcloud.net",
+					S3Region:   "ru-central1",
+					AccessKeySecretRef: &dataflowv1.SecretRef{
+						Name: "iceberg-s3-static", Key: "AWS_ACCESS_KEY_ID",
+					},
+					SecretAccessKeySecretRef: &dataflowv1.SecretRef{
+						Name: "iceberg-s3-static", Key: "AWS_SECRET_ACCESS_KEY",
+					},
+				}),
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "nessie-s3-test", Namespace: "default"}}
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-test", Namespace: "default"}, &deployment))
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	assert.Equal(t, "dataflow-nessie-s3-test-processor", deployment.Spec.Template.Spec.ServiceAccountName)
+
+	env := deployment.Spec.Template.Spec.Containers[0].Env
+	idVar, ok := envVarByName(env, envAWSAccessKeyID)
+	require.True(t, ok)
+	require.NotNil(t, idVar.ValueFrom)
+	require.Equal(t, "iceberg-s3-static", idVar.ValueFrom.SecretKeyRef.Name)
+	skVar, ok := envVarByName(env, envAWSSecretAccessKey)
+	require.True(t, ok)
+	require.Equal(t, "iceberg-s3-static", skVar.ValueFrom.SecretKeyRef.Name)
+	epVar, ok := envVarByName(env, envAWSS3Endpoint)
+	require.True(t, ok)
+	assert.Equal(t, "https://storage.yandexcloud.net", epVar.Value)
+	regVar, ok := envVarByName(env, envAWSRegion)
+	require.True(t, ok)
+	assert.Equal(t, "ru-central1", regVar.Value)
+
+	var role rbacv1.Role
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-test-processor", Namespace: "default"}, &role))
+	require.Len(t, role.Rules, 1)
+	assert.Equal(t, []string{"secrets"}, role.Rules[0].Resources)
+	assert.Equal(t, []string{"iceberg-s3-static"}, role.Rules[0].ResourceNames)
+	assert.Contains(t, role.Rules[0].Verbs, "get")
+}
+
+func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageCrossNamespaceResolvesToLiteralEnv(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+	ctx := context.Background()
+
+	remoteSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "iceberg-s3-static", Namespace: "other"},
+		Data: map[string][]byte{
+			"AWS_ACCESS_KEY_ID":     []byte("REMOTEACCESS"),
+			"AWS_SECRET_ACCESS_KEY": []byte("REMOTESECRET"),
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(remoteSecret).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+
+	cpOff := false
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "nessie-s3-remote", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			CheckpointPersistence: &cpOff,
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "nessie",
+				Config: mustConfig(dataflowv1.NessieSinkSpec{
+					BaseURL:   "https://nessie.example",
+					Namespace: "ns",
+					Table:     "tbl",
+					AccessKeySecretRef: &dataflowv1.SecretRef{
+						Name: "iceberg-s3-static", Namespace: "other", Key: "AWS_ACCESS_KEY_ID",
+					},
+					SecretAccessKeySecretRef: &dataflowv1.SecretRef{
+						Name: "iceberg-s3-static", Namespace: "other", Key: "AWS_SECRET_ACCESS_KEY",
+					},
+				}),
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "nessie-s3-remote", Namespace: "default"}}
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-remote", Namespace: "default"}, &deployment))
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	assert.Equal(t, "", deployment.Spec.Template.Spec.ServiceAccountName, "remote-only S3 refs: default SA")
+
+	env := deployment.Spec.Template.Spec.Containers[0].Env
+	idVar, ok := envVarByName(env, envAWSAccessKeyID)
+	require.True(t, ok)
+	assert.Nil(t, idVar.ValueFrom)
+	assert.Equal(t, "REMOTEACCESS", idVar.Value)
+	skVar, ok := envVarByName(env, envAWSSecretAccessKey)
+	require.True(t, ok)
+	assert.Nil(t, skVar.ValueFrom)
+	assert.Equal(t, "REMOTESECRET", skVar.Value)
+
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-remote-processor", Namespace: "default"}, &rbacv1.Role{})
+	require.True(t, apierrors.IsNotFound(err), "no processor Role when checkpoint off and no in-namespace S3 secrets")
 }

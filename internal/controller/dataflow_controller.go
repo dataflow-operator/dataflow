@@ -607,6 +607,23 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 		return err
 	}
 
+	if err := validateNessieSinkObjectStorageRefs(&resolvedSpec.Sink); err != nil {
+		log.Error(err, "invalid Nessie sink object storage configuration")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "InvalidSpec", "%v", err)
+			log.V(1).Info("Emitted Kubernetes event", "reason", "InvalidSpec", "object", req.NamespacedName)
+		}
+		updateErr := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
+			df.Status.Phase = "Error"
+			df.Status.Message = err.Error()
+			df.Status.Conditions = buildStatusConditions(df.Status.Phase, df.Status.Message, false, false, "Unknown")
+		})
+		if updateErr != nil {
+			log.Error(updateErr, "unable to update DataFlow status")
+		}
+		return err
+	}
+
 	if err := r.createOrUpdateConfigMap(ctx, req, resolvedSpec); err != nil {
 		log.Error(err, "failed to create or update ConfigMap")
 		if r.Recorder != nil {
@@ -624,7 +641,10 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 		return err
 	}
 
-	if resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence {
+	checkpointOn := resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence
+	nessieLocalS3Secrets := nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, req.Namespace)
+
+	if checkpointOn {
 		if err := r.createOrUpdateCheckpointConfigMap(ctx, req, dataflow); err != nil {
 			log.Error(err, "failed to create or update checkpoint ConfigMap")
 			if r.Recorder != nil {
@@ -640,7 +660,9 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 			}
 			return err
 		}
-		if err := r.createOrUpdateProcessorRBAC(ctx, req, dataflow); err != nil {
+	}
+	if checkpointOn || nessieLocalS3Secrets {
+		if err := r.createOrUpdateProcessorRBAC(ctx, req, dataflow, resolvedSpec); err != nil {
 			log.Error(err, "failed to create or update processor RBAC")
 			if r.Recorder != nil {
 				r.Recorder.Eventf(dataflow, corev1.EventTypeWarning, "ProcessorRBACFailed", "Failed to create processor RBAC: %v", err)
@@ -776,13 +798,35 @@ func (r *DataFlowReconciler) createOrUpdateCheckpointConfigMap(ctx context.Conte
 	return nil
 }
 
-// createOrUpdateProcessorRBAC creates ServiceAccount, Role, and RoleBinding for the processor pod to read/write checkpoint ConfigMap.
-func (r *DataFlowReconciler) createOrUpdateProcessorRBAC(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
+// createOrUpdateProcessorRBAC creates ServiceAccount, Role, and RoleBinding for the processor pod:
+// checkpoint ConfigMap access when checkpoint persistence is enabled, and Secret get when Nessie sink uses in-namespace S3 refs.
+func (r *DataFlowReconciler) createOrUpdateProcessorRBAC(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	log := log.FromContext(ctx)
 	saName := fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
 	roleName := saName
 	configMapName := fmt.Sprintf("dataflow-%s-checkpoint", dataflow.Name)
 
+	var rules []rbacv1.PolicyRule
+	if resolvedSpec != nil && (resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence) {
+		rules = append(rules, rbacv1.PolicyRule{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{configMapName},
+			Verbs:         []string{"get", "patch", "update"},
+		})
+	}
+	if resolvedSpec != nil {
+		if cfg, err := resolvedSpec.Sink.GetNessieConfig(); err == nil && cfg != nil {
+			if secretNames := nessieSinkObjectStorageSecretNames(cfg, req.Namespace); len(secretNames) > 0 {
+				rules = append(rules, rbacv1.PolicyRule{
+					APIGroups:     []string{""},
+					Resources:     []string{"secrets"},
+					ResourceNames: secretNames,
+					Verbs:         []string{"get"},
+				})
+			}
+		}
+	}
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      saName,
@@ -808,14 +852,7 @@ func (r *DataFlowReconciler) createOrUpdateProcessorRBAC(ctx context.Context, re
 			Name:      roleName,
 			Namespace: req.Namespace,
 		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"configmaps"},
-				ResourceNames: []string{configMapName},
-				Verbs:         []string{"get", "patch", "update"},
-			},
-		},
+		Rules: rules,
 	}
 	if err := ctrl.SetControllerReference(dataflow, role, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set controller reference on Role: %w", err)
@@ -879,9 +916,16 @@ func (r *DataFlowReconciler) createOrUpdateProcessorRBAC(ctx context.Context, re
 	return nil
 }
 
-// processorServiceAccountFor returns the ServiceAccount name for the processor pod when checkpoint persistence is enabled.
+// processorServiceAccountFor returns the dedicated ServiceAccount for the processor when checkpoint persistence
+// is enabled or when the Nessie sink uses S3 Secrets in the DataFlow namespace (secretKeyRef requires Secret get).
 func (r *DataFlowReconciler) processorServiceAccountFor(dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) string {
-	if resolvedSpec != nil && (resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence) {
+	if resolvedSpec == nil {
+		return ""
+	}
+	if resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence {
+		return fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
+	}
+	if nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, dataflow.Namespace) {
 		return fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
 	}
 	return ""
@@ -904,7 +948,7 @@ func (r *DataFlowReconciler) processorImageFor(dataflow *dataflowv1.DataFlow) st
 const specHashAnnotation = "dataflow.dataflow.io/spec-hash"
 
 // createOrUpdateDeployment creates or updates Deployment for the processor.
-// When resolvedSpec.CheckpointPersistence is enabled, uses a dedicated ServiceAccount for checkpoint ConfigMap access.
+// Uses a dedicated ServiceAccount when checkpoint persistence is enabled or Nessie sink uses same-namespace S3 Secret refs.
 func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	log := log.FromContext(ctx)
 
@@ -926,6 +970,20 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 	}
 
 	processorImage := r.processorImageFor(dataflow)
+
+	processorEnv := append(
+		[]corev1.EnvVar{{Name: "LOG_LEVEL", Value: processorLogLevel()}},
+		processorSentryEnvVars()...,
+	)
+	if resolvedSpec != nil {
+		if cfg, err := resolvedSpec.Sink.GetNessieConfig(); err == nil && cfg != nil {
+			s3Env, err := nessieSinkObjectStorageEnvWithResolve(ctx, r.secretResolver, req.Namespace, cfg)
+			if err != nil {
+				return fmt.Errorf("nessie sink object storage env: %w", err)
+			}
+			processorEnv = append(processorEnv, s3Env...)
+		}
+	}
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -957,10 +1015,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 								"--namespace=" + req.Namespace,
 								"--name=" + dataflow.Name,
 							},
-							Env: append(
-								[]corev1.EnvVar{{Name: "LOG_LEVEL", Value: processorLogLevel()}},
-								processorSentryEnvVars()...,
-							),
+							Env: processorEnv,
 							Ports: []corev1.ContainerPort{
 								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 							},
@@ -1224,7 +1279,9 @@ func (r *DataFlowReconciler) shouldEnqueueOnOperatorDeploymentUpdate(oldObj, new
 		!equality.Semantic.DeepEqual(oldDep.Spec.Template, newDep.Spec.Template)
 }
 
-// enqueueAllDataFlowsForSecretUpdate returns reconcile requests for all DataFlows in the same namespace as Secret.
+// enqueueAllDataFlowsForSecretUpdate returns reconcile requests for DataFlows affected by a Secret change:
+// all DataFlows in the Secret's namespace (existing behavior for resolved secret refs in spec), plus any cluster-wide
+// DataFlow whose Nessie sink S3 credential refs target this Secret (cross-namespace refs).
 func (r *DataFlowReconciler) enqueueAllDataFlowsForSecretUpdate(ctx context.Context, o client.Object) []reconcile.Request {
 	secret, ok := o.(*corev1.Secret)
 	if !ok {
@@ -1233,19 +1290,43 @@ func (r *DataFlowReconciler) enqueueAllDataFlowsForSecretUpdate(ctx context.Cont
 	if secret.Namespace == "" {
 		return nil
 	}
-	list := &dataflowv1.DataFlowList{}
-	if err := r.List(ctx, list, client.InNamespace(secret.Namespace)); err != nil {
+	seen := make(map[string]struct{})
+	add := func(ns, name string, reqs *[]reconcile.Request) {
+		key := ns + "/" + name
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		*reqs = append(*reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	}
+
+	var reqs []reconcile.Request
+
+	listLocal := &dataflowv1.DataFlowList{}
+	if err := r.List(ctx, listLocal, client.InNamespace(secret.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list DataFlows for secret update",
 			"secretNamespace", secret.Namespace,
 			"secretName", secret.Name,
 		)
-		return nil
+	} else {
+		for i := range listLocal.Items {
+			add(listLocal.Items[i].Namespace, listLocal.Items[i].Name, &reqs)
+		}
 	}
-	reqs := make([]reconcile.Request, 0, len(list.Items))
-	for i := range list.Items {
-		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-			Name: list.Items[i].Name, Namespace: list.Items[i].Namespace,
-		}})
+
+	listAll := &dataflowv1.DataFlowList{}
+	if err := r.List(ctx, listAll); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list DataFlows for cross-namespace Nessie S3 secret watch",
+			"secretNamespace", secret.Namespace,
+			"secretName", secret.Name,
+		)
+		return reqs
+	}
+	for i := range listAll.Items {
+		df := &listAll.Items[i]
+		if nessieSinkObjectStorageRefsSecret(df, secret) {
+			add(df.Namespace, df.Name, &reqs)
+		}
 	}
 	return reqs
 }

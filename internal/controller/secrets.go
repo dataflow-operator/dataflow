@@ -934,6 +934,8 @@ func (r *SecretResolver) resolveNessieSourceSpec(ctx context.Context, namespace 
 }
 
 func (r *SecretResolver) resolveNessieSinkSpec(ctx context.Context, namespace string, spec *dataflowv1.NessieSinkSpec) error {
+	// S3 object storage credentials (AccessKeySecretRef, SecretAccessKeySecretRef) are intentionally not resolved here:
+	// resolved values must not be written to the spec ConfigMap; the controller injects them via pod env + SecretKeyRef.
 	if spec.BaseURLSecretRef != nil {
 		value, err := r.ResolveSecretValue(ctx, namespace, spec.BaseURLSecretRef)
 		if err != nil {
