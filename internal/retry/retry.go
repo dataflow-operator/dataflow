@@ -13,6 +13,12 @@ const DefaultMaxAttempts = 3
 // DefaultInitialBackoff is the initial delay between retries.
 const DefaultInitialBackoff = 500 * time.Millisecond
 
+// NessieAppendMaxAttempts is the number of retry attempts for Nessie batch writes.
+const NessieAppendMaxAttempts = 5
+
+// NessieAppendInitialBackoff is the initial backoff for Nessie append retries.
+const NessieAppendInitialBackoff = 1 * time.Second
+
 // TrinoMaxAttempts is the number of retry attempts for Trino batch writes (transient worker/load errors).
 const TrinoMaxAttempts = 5
 

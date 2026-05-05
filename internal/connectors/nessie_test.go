@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -246,4 +247,49 @@ func TestIsRetryableNessieSnapshotConflict(t *testing.T) {
 		err := errors.New("append table: network timeout")
 		assert.False(t, isRetryableNessieSnapshotConflict(err))
 	})
+}
+
+func TestIsRetryableNessieAppendError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "direct eof",
+			err:  io.EOF,
+			want: true,
+		},
+		{
+			name: "wrapped eof",
+			err:  fmt.Errorf("append table: %w", io.EOF),
+			want: true,
+		},
+		{
+			name: "post eof string",
+			err:  errors.New(`append table: Post "http://nessie/iceberg/v1/ns/tables/t": EOF`),
+			want: true,
+		},
+		{
+			name: "transient connection reset",
+			err:  errors.New("append table: connection reset by peer"),
+			want: true,
+		},
+		{
+			name: "non retryable validation",
+			err:  errors.New("append table: invalid schema evolution"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isRetryableNessieAppendError(tt.err))
+		})
+	}
 }

@@ -465,8 +465,8 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		if appendSize == 0 {
 			appendSize = int64(len(msgs))
 		}
-		err = retry.OnRetry(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func(err error) bool {
-			return retry.IsTimeoutError(err) || isRetryableNessieSnapshotConflict(err)
+		err = retry.OnRetry(ctx, retry.NessieAppendMaxAttempts, retry.NessieAppendInitialBackoff, func(err error) bool {
+			return isRetryableNessieAppendError(err)
 		}, func() error {
 			newTbl, appendErr := c.tbl.AppendTable(ctx, arrowTbl, appendSize, nil)
 			if appendErr != nil {
@@ -583,6 +583,20 @@ func isRetryableNessieSnapshotConflict(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), nessieSnapshotConflictToken)
+}
+
+func isRetryableNessieAppendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if retry.IsTimeoutError(err) || retry.IsRetryableTransient(err) || isRetryableNessieSnapshotConflict(err) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, ": eof")
 }
 
 // Close closes the Nessie sink connector.
