@@ -708,12 +708,12 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	// Verify Deployment was created
 	var deployment appsv1.Deployment
 	deploymentName := types.NamespacedName{
-		Name:      "dataflow-test-dataflow",
+		Name:      "df-test-dataflow",
 		Namespace: "default",
 	}
 	err = fakeClient.Get(ctx, deploymentName, &deployment)
 	assert.NoError(t, err, "Deployment should be created")
-	assert.Equal(t, "dataflow-test-dataflow", deployment.Name)
+	assert.Equal(t, "df-test-dataflow", deployment.Name)
 	assert.Contains(t, deployment.Spec.Template.Annotations, specHashAnnotation,
 		"Deployment pod template should have spec-hash annotation for ConfigMap change detection")
 	assert.NotEmpty(t, deployment.Spec.Template.Annotations[specHashAnnotation],
@@ -742,7 +742,7 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	// Verify ConfigMap was created
 	var configMap corev1.ConfigMap
 	configMapName := types.NamespacedName{
-		Name:      "dataflow-test-dataflow-spec",
+		Name:      "df-test-dataflow-spec",
 		Namespace: "default",
 	}
 	err = fakeClient.Get(ctx, configMapName, &configMap)
@@ -789,7 +789,7 @@ func TestDataFlowReconciler_Reconcile_ProcessorGetsSentryEnvWhenSet(t *testing.T
 	_, _ = reconciler.Reconcile(ctx, req)
 
 	var deployment appsv1.Deployment
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}, &deployment))
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
 	env := deployment.Spec.Template.Spec.Containers[0].Env
@@ -835,7 +835,7 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorImage(t *testin
 	_, _ = reconciler.Reconcile(ctx, req)
 
 	var deployment appsv1.Deployment
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}, &deployment))
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 	assert.Equal(t, customImage, deployment.Spec.Template.Spec.Containers[0].Image, "Deployment should use spec.processorImage")
 }
@@ -868,7 +868,7 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesSpecProcessorVersion(t *test
 	_, _ = reconciler.Reconcile(ctx, req)
 
 	var deployment appsv1.Deployment
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}, &deployment))
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 	expectedImage := version.ProcessorImageWithTag("v0.5.0")
 	assert.Equal(t, expectedImage, deployment.Spec.Template.Spec.Containers[0].Image, "Deployment should use default repo with spec.processorVersion")
@@ -905,7 +905,7 @@ func TestDataFlowReconciler_Reconcile_DeploymentUsesImagePullSecrets(t *testing.
 	_, _ = reconciler.Reconcile(ctx, req)
 
 	var deployment appsv1.Deployment
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &deployment))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}, &deployment))
 	assert.Equal(t, []corev1.LocalObjectReference{
 		{Name: "my-registry-secret"},
 		{Name: "other-pull-secret"},
@@ -999,13 +999,13 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer(t *testing.T)
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "dataflow-test-dataflow",
+			Name:      "df-test-dataflow",
 			Namespace: "default",
 		},
 	}
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "dataflow-test-dataflow-spec",
+			Name:      "df-test-dataflow-spec",
 			Namespace: "default",
 		},
 		Data: map[string]string{"spec.json": "{}"},
@@ -1031,11 +1031,11 @@ func TestDataFlowReconciler_Reconcile_DeleteDataFlow_WithFinalizer(t *testing.T)
 
 	// Deployment and ConfigMap should be deleted
 	var dep appsv1.Deployment
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}, &dep)
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}, &dep)
 	assert.True(t, apierrors.IsNotFound(err), "Deployment should be deleted")
 
 	var cm corev1.ConfigMap
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-test-dataflow-spec", Namespace: "default"}, &cm)
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "df-test-dataflow-spec", Namespace: "default"}, &cm)
 	assert.True(t, apierrors.IsNotFound(err), "ConfigMap should be deleted")
 
 	// DataFlow: either deleted (real API server removes object once finalizer is gone) or still present without our finalizer
@@ -1215,7 +1215,7 @@ func TestDataFlowReconciler_Reconcile_WithResourcesAndNodeSelector(t *testing.T)
 	// Verify Deployment was created with correct settings
 	var deployment appsv1.Deployment
 	deploymentName := types.NamespacedName{
-		Name:      "dataflow-test-dataflow",
+		Name:      "df-test-dataflow",
 		Namespace: "default",
 	}
 	err = fakeClient.Get(ctx, deploymentName, &deployment)
@@ -1355,7 +1355,7 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecChanged(t *testing.T) {
 	// First reconcile — Deployment created
 	_, _ = reconciler.Reconcile(ctx, req)
 
-	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
+	deploymentName := types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}
 	var deployment appsv1.Deployment
 
 	// Change DataFlow spec (NodeSelector goes into Deployment spec)
@@ -1414,7 +1414,7 @@ func TestCreateOrUpdateDeployment_UpdateWhenSpecContentChanged(t *testing.T) {
 	_, _ = reconciler.Reconcile(ctx, req)
 	drainRecorderEvents(fakeRecorder)
 
-	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
+	deploymentName := types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}
 	var deployment appsv1.Deployment
 	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
 	hashBefore := deployment.Spec.Template.Annotations[specHashAnnotation]
@@ -1504,7 +1504,7 @@ func TestCreateOrUpdateDeployment_RetryOnConflict(t *testing.T) {
 	_, err = reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	deploymentName := types.NamespacedName{Name: "dataflow-test-dataflow", Namespace: "default"}
+	deploymentName := types.NamespacedName{Name: "df-test-dataflow", Namespace: "default"}
 	var deployment appsv1.Deployment
 	require.NoError(t, fakeClient.Get(ctx, deploymentName, &deployment))
 	assert.Equal(t, "compute", deployment.Spec.Template.Spec.NodeSelector["node-type"])
@@ -1825,9 +1825,9 @@ func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageEnvAndRBAC(t *testi
 	require.NoError(t, err)
 
 	var deployment appsv1.Deployment
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-test", Namespace: "default"}, &deployment))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-nessie-s3-test", Namespace: "default"}, &deployment))
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-	assert.Equal(t, "dataflow-nessie-s3-test-processor", deployment.Spec.Template.Spec.ServiceAccountName)
+	assert.Equal(t, "df-nessie-s3-test-processor", deployment.Spec.Template.Spec.ServiceAccountName)
 
 	env := deployment.Spec.Template.Spec.Containers[0].Env
 	idVar, ok := envVarByName(env, envAWSAccessKeyID)
@@ -1845,7 +1845,7 @@ func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageEnvAndRBAC(t *testi
 	assert.Equal(t, "ru-central1", regVar.Value)
 
 	var role rbacv1.Role
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-test-processor", Namespace: "default"}, &role))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-nessie-s3-test-processor", Namespace: "default"}, &role))
 	require.Len(t, role.Rules, 1)
 	assert.Equal(t, []string{"secrets"}, role.Rules[0].Resources)
 	assert.Equal(t, []string{"iceberg-s3-static"}, role.Rules[0].ResourceNames)
@@ -1901,7 +1901,7 @@ func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageCrossNamespaceResol
 	require.NoError(t, err)
 
 	var deployment appsv1.Deployment
-	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-remote", Namespace: "default"}, &deployment))
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-nessie-s3-remote", Namespace: "default"}, &deployment))
 	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 	assert.Equal(t, "", deployment.Spec.Template.Spec.ServiceAccountName, "remote-only S3 refs: default SA")
 
@@ -1915,6 +1915,6 @@ func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageCrossNamespaceResol
 	assert.Nil(t, skVar.ValueFrom)
 	assert.Equal(t, "REMOTESECRET", skVar.Value)
 
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: "dataflow-nessie-s3-remote-processor", Namespace: "default"}, &rbacv1.Role{})
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: "df-nessie-s3-remote-processor", Namespace: "default"}, &rbacv1.Role{})
 	require.True(t, apierrors.IsNotFound(err), "no processor Role when checkpoint off and no in-namespace S3 secrets")
 }

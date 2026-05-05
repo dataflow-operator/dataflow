@@ -18,6 +18,7 @@ package connectors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -224,4 +225,25 @@ func TestRunNessiePreflight_InvalidBaseURL(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "invalid baseURL") || strings.Contains(err.Error(), "must include scheme and host"))
+}
+
+func TestIsRetryableNessieSnapshotConflict(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		assert.False(t, isRetryableNessieSnapshotConflict(nil))
+	})
+
+	t.Run("direct conflict message", func(t *testing.T) {
+		err := errors.New("Requirement failed: snapshot id changed: expected 1 != 2")
+		assert.True(t, isRetryableNessieSnapshotConflict(err))
+	})
+
+	t.Run("wrapped conflict message", func(t *testing.T) {
+		err := fmt.Errorf("append table: %w", errors.New("requirement failed: SNAPSHOT ID CHANGED: expected 10 != 11"))
+		assert.True(t, isRetryableNessieSnapshotConflict(err))
+	})
+
+	t.Run("non conflict error", func(t *testing.T) {
+		err := errors.New("append table: network timeout")
+		assert.False(t, isRetryableNessieSnapshotConflict(err))
+	})
 }

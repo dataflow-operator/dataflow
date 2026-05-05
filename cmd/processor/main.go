@@ -42,6 +42,7 @@ import (
 	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Register metrics
 	"github.com/dataflow-operator/dataflow/internal/processor"
 	"github.com/dataflow-operator/dataflow/internal/sentry"
+	"github.com/dataflow-operator/dataflow/pkg/k8snames"
 )
 
 func main() {
@@ -90,7 +91,7 @@ func main() {
 	var procOpts []processor.ProcessorOption
 	// CheckpointPersistence defaults to true when nil
 	if (spec.CheckpointPersistence == nil || *spec.CheckpointPersistence) && name != "" && namespace != "" {
-		configMapName := "dataflow-" + name + "-checkpoint"
+		configMapName := k8snames.ProcessorCheckpointConfigMap(name)
 		store, err := checkpoint.NewConfigMapStore(namespace, configMapName)
 		if err != nil {
 			logger.Error(err, "Failed to create checkpoint store, continuing without persistence")

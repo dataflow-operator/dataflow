@@ -57,6 +57,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/version"
+	"github.com/dataflow-operator/dataflow/pkg/k8snames"
 )
 
 // DataFlowFinalizer is the finalizer name for DataFlow. While present, the object
@@ -457,7 +458,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Check Deployment status
 	deployment := &appsv1.Deployment{}
-	deploymentName := fmt.Sprintf("dataflow-%s", dataflow.Name)
+	deploymentName := k8snames.ProcessorDeployment(dataflow.Name)
 	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, deployment); err != nil {
 		if apierrors.IsNotFound(err) {
 			dataflow.Status.Phase = "Pending"
@@ -709,7 +710,7 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 		return fmt.Errorf("failed to marshal spec: %w", err)
 	}
 
-	configMapName := fmt.Sprintf("dataflow-%s-spec", req.Name)
+	configMapName := k8snames.ProcessorSpecConfigMap(req.Name)
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
@@ -769,7 +770,7 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 // createOrUpdateCheckpointConfigMap creates an empty ConfigMap for checkpoint persistence.
 func (r *DataFlowReconciler) createOrUpdateCheckpointConfigMap(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
 	log := log.FromContext(ctx)
-	configMapName := fmt.Sprintf("dataflow-%s-checkpoint", dataflow.Name)
+	configMapName := k8snames.ProcessorCheckpointConfigMap(dataflow.Name)
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
@@ -802,9 +803,9 @@ func (r *DataFlowReconciler) createOrUpdateCheckpointConfigMap(ctx context.Conte
 // checkpoint ConfigMap access when checkpoint persistence is enabled, and Secret get when Nessie sink uses in-namespace S3 refs.
 func (r *DataFlowReconciler) createOrUpdateProcessorRBAC(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	log := log.FromContext(ctx)
-	saName := fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
+	saName := k8snames.ProcessorServiceAccount(dataflow.Name)
 	roleName := saName
-	configMapName := fmt.Sprintf("dataflow-%s-checkpoint", dataflow.Name)
+	configMapName := k8snames.ProcessorCheckpointConfigMap(dataflow.Name)
 
 	var rules []rbacv1.PolicyRule
 	if resolvedSpec != nil && (resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence) {
@@ -923,10 +924,10 @@ func (r *DataFlowReconciler) processorServiceAccountFor(dataflow *dataflowv1.Dat
 		return ""
 	}
 	if resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence {
-		return fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
+		return k8snames.ProcessorServiceAccount(dataflow.Name)
 	}
 	if nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, dataflow.Namespace) {
-		return fmt.Sprintf("dataflow-%s-processor", dataflow.Name)
+		return k8snames.ProcessorServiceAccount(dataflow.Name)
 	}
 	return ""
 }
@@ -952,8 +953,8 @@ const specHashAnnotation = "dataflow.dataflow.io/spec-hash"
 func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	log := log.FromContext(ctx)
 
-	deploymentName := fmt.Sprintf("dataflow-%s", dataflow.Name)
-	configMapName := fmt.Sprintf("dataflow-%s-spec", dataflow.Name)
+	deploymentName := k8snames.ProcessorDeployment(dataflow.Name)
+	configMapName := k8snames.ProcessorSpecConfigMap(dataflow.Name)
 
 	// Compute spec hash so pod template changes when ConfigMap content changes, triggering rollout.
 	specJSON, err := json.Marshal(resolvedSpec)
@@ -1153,10 +1154,10 @@ func (r *DataFlowReconciler) getResourceRequirements(dataflow *dataflowv1.DataFl
 func (r *DataFlowReconciler) cleanupResources(ctx context.Context, req ctrl.Request) error {
 	log := log.FromContext(ctx)
 
-	deploymentName := fmt.Sprintf("dataflow-%s", req.Name)
-	configMapName := fmt.Sprintf("dataflow-%s-spec", req.Name)
-	checkpointConfigMapName := fmt.Sprintf("dataflow-%s-checkpoint", req.Name)
-	saName := fmt.Sprintf("dataflow-%s-processor", req.Name)
+	deploymentName := k8snames.ProcessorDeployment(req.Name)
+	configMapName := k8snames.ProcessorSpecConfigMap(req.Name)
+	checkpointConfigMapName := k8snames.ProcessorCheckpointConfigMap(req.Name)
+	saName := k8snames.ProcessorServiceAccount(req.Name)
 
 	// Delete Deployment
 	deployment := &appsv1.Deployment{

@@ -43,6 +43,8 @@ import (
 	"github.com/go-logr/logr"
 )
 
+const nessieSnapshotConflictToken = "snapshot id changed"
+
 // buildNessieIcebergURI returns the Iceberg REST catalog URI for Nessie.
 // Format: {baseURL}/iceberg[/{branch}][|{warehouse}]
 func buildNessieIcebergURI(baseURL, branch, warehouse string) string {
@@ -463,9 +465,25 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		if appendSize == 0 {
 			appendSize = int64(len(msgs))
 		}
-		_, err = c.tbl.AppendTable(ctx, arrowTbl, appendSize, nil)
+		err = retry.OnRetry(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func(err error) bool {
+			return retry.IsTimeoutError(err) || isRetryableNessieSnapshotConflict(err)
+		}, func() error {
+			newTbl, appendErr := c.tbl.AppendTable(ctx, arrowTbl, appendSize, nil)
+			if appendErr != nil {
+				if isRetryableNessieSnapshotConflict(appendErr) {
+					if refreshErr := c.tbl.Refresh(ctx); refreshErr != nil {
+						return fmt.Errorf("append table: %w (refresh after snapshot conflict: %v)", appendErr, refreshErr)
+					}
+				}
+				return fmt.Errorf("append table: %w", appendErr)
+			}
+			if newTbl != nil {
+				c.tbl = newTbl
+			}
+			return nil
+		})
 		if err != nil {
-			return fmt.Errorf("append table: %w", err)
+			return err
 		}
 		for _, m := range msgs {
 			if m.Ack != nil {
@@ -477,7 +495,7 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 
 	doFlush := func(toFlush []*types.Message) error {
 		stopTimer()
-		return retry.OnTimeout(ctx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error { return flush(toFlush) })
+		return flush(toFlush)
 	}
 
 	for {
@@ -558,6 +576,13 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 			}
 		}
 	}
+}
+
+func isRetryableNessieSnapshotConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), nessieSnapshotConflictToken)
 }
 
 // Close closes the Nessie sink connector.
