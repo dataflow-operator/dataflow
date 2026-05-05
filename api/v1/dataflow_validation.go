@@ -49,6 +49,41 @@ func ValidateDataFlowSpec(spec *DataFlowSpec) field.ErrorList {
 	return all
 }
 
+// ValidateDataFlowCronSpec validates DataFlowCron spec and returns field errors.
+func ValidateDataFlowCronSpec(spec *DataFlowCronSpec) field.ErrorList {
+	var all field.ErrorList
+	if spec == nil {
+		return all
+	}
+	f := field.NewPath("spec")
+	all = append(all, ValidateDataFlowSpec(&spec.DataFlowSpec)...)
+	if strings.TrimSpace(spec.Schedule) == "" {
+		all = append(all, field.Required(f.Child("schedule"), "schedule is required"))
+	} else {
+		parts := strings.Fields(spec.Schedule)
+		if len(parts) < 5 || len(parts) > 6 {
+			all = append(all, field.Invalid(f.Child("schedule"), spec.Schedule, "cron expression must contain 5 or 6 fields"))
+		}
+	}
+	for i, trigger := range spec.Triggers {
+		tf := f.Child("triggers").Index(i)
+		if strings.TrimSpace(trigger.Image) == "" {
+			all = append(all, field.Required(tf.Child("image"), "image is required"))
+		}
+	}
+	if spec.ConcurrencyPolicy != "" &&
+		spec.ConcurrencyPolicy != DataFlowCronConcurrencyAllow &&
+		spec.ConcurrencyPolicy != DataFlowCronConcurrencyForbid &&
+		spec.ConcurrencyPolicy != DataFlowCronConcurrencyReplace {
+		all = append(all, field.NotSupported(f.Child("concurrencyPolicy"), spec.ConcurrencyPolicy, []string{
+			string(DataFlowCronConcurrencyAllow),
+			string(DataFlowCronConcurrencyForbid),
+			string(DataFlowCronConcurrencyReplace),
+		}))
+	}
+	return all
+}
+
 func validateSource(s *SourceSpec, f *field.Path) field.ErrorList {
 	var all field.ErrorList
 	if s == nil {

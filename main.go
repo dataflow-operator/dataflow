@@ -215,9 +215,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "DataFlow")
 		os.Exit(1)
 	}
+	if err = controller.NewDataFlowCronReconciler(mgr.GetClient(), mgr.GetScheme()).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "DataFlowCron")
+		os.Exit(1)
+	}
 	if certDir != "" {
 		validator := admission.WithCustomValidator(mgr.GetScheme(), &dataflowv1.DataFlow{}, &dataflowv1.DataFlow{})
 		mgr.GetWebhookServer().Register("/validate-dataflow-dataflow-io-v1-dataflow", validator)
+		cronValidator := admission.WithCustomValidator(mgr.GetScheme(), &dataflowv1.DataFlowCron{}, &dataflowv1.DataFlowCron{})
+		mgr.GetWebhookServer().Register("/validate-dataflow-dataflow-io-v1-dataflowcron", cronValidator)
 	} else {
 		setupLog.Info("webhook disabled (WEBHOOK_CERT_DIR not set), skipping validator registration")
 	}

@@ -247,6 +247,10 @@ func QuotePostgreSQLTableRef(table string) string {
 
 const maxPollingReadBackoff = 5 * time.Minute
 
+// ErrSourceExhausted signals that source has no more data for this run.
+// runPollingRead treats this as successful terminal state and closes output channel.
+var ErrSourceExhausted = errors.New("source exhausted")
+
 // pollFailureWait returns how long to wait before the next poll after repeated failures.
 // consecutiveFailures counts failures in the current streak (>=1).
 func pollFailureWait(base time.Duration, consecutiveFailures int) time.Duration {
@@ -288,6 +292,7 @@ type pollingReadOpts struct {
 // on a schedule, returning the channel. Used by polling-based source connectors.
 // readFn returns nil on success; a non-nil error triggers exponential backoff between attempts
 // (capped) and throttled error logging when opts is set.
+// If readFn returns ErrSourceExhausted, polling stops and output channel is closed.
 // bufferSize: channel buffer size; 0 uses DefaultChannelBufferSize.
 func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func(ctx context.Context, ch chan *types.Message) error, bufferSize int, opts *pollingReadOpts) <-chan *types.Message {
 	if bufferSize <= 0 {
@@ -317,6 +322,12 @@ func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func
 
 			err := readFn(ctx, msgChan)
 			if err != nil {
+				if errors.Is(err, ErrSourceExhausted) {
+					if opts != nil && opts.meta != nil {
+						opts.meta.SetSourcePollHealthy(true)
+					}
+					return
+				}
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return
 				}

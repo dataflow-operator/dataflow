@@ -39,3 +39,21 @@ func ProcessorCheckpointConfigMap(dataflowName string) string {
 func ProcessorServiceAccount(dataflowName string) string {
 	return ProcessorChildPrefix + "-" + dataflowName + "-processor"
 }
+
+// DataFlowCronPrefix is used for CronJob/Job names managed by DataFlowCron controller.
+const DataFlowCronPrefix = "dfc"
+
+// CronSpecConfigMap returns the ConfigMap name holding resolved spec JSON for DataFlowCron.
+func CronSpecConfigMap(name string) string {
+	return DataFlowCronPrefix + "-" + name + "-spec"
+}
+
+// CronJobName returns the CronJob name for DataFlowCron.
+func CronJobName(name string) string {
+	return DataFlowCronPrefix + "-" + name
+}
+
+// CronRunJobName returns deterministic Job name for a run and step.
+func CronRunJobName(name, runID, step string) string {
+	return DataFlowCronPrefix + "-" + name + "-" + runID + "-" + step
+}

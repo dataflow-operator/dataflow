@@ -167,6 +167,9 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 		t.RecordError("read", "query_error")
 		return err
 	}
+	if len(rows) == 0 {
+		return ErrSourceExhausted
+	}
 
 	for _, row := range rows {
 		// Ack advances checkpoint only after sink successfully writes; prevents gaps on crash

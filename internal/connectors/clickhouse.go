@@ -227,6 +227,7 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		maxReadTime = &t
 	}
 
+	rowCount := 0
 	for rows.Next() {
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
@@ -290,6 +291,10 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		rowCount++
+	}
+	if rowCount == 0 {
+		return ErrSourceExhausted
 	}
 	return nil
 }

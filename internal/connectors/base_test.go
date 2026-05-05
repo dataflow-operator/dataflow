@@ -246,3 +246,16 @@ func TestRunPollingRead_SuccessResetsBackoff(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, calls.Load(), int32(2))
 }
+
+func TestRunPollingRead_StopsOnSourceExhausted(t *testing.T) {
+	ctx := context.Background()
+	var calls atomic.Int32
+	readFn := func(ctx context.Context, ch chan *types.Message) error {
+		calls.Add(1)
+		return ErrSourceExhausted
+	}
+	ch := runPollingRead(ctx, 10*time.Millisecond, readFn, 4, nil)
+	for range ch {
+	}
+	require.Equal(t, int32(1), calls.Load())
+}

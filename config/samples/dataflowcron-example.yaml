@@ -1,0 +1,43 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlowCron
+metadata:
+  name: kafka-to-nessie-cron
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  # Triggers run after processor (source/sink) job succeeds.
+  # Polling sources (postgresql/trino/clickhouse/nessie) finish when source is exhausted.
+  # Kafka source is streaming and usually does not auto-finish by exhaustion.
+  triggers:
+    - name: start-spark
+      image: bitnami/kubectl:latest
+      command: ["kubectl"]
+      args: ["apply", "-f", "/manifests/spark-application.yaml"]
+    - name: trigger-airflow
+      image: curlimages/curl:8.8.0
+      command: ["curl"]
+      args: ["-X", "POST", "http://airflow-webserver:8080/api/v1/dags/example/dagRuns"]
+      env:
+        - name: AIRFLOW_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: airflow-token
+              key: token
+  source:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: nessie
+    config:
+      baseURL: "http://nessie:19120"
+      branch: main
+      authenticationType: BEARER
+      bearerToken: "replace-with-token"
+      namespace: analytics
+      table: events
+      batchSize: 100
+      autoCreateTable: true

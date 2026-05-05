@@ -621,6 +621,22 @@ func TestProcessor_Ready_BecomesTrueAfterRead(t *testing.T) {
 	assert.True(t, proc.Ready())
 }
 
+func TestProcessor_Start_CompletesWhenSourceIsImmediatelyExhausted(t *testing.T) {
+	ctx := context.Background()
+	src := &mockSourceConnector{messages: nil}
+	sink := &mockSinkConnector{}
+	proc := &Processor{
+		source:       src,
+		sink:         sink,
+		transformers: nil,
+		routerSinks:  map[string]v1.SinkSpec{},
+		logger:       logr.Discard(),
+		spec:         &v1.DataFlowSpec{},
+	}
+	err := proc.Start(ctx)
+	require.NoError(t, err)
+}
+
 // Ensure Connectable is satisfied by both SourceConnector and SinkConnector mocks.
 var (
 	_ Connectable = &mockSourceConnector{}

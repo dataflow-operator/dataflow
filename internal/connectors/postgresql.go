@@ -195,6 +195,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		readBatchSize = int(*p.config.ReadBatchSize)
 	}
 
+	totalRows := 0
 	for {
 		var query string
 		if p.config.Query != "" {
@@ -292,6 +293,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			rowCount++
 		}
 		rows.Close()
+		totalRows += rowCount
 
 		// If we got fewer rows than batch size, no more data in this poll cycle
 		if readBatchSize == 0 || rowCount < readBatchSize {
@@ -300,6 +302,9 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			}
 			break
 		}
+	}
+	if totalRows == 0 {
+		return ErrSourceExhausted
 	}
 	return nil
 }

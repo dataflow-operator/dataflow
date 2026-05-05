@@ -324,6 +324,9 @@ func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *type
 	defer arrowTbl.Release()
 
 	msgs := arrowTableToMessages(arrowTbl, c.config.Namespace, c.config.Table, false)
+	if len(msgs) == 0 {
+		return ErrSourceExhausted
+	}
 	for _, msg := range msgs {
 		select {
 		case msgChan <- msg:

@@ -27,7 +27,8 @@ type SourceConnector interface {
 	// Connect establishes connection to the source
 	Connect(ctx context.Context) error
 
-	// Read returns a channel of messages from the source
+	// Read returns a channel of messages from the source.
+	// Connectors should close the channel when source data is exhausted for the current run.
 	Read(ctx context.Context) (<-chan *types.Message, error)
 
 	// Close closes the connection
