@@ -20,17 +20,12 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/dataflow-operator/dataflow/internal/providers"
+	"github.com/dataflow-operator/dataflow/pkg/providers"
+	"github.com/dataflow-operator/dataflow/pkg/transformtypes"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
-
-// Valid transformation types (must match transformers/factory.go).
-var validTransformationTypes = map[string]bool{
-	"timestamp": true, "flatten": true, "filter": true, "mask": true,
-	"router": true, "select": true, "remove": true, "snakeCase": true, "camelCase": true,
-}
 
 // ValidateDataFlowSpec validates DataFlow spec and returns a list of field errors.
 func ValidateDataFlowSpec(spec *DataFlowSpec) field.ErrorList {
@@ -441,14 +436,13 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			all = append(all, field.Required(idx.Child("type"), "transformation type is required"))
 			continue
 		}
-		if !validTransformationTypes[t.Type] {
-			all = append(all, field.NotSupported(idx.Child("type"), t.Type,
-				[]string{"timestamp", "flatten", "filter", "mask", "router", "select", "remove", "snakeCase", "camelCase"}))
+		if !transformtypes.IsRegistered(t.Type) {
+			all = append(all, field.NotSupported(idx.Child("type"), t.Type, transformtypes.All()))
 			continue
 		}
 		hasConfig := t.Config != nil && len(t.Config.Raw) > 0
 		switch t.Type {
-		case "timestamp":
+		case transformtypes.Timestamp:
 			if hasConfig {
 				var cfg TimestampTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
@@ -457,7 +451,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "timestamp transformation configuration is required"))
 			}
-		case "flatten":
+		case transformtypes.Flatten:
 			if hasConfig {
 				var cfg FlattenTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
@@ -468,7 +462,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "flatten transformation configuration is required"))
 			}
-		case "filter":
+		case transformtypes.Filter:
 			if hasConfig {
 				var cfg FilterTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
@@ -479,7 +473,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "filter transformation configuration is required"))
 			}
-		case "mask":
+		case transformtypes.Mask:
 			if hasConfig {
 				var cfg MaskTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
@@ -490,7 +484,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "mask transformation configuration is required"))
 			}
-		case "router":
+		case transformtypes.Router:
 			routerCfg, _ := t.GetRouterConfig()
 			if routerCfg == nil {
 				all = append(all, field.Required(idx.Child("config"), "router transformation configuration is required (config or router)"))
@@ -506,7 +500,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 					all = append(all, validateSink(&route.Sink, routesPath.Index(j).Child("sink"))...)
 				}
 			}
-		case "select":
+		case transformtypes.Select:
 			if hasConfig {
 				var cfg SelectTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
@@ -517,7 +511,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "select transformation configuration is required"))
 			}
-		case "remove":
+		case transformtypes.Remove:
 			if hasConfig {
 				var cfg RemoveTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
@@ -528,7 +522,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "remove transformation configuration is required"))
 			}
-		case "snakeCase":
+		case transformtypes.SnakeCase:
 			if hasConfig {
 				var cfg SnakeCaseTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
@@ -537,7 +531,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "snakeCase transformation configuration is required"))
 			}
-		case "camelCase":
+		case transformtypes.CamelCase:
 			if hasConfig {
 				var cfg CamelCaseTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {

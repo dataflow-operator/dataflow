@@ -42,6 +42,15 @@ spec:
 
 Filter, Select, Remove, Mask, Flatten, Timestamp, SnakeCase, Router, Chain.
 
+### DataFlowCron
+
+`DataFlowCron` runs a pipeline by cron schedule.
+
+- `processor` (`source -> transformations -> sink`) runs first.
+- `triggers` run after successful `processor` completion.
+- Polling sources (`postgresql`, `trino`, `clickhouse`, `nessie`) can finish a run on `source exhausted`.
+- Kafka is a streaming source and is not considered exhausted by default.
+
 ## Prerequisites
 
 - Kubernetes 1.24+
@@ -138,6 +147,7 @@ Example manifests are in `config/samples/`:
 - `kafka-to-trino.yaml` — Kafka to Trino
 - `postgres-to-kafka-router.yaml` — PostgreSQL to Kafka with Router
 - `clickhouse-to-clickhouse.yaml` — ClickHouse to ClickHouse
+- `dataflowcron-example.yaml` — Scheduled run with post-processor triggers
 
 See all samples: `ls config/samples/`
 

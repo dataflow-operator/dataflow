@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dataflow-operator/dataflow/internal/providers"
+	"github.com/dataflow-operator/dataflow/pkg/providers"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 

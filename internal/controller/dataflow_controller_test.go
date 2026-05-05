@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/operator/runtimeimage"
 	"github.com/dataflow-operator/dataflow/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -176,16 +177,16 @@ func TestNewDataFlowReconciler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prev := os.Getenv("PROCESSOR_IMAGE")
+			prev := os.Getenv(runtimeimage.ProcessorImageEnv)
 			prevWatchSecrets := os.Getenv("WATCH_SECRETS")
 			defer func() {
-				_ = os.Setenv("PROCESSOR_IMAGE", prev)
+				_ = os.Setenv(runtimeimage.ProcessorImageEnv, prev)
 				_ = os.Setenv("WATCH_SECRETS", prevWatchSecrets)
 			}()
 			if tt.setProcessorImageEnv != "" {
-				require.NoError(t, os.Setenv("PROCESSOR_IMAGE", tt.setProcessorImageEnv))
+				require.NoError(t, os.Setenv(runtimeimage.ProcessorImageEnv, tt.setProcessorImageEnv))
 			} else {
-				require.NoError(t, os.Unsetenv("PROCESSOR_IMAGE"))
+				require.NoError(t, os.Unsetenv(runtimeimage.ProcessorImageEnv))
 			}
 			if tt.setWatchSecretsEnv != "" {
 				require.NoError(t, os.Setenv("WATCH_SECRETS", tt.setWatchSecretsEnv))

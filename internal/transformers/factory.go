@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/pkg/transformtypes"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -30,15 +31,15 @@ type transformerEntry struct {
 }
 
 var transformerRegistry = map[string]transformerEntry{
-	"timestamp": {create: createTransformer[v1.TimestampTransformation]("timestamp", func(cfg *v1.TimestampTransformation) Transformer { return NewTimestampTransformer(cfg) })},
-	"flatten":   {create: createTransformer[v1.FlattenTransformation]("flatten", func(cfg *v1.FlattenTransformation) Transformer { return NewFlattenTransformer(cfg) })},
-	"filter":    {create: createTransformer[v1.FilterTransformation]("filter", func(cfg *v1.FilterTransformation) Transformer { return NewFilterTransformer(cfg) })},
-	"mask":      {create: createTransformer[v1.MaskTransformation]("mask", func(cfg *v1.MaskTransformation) Transformer { return NewMaskTransformer(cfg) })},
-	"router":    {create: createTransformer[v1.RouterTransformation]("router", func(cfg *v1.RouterTransformation) Transformer { return NewRouterTransformer(cfg) })},
-	"select":    {create: createTransformer[v1.SelectTransformation]("select", func(cfg *v1.SelectTransformation) Transformer { return NewSelectTransformer(cfg) })},
-	"remove":    {create: createTransformer[v1.RemoveTransformation]("remove", func(cfg *v1.RemoveTransformation) Transformer { return NewRemoveTransformer(cfg) })},
-	"snakeCase": {create: createTransformer[v1.SnakeCaseTransformation]("snakeCase", func(cfg *v1.SnakeCaseTransformation) Transformer { return NewSnakeCaseTransformer(cfg) })},
-	"camelCase": {create: createTransformer[v1.CamelCaseTransformation]("camelCase", func(cfg *v1.CamelCaseTransformation) Transformer { return NewCamelCaseTransformer(cfg) })},
+	transformtypes.Timestamp: {create: createTransformer[v1.TimestampTransformation](transformtypes.Timestamp, func(cfg *v1.TimestampTransformation) Transformer { return NewTimestampTransformer(cfg) })},
+	transformtypes.Flatten:   {create: createTransformer[v1.FlattenTransformation](transformtypes.Flatten, func(cfg *v1.FlattenTransformation) Transformer { return NewFlattenTransformer(cfg) })},
+	transformtypes.Filter:    {create: createTransformer[v1.FilterTransformation](transformtypes.Filter, func(cfg *v1.FilterTransformation) Transformer { return NewFilterTransformer(cfg) })},
+	transformtypes.Mask:      {create: createTransformer[v1.MaskTransformation](transformtypes.Mask, func(cfg *v1.MaskTransformation) Transformer { return NewMaskTransformer(cfg) })},
+	transformtypes.Router:    {create: createTransformer[v1.RouterTransformation](transformtypes.Router, func(cfg *v1.RouterTransformation) Transformer { return NewRouterTransformer(cfg) })},
+	transformtypes.Select:    {create: createTransformer[v1.SelectTransformation](transformtypes.Select, func(cfg *v1.SelectTransformation) Transformer { return NewSelectTransformer(cfg) })},
+	transformtypes.Remove:    {create: createTransformer[v1.RemoveTransformation](transformtypes.Remove, func(cfg *v1.RemoveTransformation) Transformer { return NewRemoveTransformer(cfg) })},
+	transformtypes.SnakeCase: {create: createTransformer[v1.SnakeCaseTransformation](transformtypes.SnakeCase, func(cfg *v1.SnakeCaseTransformation) Transformer { return NewSnakeCaseTransformer(cfg) })},
+	transformtypes.CamelCase: {create: createTransformer[v1.CamelCaseTransformation](transformtypes.CamelCase, func(cfg *v1.CamelCaseTransformation) Transformer { return NewCamelCaseTransformer(cfg) })},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.

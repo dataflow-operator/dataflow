@@ -18,14 +18,28 @@ package transformers
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/runtime"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/pkg/transformtypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTransformerRegistryMatchesTransformTypes(t *testing.T) {
+	t.Parallel()
+	want := transformtypes.All()
+	got := make([]string, 0, len(transformerRegistry))
+	for k := range transformerRegistry {
+		got = append(got, k)
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	require.Equal(t, want, got, "transformer factory keys must match pkg/transformtypes")
+}
 
 func mustConfig(v interface{}) *runtime.RawExtension {
 	b, _ := json.Marshal(v)

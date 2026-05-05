@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -21,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/operator/runtimeimage"
 	"github.com/dataflow-operator/dataflow/internal/version"
 	"github.com/dataflow-operator/dataflow/pkg/k8snames"
 )
@@ -47,14 +47,10 @@ type DataFlowCronReconciler struct {
 }
 
 func NewDataFlowCronReconciler(client client.Client, scheme *runtime.Scheme) *DataFlowCronReconciler {
-	processorImage := version.DefaultProcessorImage()
-	if img := os.Getenv("PROCESSOR_IMAGE"); img != "" {
-		processorImage = img
-	}
 	return &DataFlowCronReconciler{
 		Client:         client,
 		Scheme:         scheme,
-		processorImage: processorImage,
+		processorImage: runtimeimage.ProcessorImage(),
 	}
 }
 
