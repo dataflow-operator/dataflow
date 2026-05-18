@@ -86,21 +86,20 @@ func TestTrinoClient_executeQuery_nextURIFollowsContext(t *testing.T) {
 func TestTrinoClient_executeQuery_multipleNextURIsCloseBodies(t *testing.T) {
 	t.Parallel()
 
-	step := 0
+	var requests atomic.Int32
 	next1 := "/v1/statement/next/1"
 	next2 := "/v1/statement/next/2"
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch step {
-		case 0:
-			step++
+		n := requests.Add(1)
+		switch n {
+		case 1:
 			_ = json.NewEncoder(w).Encode(TrinoQueryResponse{
 				NextURI: srv.URL + next1,
 				Stats:   TrinoStats{State: "RUNNING"},
 			})
-		case 1:
-			step++
+		case 2:
 			_ = json.NewEncoder(w).Encode(TrinoQueryResponse{
 				NextURI: srv.URL + next2,
 				Stats:   TrinoStats{State: "RUNNING"},
@@ -116,7 +115,7 @@ func TestTrinoClient_executeQuery_multipleNextURIsCloseBodies(t *testing.T) {
 	client := newTrinoClientForTest(srv.URL, "memory", "default", srv.Client())
 	_, err := client.executeQuery(context.Background(), "INSERT INTO memory.default.t VALUES (1)")
 	require.NoError(t, err)
-	assert.Equal(t, 2, step)
+	assert.Equal(t, int32(3), requests.Load(), "expected POST + two nextURI GETs")
 }
 
 func TestTrinoClient_getNextURI_propagatesContextCancel(t *testing.T) {
