@@ -315,6 +315,10 @@ func TestIsTransientTrinoError(t *testing.T) {
 		{"generic_internal_error", errors.New("Error: GENERIC_INTERNAL_ERROR, Code: 65536"), true},
 		{"service temporarily unavailable", errors.New("503 Service Temporarily Unavailable"), true},
 		{"bad gateway", errors.New("502 bad gateway"), true},
+		{"unexpected eof", errors.New(`Get "https://trino.example/v1/statement/executing/id/token/7": unexpected EOF`), true},
+		{"connection reset", errors.New("read tcp: connection reset by peer"), true},
+		{"broken pipe", errors.New("write tcp: broken pipe"), true},
+		{"wsarecv", errors.New("wsarecv: An existing connection was forcibly closed"), true},
 		{"permanent error", errors.New("syntax error at line 1"), false},
 	}
 	for _, tt := range tests {
@@ -336,6 +340,7 @@ func TestIsRetryableForTrino(t *testing.T) {
 		{"transient Trino", errors.New("TOO_MANY_REQUESTS_FAILED"), true},
 		{"both", errors.New("transient: please retry"), true},
 		{"503 from nginx", errors.New("Trino query failed with status 503: <html>503 Service Temporarily Unavailable</html>"), true},
+		{"unexpected eof on nextURI", errors.New(`failed to follow next URI: Get "https://trino.example/v1/statement/executing/id/token/7": unexpected EOF`), true},
 		{"permanent", errors.New("syntax error"), false},
 	}
 	for _, tt := range tests {

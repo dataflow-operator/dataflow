@@ -22,8 +22,10 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -117,6 +119,12 @@ func main() {
 	// Start metrics HTTP server (must be before proc.Start so /metrics is available from the start)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	mux.Handle("/debug/pprof/goroutine", pprof.Handler("goroutine"))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -131,6 +139,22 @@ func main() {
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("not ready\n"))
+	})
+	progressTimeout := progressTimeoutFromEnv(os.Getenv("PROCESSOR_PROGRESS_TIMEOUT_SECONDS"))
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if !proc.Ready() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("not ready\n"))
+			return
+		}
+		if proc.ProgressStale(progressTimeout) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("stale: no pipeline progress\n"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
 	})
 	metricsServer := &http.Server{Addr: metricsPort, Handler: mux}
 	go func() {
@@ -180,6 +204,19 @@ func main() {
 }
 
 // processorLevelFromEnv returns zap LevelEnabler from LOG_LEVEL env if set, otherwise optsLevel.
+// progressTimeoutFromEnv parses PROCESSOR_PROGRESS_TIMEOUT_SECONDS (0 or unset disables stale checks).
+func progressTimeoutFromEnv(env string) time.Duration {
+	s := strings.TrimSpace(env)
+	if s == "" {
+		return 10 * time.Minute
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
+}
+
 func processorLevelFromEnv(envLevel string, optsLevel zapcore.LevelEnabler) zapcore.LevelEnabler {
 	s := strings.TrimSpace(strings.ToLower(envLevel))
 	if s == "" {

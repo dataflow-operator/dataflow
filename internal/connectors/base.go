@@ -169,6 +169,22 @@ func (c *connectorMetadata) SetMetadata(namespace, name string) {
 	c.name = name
 }
 
+// progressRecorder is an optional callback invoked after successful pipeline progress (e.g. sink flush + ack).
+type progressRecorder struct {
+	onProgress func()
+}
+
+// SetProgressCallback registers a callback for liveness/progress probes.
+func (p *progressRecorder) SetProgressCallback(fn func()) {
+	p.onProgress = fn
+}
+
+func (p *progressRecorder) notifyProgress() {
+	if p.onProgress != nil {
+		p.onProgress()
+	}
+}
+
 // SetConnectorInfo sets the connector type and role for metrics.
 func (c *connectorMetadata) SetConnectorInfo(connectorType, role string) {
 	c.connectorType = connectorType

@@ -25,6 +25,12 @@ const TrinoMaxAttempts = 5
 // TrinoInitialBackoff is the initial backoff for Trino retries (worker may need time to recover).
 const TrinoInitialBackoff = 2 * time.Second
 
+// TrinoNextURIMaxAttempts is the number of retry attempts for GET polling on Trino nextURI.
+const TrinoNextURIMaxAttempts = 5
+
+// TrinoNextURIInitialBackoff is the initial backoff between nextURI GET retries.
+const TrinoNextURIInitialBackoff = 500 * time.Millisecond
+
 // ClickHouseMaxAttempts is the number of retry attempts for ClickHouse batch writes.
 const ClickHouseMaxAttempts = 5
 
@@ -242,7 +248,11 @@ func IsTransientTrinoError(err error) bool {
 		strings.Contains(lower, "http/500") ||
 		strings.Contains(lower, "generic_internal_error") ||
 		strings.Contains(lower, "service temporarily unavailable") ||
-		strings.Contains(lower, "bad gateway")
+		strings.Contains(lower, "bad gateway") ||
+		strings.Contains(lower, "unexpected eof") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "wsarecv")
 }
 
 // IsRetryableForTrino returns true if the error is a timeout or a transient Trino error.

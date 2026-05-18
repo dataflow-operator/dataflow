@@ -184,6 +184,32 @@ type KafkaSourceSpec struct {
 	// SchemaRegistry configuration for Confluent Schema Registry
 	// +optional
 	SchemaRegistry *SchemaRegistryConfig `json:"schemaRegistry,omitempty"`
+
+	// ConsumerMaxWait is the maximum time the broker may delay a Fetch response (Kafka fetch.max.wait.ms).
+	// Increase when brokers return REQUEST_TIMED_OUT under load (e.g. "30s").
+	// +optional
+	ConsumerMaxWait *metav1.Duration `json:"consumerMaxWait,omitempty"`
+
+	// FetchMinBytes is the minimum bytes the broker should accumulate before responding to Fetch.
+	// +optional
+	FetchMinBytes *int32 `json:"fetchMinBytes,omitempty"`
+
+	// FetchMaxBytes is the maximum bytes per Fetch response (maps to fetch.max.bytes / Sarama Fetch.Default).
+	// +optional
+	FetchMaxBytes *int32 `json:"fetchMaxBytes,omitempty"`
+
+	// MaxPartitionFetchBytes is the maximum bytes per partition per Fetch request (Sarama Consumer.Fetch.Max).
+	// +optional
+	MaxPartitionFetchBytes *int32 `json:"maxPartitionFetchBytes,omitempty"`
+
+	// NetReadTimeout is the network read timeout for Kafka client requests.
+	// Should be greater than ConsumerMaxWait when both are set.
+	// +optional
+	NetReadTimeout *metav1.Duration `json:"netReadTimeout,omitempty"`
+
+	// NetWriteTimeout is the network write timeout for Kafka client requests.
+	// +optional
+	NetWriteTimeout *metav1.Duration `json:"netWriteTimeout,omitempty"`
 }
 
 // SchemaRegistryConfig defines Confluent Schema Registry configuration

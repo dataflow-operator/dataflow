@@ -19,6 +19,7 @@ package connectors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,7 +27,13 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/go-logr/logr"
+)
+
+var (
+	errDMLComplete    = errors.New("trino DML complete")
+	errPaginationDone = errors.New("trino pagination complete")
 )
 
 // trinoClient provides shared HTTP-based query execution for Trino source and sink connectors.
@@ -177,63 +184,80 @@ func (c *trinoClient) executeQuery(ctx context.Context, query string) ([]map[str
 	queryState := queryResponse.Stats.State
 
 	for nextURI != "" {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		c.logger.Info("Following next URI for Trino query", "nextURI", nextURI, "query", query, "state", queryState)
-		nextResp, err := c.httpClient.Get(nextURI)
+
+		nextResp, err := c.getNextURIWithRetry(ctx, nextURI)
 		if err != nil {
 			c.logger.Error(err, "Failed to follow next URI", "nextURI", nextURI, "query", query)
 			return nil, fmt.Errorf("failed to follow next URI: %w", err)
 		}
-		defer nextResp.Body.Close()
 
-		if nextResp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(nextResp.Body)
-			c.logger.Error(nil, "Trino next URI request failed", "nextURI", nextURI, "status", nextResp.StatusCode)
-			return nil, fmt.Errorf("Trino query failed with status %d: %s", nextResp.StatusCode, string(body))
-		}
+		pageErr := func() error {
+			defer nextResp.Body.Close()
 
-		var nextResponse TrinoQueryResponse
-		if err := json.NewDecoder(nextResp.Body).Decode(&nextResponse); err != nil {
-			c.logger.Error(err, "Failed to decode next response", "nextURI", nextURI)
-			return nil, fmt.Errorf("failed to decode next response: %w", err)
-		}
-
-		if nextResponse.Stats.State != "" {
-			queryState = nextResponse.Stats.State
-		}
-
-		if nextResponse.Error != nil {
-			errorMsg := formatTrinoError(nextResponse.Error)
-			c.logger.Error(nil, "Trino query error", "query", query, "error", errorMsg)
-			return nil, fmt.Errorf("%s", errorMsg)
-		}
-
-		if queryState == "FAILED" {
-			errorMsg := formatTrinoError(nextResponse.Error)
-			if nextResponse.Error == nil {
-				responseBody, _ := json.Marshal(nextResponse)
-				errorMsg = fmt.Sprintf("Trino query failed with state FAILED. Response: %s", string(responseBody))
+			if nextResp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(nextResp.Body)
+				c.logger.Error(nil, "Trino next URI request failed", "nextURI", nextURI, "status", nextResp.StatusCode)
+				return fmt.Errorf("Trino query failed with status %d: %s", nextResp.StatusCode, string(body))
 			}
-			c.logger.Error(nil, "Trino query failed", "query", query, "state", queryState)
-			return nil, fmt.Errorf("%s", errorMsg)
-		}
 
-		if nextResponse.Data != nil {
-			allDataRows = append(allDataRows, nextResponse.Data...)
-		}
+			var nextResponse TrinoQueryResponse
+			if err := json.NewDecoder(nextResp.Body).Decode(&nextResponse); err != nil {
+				c.logger.Error(err, "Failed to decode next response", "nextURI", nextURI)
+				return fmt.Errorf("failed to decode next response: %w", err)
+			}
 
-		if len(columns) == 0 && len(nextResponse.Columns) > 0 {
-			columns = nextResponse.Columns
-		}
+			if nextResponse.Stats.State != "" {
+				queryState = nextResponse.Stats.State
+			}
 
-		if isDML && (queryState == "FINISHED" || nextResponse.NextURI == "") {
-			c.logger.Info("DML statement completed", "query", query, "state", queryState)
+			if nextResponse.Error != nil {
+				errorMsg := formatTrinoError(nextResponse.Error)
+				c.logger.Error(nil, "Trino query error", "query", query, "error", errorMsg)
+				return fmt.Errorf("%s", errorMsg)
+			}
+
+			if queryState == "FAILED" {
+				errorMsg := formatTrinoError(nextResponse.Error)
+				if nextResponse.Error == nil {
+					responseBody, _ := json.Marshal(nextResponse)
+					errorMsg = fmt.Sprintf("Trino query failed with state FAILED. Response: %s", string(responseBody))
+				}
+				c.logger.Error(nil, "Trino query failed", "query", query, "state", queryState)
+				return fmt.Errorf("%s", errorMsg)
+			}
+
+			if nextResponse.Data != nil {
+				allDataRows = append(allDataRows, nextResponse.Data...)
+			}
+
+			if len(columns) == 0 && len(nextResponse.Columns) > 0 {
+				columns = nextResponse.Columns
+			}
+
+			if isDML && (queryState == "FINISHED" || nextResponse.NextURI == "") {
+				c.logger.Info("DML statement completed", "query", query, "state", queryState)
+				return errDMLComplete
+			}
+
+			nextURI = nextResponse.NextURI
+
+			if nextURI == "" && queryState == "FINISHED" {
+				return errPaginationDone
+			}
+			return nil
+		}()
+		if pageErr == errDMLComplete {
 			return []map[string]interface{}{}, nil
 		}
-
-		nextURI = nextResponse.NextURI
-
-		if nextURI == "" && queryState == "FINISHED" {
+		if pageErr == errPaginationDone {
 			break
+		}
+		if pageErr != nil {
+			return nil, pageErr
 		}
 	}
 
@@ -257,4 +281,32 @@ func (c *trinoClient) executeQuery(ctx context.Context, query string) ([]map[str
 
 	c.logger.Info("Trino query executed successfully", "query", query, "rowsReturned", len(results), "state", queryState)
 	return results, nil
+}
+
+// getNextURI performs a GET on Trino's nextURI with the same context and auth as the initial statement POST.
+func (c *trinoClient) getNextURI(ctx context.Context, nextURI string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURI, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create next URI request: %w", err)
+	}
+	if c.keycloakAuth != nil {
+		if token := c.keycloakAuth.GetToken(); token != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		}
+	}
+	return c.httpClient.Do(req)
+}
+
+// getNextURIWithRetry retries GET on the same nextURI when the failure looks transient (e.g. unexpected EOF from proxy).
+func (c *trinoClient) getNextURIWithRetry(ctx context.Context, nextURI string) (*http.Response, error) {
+	var resp *http.Response
+	err := retry.OnRetry(ctx, retry.TrinoNextURIMaxAttempts, retry.TrinoNextURIInitialBackoff, retry.IsRetryableForTrino, func() error {
+		var getErr error
+		resp, getErr = c.getNextURI(ctx, nextURI)
+		return getErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }

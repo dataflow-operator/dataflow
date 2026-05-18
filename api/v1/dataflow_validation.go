@@ -115,6 +115,34 @@ func validateKafkaSource(k *KafkaSourceSpec, f *field.Path) field.ErrorList {
 	if k.TopicSecretRef != nil {
 		all = append(all, validateSecretRef(k.TopicSecretRef, f.Child("topicSecretRef"))...)
 	}
+	all = append(all, validateKafkaConsumerTiming(k, f)...)
+	return all
+}
+
+func validateKafkaConsumerTiming(k *KafkaSourceSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	if k.ConsumerMaxWait != nil && k.ConsumerMaxWait.Duration <= 0 {
+		all = append(all, field.Invalid(f.Child("consumerMaxWait"), k.ConsumerMaxWait.Duration.String(), "must be greater than zero"))
+	}
+	if k.NetReadTimeout != nil && k.NetReadTimeout.Duration <= 0 {
+		all = append(all, field.Invalid(f.Child("netReadTimeout"), k.NetReadTimeout.Duration.String(), "must be greater than zero"))
+	}
+	if k.NetWriteTimeout != nil && k.NetWriteTimeout.Duration <= 0 {
+		all = append(all, field.Invalid(f.Child("netWriteTimeout"), k.NetWriteTimeout.Duration.String(), "must be greater than zero"))
+	}
+	if k.FetchMinBytes != nil && *k.FetchMinBytes < 0 {
+		all = append(all, field.Invalid(f.Child("fetchMinBytes"), *k.FetchMinBytes, "must be greater than or equal to zero"))
+	}
+	if k.FetchMaxBytes != nil && *k.FetchMaxBytes <= 0 {
+		all = append(all, field.Invalid(f.Child("fetchMaxBytes"), *k.FetchMaxBytes, "must be greater than zero"))
+	}
+	if k.MaxPartitionFetchBytes != nil && *k.MaxPartitionFetchBytes <= 0 {
+		all = append(all, field.Invalid(f.Child("maxPartitionFetchBytes"), *k.MaxPartitionFetchBytes, "must be greater than zero"))
+	}
+	if k.ConsumerMaxWait != nil && k.NetReadTimeout != nil && k.NetReadTimeout.Duration <= k.ConsumerMaxWait.Duration {
+		all = append(all, field.Invalid(f.Child("netReadTimeout"), k.NetReadTimeout.Duration.String(),
+			"must be greater than consumerMaxWait"))
+	}
 	return all
 }
 

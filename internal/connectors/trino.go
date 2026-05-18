@@ -232,6 +232,7 @@ type TrinoSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	progressRecorder
 	rawModeConfig
 	config       *v1.TrinoSinkSpec
 	client       *trinoClient
@@ -515,11 +516,20 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		}); err != nil {
 			return err
 		}
-		for _, m := range batch {
+		firstMsgID := ""
+		if len(batch) > 0 {
+			firstMsgID = types.MessageID(batch[0])
+		}
+		t.logger.Info("Committing source offsets after successful batch", "batchSize", len(batch), logkeys.MessageID, firstMsgID)
+		for i, m := range batch {
 			if m.Ack != nil {
 				m.Ack()
+			} else if i == 0 {
+				t.logger.V(1).Info("Message has no Ack callback", logkeys.MessageID, types.MessageID(m))
 			}
 		}
+		t.logger.Info("Committed source offsets after successful batch", "batchSize", len(batch), logkeys.MessageID, firstMsgID)
+		t.notifyProgress()
 		batch = make([]*types.Message, 0, maxBatchSize)
 		return nil
 	}

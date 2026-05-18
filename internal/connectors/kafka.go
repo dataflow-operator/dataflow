@@ -125,6 +125,9 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 	if err := applyKafkaSASL(k.config.SASL, saramaConfig, k.logger); err != nil {
 		return err
 	}
+	if err := applyKafkaConsumerConfig(k.config, saramaConfig); err != nil {
+		return err
+	}
 
 	// Validate brokers
 	if len(k.config.Brokers) == 0 {
@@ -584,13 +587,87 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	// Handle errors
 	go func() {
 		for err := range k.consumer.Errors() {
+			if isKafkaRequestTimedOutError(err) {
+				k.RecordError("read", "request_timed_out")
+				k.logger.Info("Kafka consumer fetch timed out (transient); check broker load, consumer lag, and consider increasing source.consumerMaxWait",
+					"topic", k.config.Topic, "err", err)
+				continue
+			}
 			errWrap := fmt.Errorf("consumer error: %w", err)
 			k.logger.Error(errWrap, "Kafka consumer error", "topic", k.config.Topic)
-			errCh <- errWrap
+			select {
+			case errCh <- errWrap:
+			default:
+				k.logger.Error(errWrap, "Kafka consumer error dropped (error channel full)", "topic", k.config.Topic)
+			}
 		}
 	}()
 
 	return msgChan, nil
+}
+
+// applyKafkaConsumerConfig maps optional KafkaSourceSpec consumer tuning to Sarama.
+func applyKafkaConsumerConfig(spec *v1.KafkaSourceSpec, cfg *sarama.Config) error {
+	if spec == nil {
+		return nil
+	}
+	if spec.ConsumerMaxWait != nil {
+		d := spec.ConsumerMaxWait.Duration
+		if d <= 0 {
+			return fmt.Errorf("consumerMaxWait must be positive")
+		}
+		cfg.Consumer.MaxWaitTime = d
+	}
+	if spec.FetchMinBytes != nil {
+		if *spec.FetchMinBytes < 0 {
+			return fmt.Errorf("fetchMinBytes must be >= 0")
+		}
+		cfg.Consumer.Fetch.Min = *spec.FetchMinBytes
+	}
+	if spec.FetchMaxBytes != nil {
+		if *spec.FetchMaxBytes <= 0 {
+			return fmt.Errorf("fetchMaxBytes must be positive")
+		}
+		cfg.Consumer.Fetch.Default = *spec.FetchMaxBytes
+	}
+	if spec.MaxPartitionFetchBytes != nil {
+		if *spec.MaxPartitionFetchBytes <= 0 {
+			return fmt.Errorf("maxPartitionFetchBytes must be positive")
+		}
+		cfg.Consumer.Fetch.Max = *spec.MaxPartitionFetchBytes
+	}
+	if spec.NetReadTimeout != nil {
+		d := spec.NetReadTimeout.Duration
+		if d <= 0 {
+			return fmt.Errorf("netReadTimeout must be positive")
+		}
+		cfg.Net.ReadTimeout = d
+	}
+	if spec.NetWriteTimeout != nil {
+		d := spec.NetWriteTimeout.Duration
+		if d <= 0 {
+			return fmt.Errorf("netWriteTimeout must be positive")
+		}
+		cfg.Net.WriteTimeout = d
+	}
+	if spec.ConsumerMaxWait != nil && spec.NetReadTimeout != nil && cfg.Net.ReadTimeout <= cfg.Consumer.MaxWaitTime {
+		return fmt.Errorf("netReadTimeout must be greater than consumerMaxWait")
+	}
+	return nil
+}
+
+// isKafkaRequestTimedOutError reports Kafka REQUEST_TIMED_OUT (broker could not complete Fetch in max.wait).
+func isKafkaRequestTimedOutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ke sarama.KError
+	if errors.As(err, &ke) && ke == sarama.ErrRequestTimedOut {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "request exceeded the user-specified time limit") ||
+		strings.Contains(lower, "request_timed_out")
 }
 
 // isCoordinatorUnavailableError reports whether err is Kafka "coordinator is not available" (retriable).
@@ -683,11 +760,36 @@ func (h *kafkaConsumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
 	return nil
 }
 
+// kafkaMarkChannelBuffer is the buffer for deferred offset marks from sink Ack callbacks.
+// Marks are processed in ConsumeClaim (same goroutine as Sarama expects) to avoid blocking MarkMessage from other goroutines.
+const kafkaMarkChannelBuffer = 256
+
 func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	markChan := make(chan *sarama.ConsumerMessage, kafkaMarkChannelBuffer)
+
+	markPending := func(message *sarama.ConsumerMessage) {
+		select {
+		case markChan <- message:
+		case <-session.Context().Done():
+		}
+	}
+
+	drainMarks := func() {
+		for {
+			select {
+			case m := <-markChan:
+				session.MarkMessage(m, "")
+			default:
+				return
+			}
+		}
+	}
+
 	for {
 		select {
 		case message := <-claim.Messages():
 			if message == nil {
+				drainMarks()
 				return nil
 			}
 
@@ -718,15 +820,24 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 			msg.Metadata["offset"] = message.Offset
 			msg.Metadata["key"] = string(message.Key)
 			msg.Metadata["timestamp"] = message.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-			// Commit offset only after the message is successfully written to the sink (called by sink connectors)
-			msg.Ack = func() { session.MarkMessage(message, "") }
+			// Commit offset only after the message is successfully written to the sink.
+			// Mark is queued and applied in this goroutine (not from sink goroutine).
+			msg.Ack = func() { markPending(message) }
 
-			select {
-			case h.msgChan <- msg:
-				h.connector.RecordMessageRead()
-			case <-session.Context().Done():
-				return nil
+			enqueued := false
+			for !enqueued {
+				select {
+				case h.msgChan <- msg:
+					h.connector.RecordMessageRead()
+					enqueued = true
+				case m := <-markChan:
+					session.MarkMessage(m, "")
+				case <-session.Context().Done():
+					return nil
+				}
 			}
+		case m := <-markChan:
+			session.MarkMessage(m, "")
 		case <-session.Context().Done():
 			return nil
 		}

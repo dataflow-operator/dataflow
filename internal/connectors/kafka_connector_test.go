@@ -28,6 +28,7 @@ import (
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // testConsumerGroup is a minimal sarama.ConsumerGroup for Read tests (Consume is overridden via testConsumeFunc).
@@ -134,6 +135,75 @@ func TestKafkaRead_AuthorizationErrorRetriesThenReady(t *testing.T) {
 	}
 
 	cancel()
+}
+
+func TestApplyKafkaConsumerConfig(t *testing.T) {
+	t.Run("maps all fields", func(t *testing.T) {
+		minBytes := int32(1)
+		maxBytes := int32(1048576)
+		partBytes := int32(524288)
+		spec := &v1.KafkaSourceSpec{
+			ConsumerMaxWait:        &metav1.Duration{Duration: 30 * time.Second},
+			FetchMinBytes:          &minBytes,
+			FetchMaxBytes:          &maxBytes,
+			MaxPartitionFetchBytes: &partBytes,
+			NetReadTimeout:         &metav1.Duration{Duration: 60 * time.Second},
+			NetWriteTimeout:        &metav1.Duration{Duration: 10 * time.Second},
+		}
+		cfg := sarama.NewConfig()
+		if err := applyKafkaConsumerConfig(spec, cfg); err != nil {
+			t.Fatalf("applyKafkaConsumerConfig: %v", err)
+		}
+		if cfg.Consumer.MaxWaitTime != 30*time.Second {
+			t.Errorf("MaxWaitTime = %v, want 30s", cfg.Consumer.MaxWaitTime)
+		}
+		if cfg.Consumer.Fetch.Min != 1 {
+			t.Errorf("Fetch.Min = %d, want 1", cfg.Consumer.Fetch.Min)
+		}
+		if cfg.Consumer.Fetch.Default != 1048576 {
+			t.Errorf("Fetch.Default = %d, want 1048576", cfg.Consumer.Fetch.Default)
+		}
+		if cfg.Consumer.Fetch.Max != 524288 {
+			t.Errorf("Fetch.Max = %d, want 524288", cfg.Consumer.Fetch.Max)
+		}
+		if cfg.Net.ReadTimeout != 60*time.Second {
+			t.Errorf("ReadTimeout = %v, want 60s", cfg.Net.ReadTimeout)
+		}
+		if cfg.Net.WriteTimeout != 10*time.Second {
+			t.Errorf("WriteTimeout = %v, want 10s", cfg.Net.WriteTimeout)
+		}
+	})
+
+	t.Run("rejects netReadTimeout not greater than consumerMaxWait", func(t *testing.T) {
+		spec := &v1.KafkaSourceSpec{
+			ConsumerMaxWait: &metav1.Duration{Duration: 30 * time.Second},
+			NetReadTimeout:  &metav1.Duration{Duration: 5 * time.Second},
+		}
+		cfg := sarama.NewConfig()
+		if err := applyKafkaConsumerConfig(spec, cfg); err == nil {
+			t.Fatal("expected error when netReadTimeout <= consumerMaxWait")
+		}
+	})
+}
+
+func TestIsKafkaRequestTimedOutError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"KError", sarama.ErrRequestTimedOut, true},
+		{"broker message", errors.New("kafka server: Request exceeded the user-specified time limit in the request"), true},
+		{"other", errors.New("connection refused"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isKafkaRequestTimedOutError(tt.err); got != tt.want {
+				t.Errorf("isKafkaRequestTimedOutError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestIsCoordinatorUnavailableError(t *testing.T) {

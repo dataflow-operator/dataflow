@@ -54,6 +54,8 @@ type Processor struct {
 	checkpointStore checkpoint.Store // for graceful shutdown flush
 	// ready is set to true after source.Read succeeds (pipeline is consuming).
 	ready atomic.Bool
+	// lastProgressUnixNano is updated when the pipeline makes forward progress (e.g. sink flush + ack).
+	lastProgressUnixNano atomic.Int64
 }
 
 // NewProcessor creates a new processor
@@ -95,7 +97,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 		return nil, fmt.Errorf("failed to create sink connector: %w", err)
 	}
 
-	initConnector(sink, logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink"), namespace, name)
+	// progress callback wired after Processor is constructed (see below)
 
 	// Create error sink connector if specified
 	var errorSink connectors.SinkConnector
@@ -147,6 +149,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 	if options.CheckpointStore != nil {
 		p.checkpointStore = options.CheckpointStore
 	}
+	initConnectorWithProgress(sink, logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink"), namespace, name, p.RecordProgress)
 	return p, nil
 }
 
@@ -154,6 +157,24 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 // (connect + read loop running). Used by HTTP /readyz for Kubernetes probes.
 func (p *Processor) Ready() bool {
 	return p.ready.Load()
+}
+
+// RecordProgress updates the last-progress timestamp for liveness probes.
+func (p *Processor) RecordProgress() {
+	p.lastProgressUnixNano.Store(time.Now().UnixNano())
+}
+
+// ProgressStale reports whether no progress was recorded within maxAge.
+// When maxAge <= 0, progress checking is disabled and this always returns false.
+func (p *Processor) ProgressStale(maxAge time.Duration) bool {
+	if maxAge <= 0 {
+		return false
+	}
+	ts := p.lastProgressUnixNano.Load()
+	if ts == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, ts)) > maxAge
 }
 
 // FlushCheckpoint persists any pending checkpoint to storage. Call before shutdown.
@@ -203,6 +224,7 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to read from source: %w", err)
 	}
 	p.ready.Store(true)
+	p.RecordProgress()
 	p.logger.Info("Started reading from source")
 
 	// Process messages
@@ -265,11 +287,21 @@ func (p *Processor) channelBufferSize() int {
 
 // initConnector sets logger and metadata on a connector if it supports the respective interfaces.
 func initConnector(connector interface{}, logger logr.Logger, namespace, name string) {
+	initConnectorWithProgress(connector, logger, namespace, name, nil)
+}
+
+// initConnectorWithProgress sets logger, metadata, and optional progress callback on a connector.
+func initConnectorWithProgress(connector interface{}, logger logr.Logger, namespace, name string, onProgress func()) {
 	if lc, ok := connector.(interface{ SetLogger(logr.Logger) }); ok {
 		lc.SetLogger(logger)
 	}
 	if mc, ok := connector.(interface{ SetMetadata(string, string) }); ok {
 		mc.SetMetadata(namespace, name)
+	}
+	if onProgress != nil {
+		if pc, ok := connector.(interface{ SetProgressCallback(func()) }); ok {
+			pc.SetProgressCallback(onProgress)
+		}
 	}
 }
 
