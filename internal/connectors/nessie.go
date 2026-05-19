@@ -354,6 +354,7 @@ type NessieSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	rawModeConfig
 	config *v1.NessieSinkSpec
 	cat    *rest.Catalog
 	tbl    *table.Table
@@ -365,7 +366,35 @@ func NewNessieSinkConnector(config *v1.NessieSinkSpec) *NessieSinkConnector {
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "sink"},
+		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
 	}
+}
+
+func nessieIcebergSchema(rawMode bool) *iceberg.Schema {
+	if rawMode {
+		return iceberg.NewSchema(0,
+			iceberg.NestedField{ID: 1, Name: "data", Type: iceberg.PrimitiveTypes.String, Required: false},
+			iceberg.NestedField{ID: 2, Name: "_metadata", Type: iceberg.PrimitiveTypes.String, Required: false},
+		)
+	}
+	return iceberg.NewSchema(0, iceberg.NestedField{ID: 1, Name: "data", Type: iceberg.PrimitiveTypes.String, Required: false})
+}
+
+func validateNessieRawModeSchema(tbl *table.Table) error {
+	if tbl == nil {
+		return fmt.Errorf("table is nil")
+	}
+	schema := tbl.Schema()
+	if schema == nil {
+		return fmt.Errorf("table schema is nil")
+	}
+	if _, ok := schema.FindFieldByNameCaseInsensitive("data"); !ok {
+		return fmt.Errorf("rawMode requires a \"data\" column in the Iceberg table")
+	}
+	if _, ok := schema.FindFieldByNameCaseInsensitive("_metadata"); !ok {
+		return fmt.Errorf("rawMode requires a \"_metadata\" column in the Iceberg table")
+	}
+	return nil
 }
 
 // Connect establishes connection to Nessie and loads or creates the Iceberg table.
@@ -406,13 +435,18 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to load table: %w", err)
 		}
+		if c.rawMode() {
+			if err := validateNessieRawModeSchema(tbl); err != nil {
+				return fmt.Errorf("table %s.%s: %w", c.config.Namespace, c.config.Table, err)
+			}
+		}
 	} else if c.config.AutoCreateTable != nil && *c.config.AutoCreateTable {
-		schema := iceberg.NewSchema(0, iceberg.NestedField{ID: 1, Name: "data", Type: iceberg.PrimitiveTypes.String, Required: false})
+		schema := nessieIcebergSchema(c.rawMode())
 		tbl, err = cat.CreateTable(ctx, ident, schema)
 		if err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
-		c.logger.Info("Created Iceberg table", "namespace", c.config.Namespace, "table", c.config.Table)
+		c.logger.Info("Created Iceberg table", "namespace", c.config.Namespace, "table", c.config.Table, "rawMode", c.rawMode())
 	} else {
 		return fmt.Errorf("table %s.%s does not exist and AutoCreateTable is not set", c.config.Namespace, c.config.Table)
 	}
@@ -459,7 +493,7 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		if len(msgs) == 0 {
 			return nil
 		}
-		arrowTbl, err := messagesToArrowTable(msgs)
+		arrowTbl, err := messagesToArrowTable(msgs, c.rawMode())
 		if err != nil {
 			return err
 		}
@@ -689,9 +723,34 @@ func valueAt(arr arrow.Array, i int) interface{} {
 	}
 }
 
-// messagesToArrowTable builds an Arrow table with one "data" column (string) from messages.
-func messagesToArrowTable(msgs []*types.Message) (arrow.Table, error) {
+// messagesToArrowTable builds an Arrow table from messages.
+// When rawMode is true, writes data and _metadata columns using extractDataAndMetadata.
+func messagesToArrowTable(msgs []*types.Message, rawMode bool) (arrow.Table, error) {
 	mem := memory.DefaultAllocator
+	if rawMode {
+		dataBuilder := array.NewStringBuilder(mem)
+		metaBuilder := array.NewStringBuilder(mem)
+		defer dataBuilder.Release()
+		defer metaBuilder.Release()
+		for _, m := range msgs {
+			dataStr, metaStr := extractDataAndMetadata(m)
+			dataBuilder.Append(dataStr)
+			metaBuilder.Append(metaStr)
+		}
+		dataArr := dataBuilder.NewArray()
+		metaArr := metaBuilder.NewArray()
+		defer dataArr.Release()
+		defer metaArr.Release()
+
+		schema := arrow.NewSchema([]arrow.Field{
+			{Name: "data", Type: arrow.BinaryTypes.String},
+			{Name: "_metadata", Type: arrow.BinaryTypes.String},
+		}, nil)
+		rec := array.NewRecord(schema, []arrow.Array{dataArr, metaArr}, int64(len(msgs)))
+		defer rec.Release()
+		return array.NewTableFromRecords(schema, []arrow.Record{rec}), nil
+	}
+
 	builder := array.NewStringBuilder(mem)
 	defer builder.Release()
 	for _, m := range msgs {

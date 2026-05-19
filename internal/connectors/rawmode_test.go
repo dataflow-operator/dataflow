@@ -67,3 +67,11 @@ func TestClickHouseSinkConnector_rawMode(t *testing.T) {
 		{"true", NewClickHouseSinkConnector(&v1.ClickHouseSinkSpec{RawMode: ptrBool(true)}), true},
 	})
 }
+
+func TestNessieSinkConnector_rawMode(t *testing.T) {
+	runRawModeTests(t, []rawModeTestCase{
+		{"nil", NewNessieSinkConnector(&v1.NessieSinkSpec{}), false},
+		{"false", NewNessieSinkConnector(&v1.NessieSinkSpec{RawMode: ptrBool(false)}), false},
+		{"true", NewNessieSinkConnector(&v1.NessieSinkSpec{RawMode: ptrBool(true)}), true},
+	})
+}

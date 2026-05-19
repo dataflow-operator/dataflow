@@ -555,6 +555,10 @@ type NessieSinkSpec struct {
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
 
+	// RawMode when true, creates table with data and _metadata string columns; wraps plain messages using msg.Metadata.
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
+
 	// BasicAuth for Nessie/Iceberg REST.
 	// +optional
 	BasicAuth *BasicAuthConfig `json:"basicAuth,omitempty"`

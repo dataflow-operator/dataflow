@@ -582,6 +582,11 @@ func (in *NessieSinkSpec) DeepCopyInto(out *NessieSinkSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.RawMode != nil {
+		in, out := &in.RawMode, &out.RawMode
+		*out = new(bool)
+		**out = **in
+	}
 	if in.BasicAuth != nil {
 		in, out := &in.BasicAuth, &out.BasicAuth
 		*out = new(BasicAuthConfig)

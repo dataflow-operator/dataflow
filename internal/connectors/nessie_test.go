@@ -18,6 +18,7 @@ package connectors
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +27,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/apache/arrow-go/v18/arrow/array"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -292,4 +295,79 @@ func TestIsRetryableNessieAppendError(t *testing.T) {
 			assert.Equal(t, tt.want, isRetryableNessieAppendError(tt.err))
 		})
 	}
+}
+
+func TestNessieIcebergSchema(t *testing.T) {
+	t.Run("single_data_column", func(t *testing.T) {
+		schema := nessieIcebergSchema(false)
+		require.NotNil(t, schema)
+		assert.Equal(t, 1, schema.NumFields())
+		_, ok := schema.FindFieldByName("data")
+		assert.True(t, ok)
+	})
+	t.Run("data_and_metadata", func(t *testing.T) {
+		schema := nessieIcebergSchema(true)
+		require.NotNil(t, schema)
+		assert.Equal(t, 2, schema.NumFields())
+		_, okData := schema.FindFieldByName("data")
+		_, okMeta := schema.FindFieldByName("_metadata")
+		assert.True(t, okData)
+		assert.True(t, okMeta)
+	})
+}
+
+func TestMessagesToArrowTable_RawMode(t *testing.T) {
+	t.Run("plain_message_with_metadata", func(t *testing.T) {
+		msg := types.NewMessage([]byte(`{"id":1,"event":"login"}`))
+		msg.Metadata["offset"] = int64(100)
+		msg.Metadata["topic"] = "events"
+		msg.Metadata["partition"] = int32(0)
+
+		tbl, err := messagesToArrowTable([]*types.Message{msg}, true)
+		require.NoError(t, err)
+		defer tbl.Release()
+		require.Equal(t, int64(2), tbl.NumCols())
+		require.Equal(t, int64(1), tbl.NumRows())
+
+		dataCol := tbl.Column(0).Data().Chunk(0).(*array.String)
+		metaCol := tbl.Column(1).Data().Chunk(0).(*array.String)
+		assert.JSONEq(t, `{"id":1,"event":"login"}`, dataCol.Value(0))
+
+		var meta map[string]interface{}
+		require.NoError(t, json.Unmarshal([]byte(metaCol.Value(0)), &meta))
+		assert.Equal(t, float64(100), meta["offset"])
+		assert.Equal(t, "events", meta["topic"])
+		assert.Equal(t, float64(0), meta["partition"])
+	})
+
+	t.Run("prewrapped_value_metadata", func(t *testing.T) {
+		msg := types.NewMessage([]byte(`{"value":{"id":1},"_metadata":{"offset":10,"topic":"t1"}}`))
+		tbl, err := messagesToArrowTable([]*types.Message{msg}, true)
+		require.NoError(t, err)
+		defer tbl.Release()
+
+		dataCol := tbl.Column(0).Data().Chunk(0).(*array.String)
+		metaCol := tbl.Column(1).Data().Chunk(0).(*array.String)
+		assert.JSONEq(t, `{"id":1}`, dataCol.Value(0))
+		assert.JSONEq(t, `{"offset":10,"topic":"t1"}`, metaCol.Value(0))
+	})
+
+	t.Run("non_raw_single_column", func(t *testing.T) {
+		msg := types.NewMessage([]byte(`{"id":1}`))
+		msg.Metadata["offset"] = int64(1)
+		tbl, err := messagesToArrowTable([]*types.Message{msg}, false)
+		require.NoError(t, err)
+		defer tbl.Release()
+		require.Equal(t, int64(1), tbl.NumCols())
+		dataCol := tbl.Column(0).Data().Chunk(0).(*array.String)
+		assert.JSONEq(t, `{"id":1}`, dataCol.Value(0))
+	})
+}
+
+func TestValidateNessieRawModeSchema(t *testing.T) {
+	t.Run("nil_table", func(t *testing.T) {
+		err := validateNessieRawModeSchema(nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nil")
+	})
 }
