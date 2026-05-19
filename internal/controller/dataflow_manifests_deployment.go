@@ -142,7 +142,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 			Namespace: req.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: func() *int32 { r := int32(1); return &r }(),
+			Replicas: func() *int32 { n := desiredProcessorReplicas(resolvedSpec); return &n }(),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},

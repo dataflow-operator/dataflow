@@ -1021,6 +1021,15 @@ spec:
                   ProcessorVersion is the image tag for the processor when using the default image repository (same as controller).
                   Ignored if ProcessorImage is set. Example: "v1.2.3".
                 type: string
+              replicas:
+                default: 1
+                description: |-
+                  Replicas is the number of processor pods (Deployment replicas).
+                  Only supported for Kafka sources (consumer group coordinates partition assignment).
+                  For polling sources (postgresql, clickhouse, trino, nessie) must be 1 or unset.
+                format: int32
+                minimum: 0
+                type: integer
               resources:
                 description: Resources defines the resource requirements for the processor
                   pod

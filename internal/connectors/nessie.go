@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -36,6 +37,7 @@ import (
 	"github.com/apache/iceberg-go/catalog/rest"
 	"github.com/apache/iceberg-go/table"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -221,10 +223,15 @@ type NessieSourceConnector struct {
 	baseConnectorRWMutex
 	connectorLogger
 	connectorMetadata
-	config            *v1.NessieSourceSpec
-	cat               *rest.Catalog
-	tbl               *table.Table
-	channelBufferSize int
+	config                    *v1.NessieSourceSpec
+	cat                       *rest.Catalog
+	tbl                       *table.Table
+	channelBufferSize         int
+	checkpointStore           checkpoint.Store
+	sourceType                string
+	checkpointMu              sync.Mutex
+	lastAckedSnapshotID       int64
+	lastAckedSnapshotSequence int64
 }
 
 // NewNessieSourceConnector creates a new Nessie source connector.
@@ -239,8 +246,22 @@ func NewNessieSourceConnectorWithOptions(config *v1.NessieSourceSpec, opts *Sour
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "source"},
 	}
-	if opts != nil && opts.ChannelBufferSize > 0 {
-		c.channelBufferSize = opts.ChannelBufferSize
+	if opts != nil {
+		if nessieIncrementalEnabled(config) {
+			c.checkpointStore = opts.CheckpointStore
+			c.sourceType = opts.SourceType
+			if c.sourceType == "" {
+				c.sourceType = "nessie"
+			}
+			if len(opts.InitialCheckpoint) > 0 {
+				c.applyInitialCheckpoint(opts.InitialCheckpoint)
+			}
+		}
+		if opts.ChannelBufferSize > 0 {
+			c.channelBufferSize = opts.ChannelBufferSize
+		} else {
+			c.channelBufferSize = constants.DefaultChannelBufferSize
+		}
 	} else {
 		c.channelBufferSize = constants.DefaultChannelBufferSize
 	}
@@ -316,6 +337,13 @@ func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *type
 		return fmt.Errorf("nessie refresh: %w", err)
 	}
 
+	if nessieIncrementalEnabled(c.config) {
+		return c.readOnceIncremental(ctx, msgChan, tbl)
+	}
+	return c.readOnceFullScan(ctx, msgChan, tbl)
+}
+
+func (c *NessieSourceConnector) readOnceFullScan(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
 	arrowTbl, err := tbl.Scan().ToArrowTable(ctx)
 	if err != nil {
 		c.RecordError("read", "scan_error")
@@ -333,6 +361,91 @@ func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *type
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+	return nil
+}
+
+func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
+	current := tbl.CurrentSnapshot()
+	if current == nil {
+		return ErrSourceExhausted
+	}
+
+	c.checkpointMu.Lock()
+	afterID := c.lastAckedSnapshotID
+	afterSeq := c.lastAckedSnapshotSequence
+	c.checkpointMu.Unlock()
+
+	hasAfter := afterSeq > 0 || afterID != 0
+
+	var afterPtr *int64
+	if hasAfter {
+		afterPtr = &afterID
+	} else if start := strings.TrimSpace(c.config.StartSnapshotID); start != "" {
+		if id, err := parseSnapshotIDString(start); err == nil {
+			afterPtr = &id
+		}
+	}
+
+	lookup := tbl.SnapshotByID
+	chain, foundAfter := buildSnapshotChain(current, lookup, afterPtr)
+	if !hasAfter && afterPtr == nil {
+		chain = []table.Snapshot{*current}
+		foundAfter = true
+	}
+	if !foundAfter && hasAfter {
+		c.logger.Info("Last acked snapshot not found in table lineage; resetting read position",
+			"lastAckedSnapshotID", afterID,
+			"namespace", c.config.Namespace,
+			"table", c.config.Table)
+		if start := strings.TrimSpace(c.config.StartSnapshotID); start != "" {
+			if id, err := parseSnapshotIDString(start); err == nil {
+				afterPtr = &id
+				chain, _ = buildSnapshotChain(current, lookup, afterPtr)
+			}
+		} else {
+			chain, _ = buildSnapshotChain(current, lookup, nil)
+			if len(chain) > 0 {
+				chain = chain[len(chain)-1:]
+			}
+		}
+	}
+
+	if len(chain) == 0 {
+		return ErrSourceExhausted
+	}
+
+	var total int
+	for _, snap := range chain {
+		arrowTbl, err := tbl.Scan(table.WithSnapshotID(snap.SnapshotID)).ToArrowTable(ctx)
+		if err != nil {
+			c.RecordError("read", "scan_error")
+			return fmt.Errorf("nessie scan snapshot %d: %w", snap.SnapshotID, err)
+		}
+		msgs := arrowTableToMessages(arrowTbl, c.config.Namespace, c.config.Table, false)
+		arrowTbl.Release()
+		if len(msgs) == 0 {
+			continue
+		}
+		snapID := snap.SnapshotID
+		snapSeq := snap.SequenceNumber
+		for _, msg := range msgs {
+			if msg.Metadata == nil {
+				msg.Metadata = make(map[string]interface{})
+			}
+			msg.Metadata["snapshot_id"] = snapID
+			msg.Metadata["snapshot_sequence"] = snapSeq
+			msg.Ack = func() { c.advanceCheckpoint(snapID, snapSeq) }
+			select {
+			case msgChan <- msg:
+				total++
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	if total == 0 {
+		return ErrSourceExhausted
 	}
 	return nil
 }

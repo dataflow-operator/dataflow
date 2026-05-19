@@ -313,14 +313,28 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 	} else {
+		desired := desiredProcessorReplicas(&dataflow.Spec)
+		ready := deployment.Status.ReadyReplicas
 		// Update status based on Deployment state
-		if deployment.Status.ReadyReplicas > 0 {
-			dataflow.Status.Phase = "Running"
-			dataflow.Status.Message = "Processor pod is running"
-			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, true, "DeploymentReady")
-		} else if deployment.Status.Replicas > 0 {
+		if desired == 0 {
 			dataflow.Status.Phase = "Pending"
-			dataflow.Status.Message = "Processor pod is starting"
+			dataflow.Status.Message = "Processor scaled to zero replicas"
+			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, "DeploymentScaledToZero")
+		} else if ready >= desired {
+			dataflow.Status.Phase = "Running"
+			if desired == 1 {
+				dataflow.Status.Message = "Processor pod is running"
+			} else {
+				dataflow.Status.Message = fmt.Sprintf("%d/%d processor replicas ready", ready, desired)
+			}
+			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, true, "DeploymentReady")
+		} else if deployment.Status.Replicas > 0 || ready > 0 {
+			dataflow.Status.Phase = "Pending"
+			if desired == 1 {
+				dataflow.Status.Message = "Processor pod is starting"
+			} else {
+				dataflow.Status.Message = fmt.Sprintf("%d/%d processor replicas ready", ready, desired)
+			}
 			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, "DeploymentStarting")
 		} else {
 			dataflow.Status.Phase = "Error"

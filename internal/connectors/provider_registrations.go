@@ -17,7 +17,7 @@ func init() {
 	}), true)
 	registerSourceConnector("nessie", createSourceConnectorWithOptions[v1.NessieSourceSpec]("nessie source", func(cfg *v1.NessieSourceSpec, opts *SourceConnectorOptions) SourceConnector {
 		return NewNessieSourceConnectorWithOptions(cfg, opts)
-	}), false)
+	}), true)
 
 	registerSinkConnector("kafka", createSinkConnector[v1.KafkaSinkSpec]("kafka sink", func(cfg *v1.KafkaSinkSpec) SinkConnector { return NewKafkaSinkConnector(cfg) }))
 	registerSinkConnector("postgresql", createSinkConnector[v1.PostgreSQLSinkSpec]("postgresql sink", func(cfg *v1.PostgreSQLSinkSpec) SinkConnector { return NewPostgreSQLSinkConnector(cfg) }))

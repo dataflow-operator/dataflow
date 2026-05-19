@@ -81,6 +81,14 @@ type DataFlowSpec struct {
 	// Default: 100. Recommended for high throughput: 500–1000.
 	// +optional
 	ChannelBufferSize *int32 `json:"channelBufferSize,omitempty"`
+
+	// Replicas is the number of processor pods (Deployment replicas).
+	// Only supported for Kafka sources (consumer group coordinates partition assignment).
+	// For polling sources (postgresql, clickhouse, trino, nessie) must be 1 or unset.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default:=1
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
 }
 
 // SourceSpec defines the source configuration (type + config).
@@ -426,6 +434,20 @@ type NessieSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name.
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// IncrementalBySnapshot enables incremental reads using the Iceberg snapshot chain
+	// instead of a full table scan on every poll. Default: false.
+	// +optional
+	IncrementalBySnapshot *bool `json:"incrementalBySnapshot,omitempty"`
+
+	// StartSnapshotID is the snapshot ID to start from when no checkpoint exists (unsigned integer string).
+	// +optional
+	StartSnapshotID string `json:"startSnapshotID,omitempty"`
+
+	// SnapshotCheckpoints persists snapshot progress to the checkpoint store when true.
+	// Default: true. Requires spec.checkpointPersistence and incrementalBySnapshot.
+	// +optional
+	SnapshotCheckpoints *bool `json:"snapshotCheckpoints,omitempty"`
 }
 
 // KeycloakConfig defines Keycloak OAuth2/OIDC authentication configuration

@@ -754,6 +754,41 @@ func TestDataFlowReconciler_Reconcile_CreateDeployment(t *testing.T) {
 	assert.False(t, result.Requeue)
 }
 
+func TestDataFlowReconciler_Reconcile_DeploymentReplicasFromSpec(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	replicas := int32(3)
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "scaled-kafka", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			Replicas: &replicas,
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "out"}),
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "scaled-kafka", Namespace: "default"}}
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-scaled-kafka", Namespace: "default"}, &deployment))
+	require.NotNil(t, deployment.Spec.Replicas)
+	assert.Equal(t, int32(3), *deployment.Spec.Replicas)
+}
+
 func TestDataFlowReconciler_Reconcile_ProcessorGetsSentryEnvWhenSet(t *testing.T) {
 	prevDSN := os.Getenv("SENTRY_DSN")
 	prevEnv := os.Getenv("SENTRY_ENVIRONMENT")

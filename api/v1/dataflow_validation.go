@@ -18,6 +18,8 @@ package v1
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dataflow-operator/dataflow/pkg/providers"
@@ -41,6 +43,7 @@ func ValidateDataFlowSpec(spec *DataFlowSpec) field.ErrorList {
 	}
 	all = append(all, validateTransformations(spec.Transformations, f.Child("transformations"))...)
 	all = append(all, validateResources(spec.Resources, f.Child("resources"))...)
+	all = append(all, validateReplicas(spec, f)...)
 	return all
 }
 
@@ -75,6 +78,38 @@ func ValidateDataFlowCronSpec(spec *DataFlowCronSpec) field.ErrorList {
 			string(DataFlowCronConcurrencyForbid),
 			string(DataFlowCronConcurrencyReplace),
 		}))
+	}
+	if replicas := effectiveReplicas(spec.Replicas); replicas > 1 {
+		all = append(all, field.Invalid(f.Child("replicas"), replicas,
+			"replicas greater than 1 is not supported for DataFlowCron (one processor Job per schedule tick)"))
+	}
+	return all
+}
+
+func effectiveReplicas(replicas *int32) int32 {
+	if replicas == nil {
+		return 1
+	}
+	return *replicas
+}
+
+func validateReplicas(spec *DataFlowSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	if spec == nil {
+		return all
+	}
+	replicas := effectiveReplicas(spec.Replicas)
+	if replicas <= 1 {
+		return all
+	}
+	if spec.Source.Type != "kafka" {
+		all = append(all, field.Invalid(f.Child("replicas"), replicas,
+			"horizontal scaling (replicas > 1) is only supported for Kafka sources; use resources or channelBufferSize for polling sources"))
+		return all
+	}
+	if providers.SourceValidator(spec.Source.Type) == nil {
+		all = append(all, field.Invalid(f.Child("replicas"), replicas,
+			"horizontal scaling (replicas > 1) is not supported for plugin sources"))
 	}
 	return all
 }
@@ -252,7 +287,26 @@ func validateNessieSource(n *NessieSourceSpec, f *field.Path) field.ErrorList {
 		all = append(all, validateSecretRef(n.TokenSecretRef, f.Child("tokenSecretRef"))...)
 	}
 	all = append(all, validateNessieAuthConfig(string(n.AuthenticationType), n.BearerToken, n.TokenSecretRef, n.BasicAuth, f)...)
+	if n.IncrementalBySnapshot != nil && *n.IncrementalBySnapshot {
+		if strings.TrimSpace(n.Query) != "" {
+			all = append(all, field.Invalid(f.Child("query"), n.Query,
+				"query is not supported when incrementalBySnapshot is true"))
+		}
+	}
+	if id := strings.TrimSpace(n.StartSnapshotID); id != "" {
+		if _, err := parseNessieSnapshotID(id); err != nil {
+			all = append(all, field.Invalid(f.Child("startSnapshotID"), id, err.Error()))
+		}
+	}
 	return all
+}
+
+func parseNessieSnapshotID(s string) (int64, error) {
+	u, err := strconv.ParseUint(s, 10, 63)
+	if err != nil {
+		return 0, fmt.Errorf("must be a non-negative integer snapshot ID: %w", err)
+	}
+	return int64(u), nil
 }
 
 func validateNessieSink(n *NessieSinkSpec, f *field.Path) field.ErrorList {
