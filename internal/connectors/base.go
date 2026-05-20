@@ -230,13 +230,23 @@ func (c *connectorMetadata) RecordMessageWritten(route string) {
 	}
 }
 
-// rawModeConfig provides the rawMode() method. Embed in sink connectors that support raw mode.
+// rawModeConfig provides rawMode and flatten metadata helpers. Embed in sink connectors that support raw mode.
 type rawModeConfig struct {
-	RawMode *bool
+	RawMode                      *bool
+	FlattenMetadataColumns       *bool
+	FlattenMetadataColumnsPrefix string
 }
 
 func (r *rawModeConfig) rawMode() bool {
 	return r.RawMode != nil && *r.RawMode
+}
+
+func (r *rawModeConfig) flattenMetadataColumns() bool {
+	return r.FlattenMetadataColumns != nil && *r.FlattenMetadataColumns
+}
+
+func (r *rawModeConfig) flattenMetadataPrefix() string {
+	return r.FlattenMetadataColumnsPrefix
 }
 
 // ParseTableRef splits "schema.table" into schema and table name for information_schema queries.

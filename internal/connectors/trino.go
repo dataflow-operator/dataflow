@@ -234,6 +234,7 @@ type TrinoSinkConnector struct {
 	connectorMetadata
 	progressRecorder
 	rawModeConfig
+	flattenMetadataSinkState
 	config       *v1.TrinoSinkSpec
 	client       *trinoClient
 	tableColumns []TableColumnInfo // Cached table columns with types
@@ -246,7 +247,11 @@ func NewTrinoSinkConnector(config *v1.TrinoSinkSpec) *TrinoSinkConnector {
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "trino", connectorRole: "sink"},
-		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
+		rawModeConfig: rawModeConfig{
+			RawMode:                      config.RawMode,
+			FlattenMetadataColumns:       config.FlattenMetadataColumns,
+			FlattenMetadataColumnsPrefix: config.FlattenMetadataColumnsPrefix,
+		},
 	}
 }
 
@@ -276,19 +281,34 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 
 	// Connect with retry on transient errors (503/502 from proxy, Trino overload, timeouts)
 	err = retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
-		// Only create table in Connect when rawMode (structure known). Non-rawMode defers to first write or table must exist.
-		if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable && t.rawMode() {
-			if err := t.ensureTable(ctx); err != nil {
-				return fmt.Errorf("failed to ensure table exists: %w", err)
-			}
-		}
 		columns, err := t.getTableColumns(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get table columns: %w", err)
+			// Table may not exist yet when auto-creating flattened schema on first batch.
+			if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable && t.rawMode() && t.flattenMetadataColumns() {
+				t.deferredTableCreate = true
+				t.logger.Info("Deferring Trino table creation until first batch with metadata keys", "table", t.config.Table)
+			} else if t.config.AutoCreateTable != nil && *t.config.AutoCreateTable && t.rawMode() {
+				if err := t.ensureTable(ctx); err != nil {
+					return fmt.Errorf("failed to ensure table exists: %w", err)
+				}
+				columns, err = t.getTableColumns(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to get table columns: %w", err)
+				}
+			} else {
+				return fmt.Errorf("failed to get table columns: %w", err)
+			}
 		}
-		t.columnsMu.Lock()
-		t.tableColumns = columns
-		t.columnsMu.Unlock()
+		if len(columns) > 0 {
+			t.columnsMu.Lock()
+			t.tableColumns = columns
+			t.columnsMu.Unlock()
+			if t.rawMode() && t.flattenMetadataColumns() {
+				if err := t.loadTrinoFlattenMetaColumns(columns); err != nil {
+					return fmt.Errorf("table %s.%s.%s: %w", t.config.Catalog, t.config.Schema, t.config.Table, err)
+				}
+			}
+		}
 		if err := t.client.testConnection(ctx); err != nil {
 			return fmt.Errorf("failed to connect to Trino: %w", err)
 		}
@@ -681,8 +701,12 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 		t.columnsMu.Unlock()
 	}
 
+	if t.rawMode() && t.flattenMetadataColumns() {
+		if ok, _ := t.hasFlattenMetadataColumns(tableColumns); ok || t.deferredTableCreate {
+			return t.executeBatchFlattened(ctx, batch)
+		}
+	}
 	// Use raw mode only when configured AND table has (data or value)/_metadata columns.
-	// If rawMode is true but table has different schema (e.g. columnar), fall back to schema-based insert.
 	if t.rawMode() {
 		ok, dataCol := t.hasRawModeColumns(tableColumns)
 		if ok {

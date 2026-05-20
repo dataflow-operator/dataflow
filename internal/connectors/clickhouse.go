@@ -366,6 +366,7 @@ type ClickHouseSinkConnector struct {
 	connectorLogger
 	connectorMetadata
 	rawModeConfig
+	flattenMetadataSinkState
 	config         *v1.ClickHouseSinkSpec
 	conn           *sql.DB
 	firstWriteOnce sync.Once
@@ -377,7 +378,11 @@ func NewClickHouseSinkConnector(config *v1.ClickHouseSinkSpec) *ClickHouseSinkCo
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "clickhouse", connectorRole: "sink"},
-		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
+		rawModeConfig: rawModeConfig{
+			RawMode:                      config.RawMode,
+			FlattenMetadataColumns:       config.FlattenMetadataColumns,
+			FlattenMetadataColumnsPrefix: config.FlattenMetadataColumnsPrefix,
+		},
 	}
 }
 
@@ -404,8 +409,11 @@ func (c *ClickHouseSinkConnector) Connect(ctx context.Context) error {
 	c.conn = conn
 	c.logger.Info("Successfully connected to ClickHouse", "table", c.config.Table)
 
-	// Only create table in Connect when rawMode (structure known). Non-rawMode defers to first write.
-	if c.config.AutoCreateTable != nil && *c.config.AutoCreateTable && c.rawMode() {
+	if c.rawMode() && c.flattenMetadataColumns() {
+		if err := c.connectFlattenMetadata(ctx); err != nil {
+			return fmt.Errorf("failed to prepare flatten metadata table: %w", err)
+		}
+	} else if c.config.AutoCreateTable != nil && *c.config.AutoCreateTable && c.rawMode() {
 		if err := c.ensureTable(ctx); err != nil {
 			c.logger.Error(err, "Failed to ensure table exists", "table", c.config.Table)
 			return fmt.Errorf("failed to ensure table exists: %w", err)
@@ -827,6 +835,9 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 	flushBatch := func(batchCtx context.Context, msgs []*types.Message) error {
 		if len(msgs) == 0 {
 			return nil
+		}
+		if c.rawMode() && c.flattenMetadataColumns() {
+			return c.flushBatchFlattened(batchCtx, msgs)
 		}
 		if c.rawMode() {
 			return c.flushBatchRaw(batchCtx, msgs)

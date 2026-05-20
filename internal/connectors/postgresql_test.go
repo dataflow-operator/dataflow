@@ -313,7 +313,7 @@ func TestPostgreSQLSinkConnector_buildInsertForMessage_RawMode(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, query)
 	require.Len(t, values, 2)
-	assert.Contains(t, query, "value")
+	assert.Contains(t, query, "data")
 	assert.Contains(t, query, "_metadata")
 }
 
@@ -345,7 +345,7 @@ func TestPostgreSQLSinkConnector_buildInsertForMessage_RawMode_PlainMessage(t *t
 	require.NoError(t, err)
 	require.NotEmpty(t, query)
 	require.Len(t, values, 2)
-	assert.Contains(t, query, "value")
+	assert.Contains(t, query, "data")
 	assert.Contains(t, query, "_metadata")
 
 	// value should be the full data (id, name, category)

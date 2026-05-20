@@ -347,6 +347,33 @@ func validateNessieSink(n *NessieSinkSpec, f *field.Path) field.ErrorList {
 		all = append(all, validateSecretRef(n.SecretAccessKeySecretRef, f.Child("secretAccessKeySecretRef"))...)
 	}
 	all = append(all, validateNessieAuthConfig(string(n.AuthenticationType), n.BearerToken, n.TokenSecretRef, n.BasicAuth, f)...)
+	all = append(all, validateFlattenMetadataSpec(n.RawMode, n.FlattenMetadataColumns, n.FlattenMetadataColumnsPrefix, f)...)
+	return all
+}
+
+func validateFlattenMetadataSpec(rawMode, flatten *bool, prefix string, f *field.Path) field.ErrorList {
+	if flatten == nil || !*flatten {
+		return nil
+	}
+	var all field.ErrorList
+	if rawMode == nil || !*rawMode {
+		all = append(all, field.Invalid(f.Child("flattenMetadataColumns"), *flatten,
+			"flattenMetadataColumns requires rawMode to be true"))
+	}
+	if prefix != "" {
+		for i, r := range prefix {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+				all = append(all, field.Invalid(f.Child("flattenMetadataColumnsPrefix"), prefix,
+					"flattenMetadataColumnsPrefix may only contain letters, digits, and underscores"))
+				break
+			}
+			if i == 0 && r >= '0' && r <= '9' {
+				all = append(all, field.Invalid(f.Child("flattenMetadataColumnsPrefix"), prefix,
+					"flattenMetadataColumnsPrefix must not start with a digit"))
+				break
+			}
+		}
+	}
 	return all
 }
 
@@ -422,6 +449,7 @@ func validatePostgreSQLSink(p *PostgreSQLSinkSpec, f *field.Path) field.ErrorLis
 	if p.TableSecretRef != nil {
 		all = append(all, validateSecretRef(p.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
+	all = append(all, validateFlattenMetadataSpec(p.RawMode, p.FlattenMetadataColumns, p.FlattenMetadataColumnsPrefix, f)...)
 	return all
 }
 
@@ -455,6 +483,7 @@ func validateTrinoSink(t *TrinoSinkSpec, f *field.Path) field.ErrorList {
 	if t.TableSecretRef != nil {
 		all = append(all, validateSecretRef(t.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
+	all = append(all, validateFlattenMetadataSpec(t.RawMode, t.FlattenMetadataColumns, t.FlattenMetadataColumnsPrefix, f)...)
 	return all
 }
 
@@ -493,6 +522,7 @@ func validateClickHouseSink(c *ClickHouseSinkSpec, f *field.Path) field.ErrorLis
 	if c.TableSecretRef != nil {
 		all = append(all, validateSecretRef(c.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
+	all = append(all, validateFlattenMetadataSpec(c.RawMode, c.FlattenMetadataColumns, c.FlattenMetadataColumnsPrefix, f)...)
 	return all
 }
 

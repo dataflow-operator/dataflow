@@ -401,6 +401,7 @@ type PostgreSQLSinkConnector struct {
 	connectorLogger
 	connectorMetadata
 	rawModeConfig
+	flattenMetadataSinkState
 	config            *v1.PostgreSQLSinkSpec
 	conn              *pgx.Conn
 	firstWriteOnce    sync.Once
@@ -414,7 +415,11 @@ func NewPostgreSQLSinkConnector(config *v1.PostgreSQLSinkSpec) *PostgreSQLSinkCo
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "postgresql", connectorRole: "sink"},
-		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
+		rawModeConfig: rawModeConfig{
+			RawMode:                      config.RawMode,
+			FlattenMetadataColumns:       config.FlattenMetadataColumns,
+			FlattenMetadataColumnsPrefix: config.FlattenMetadataColumnsPrefix,
+		},
 	}
 }
 
@@ -440,10 +445,19 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 
 	// Auto-create table if enabled and RawMode (structure known at Connect time)
 	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable && p.rawMode() {
-		if err := p.ensureTable(ctx); err != nil {
+		if p.flattenMetadataColumns() {
+			if err := p.connectFlattenMetadata(ctx); err != nil {
+				p.RecordError("connect", "ensure_table_error")
+				return fmt.Errorf("failed to prepare flatten metadata table: %w", err)
+			}
+		} else if err := p.ensureTable(ctx); err != nil {
 			p.RecordError("connect", "ensure_table_error")
 			p.logger.Error(err, "Failed to ensure table exists", "table", p.config.Table)
 			return fmt.Errorf("failed to ensure table exists: %w", err)
+		}
+	} else if p.rawMode() && p.flattenMetadataColumns() {
+		if err := p.connectFlattenMetadata(ctx); err != nil {
+			return fmt.Errorf("failed to prepare flatten metadata table: %w", err)
 		}
 	}
 
@@ -488,7 +502,7 @@ func (p *PostgreSQLSinkConnector) hasJSONBColumn(ctx context.Context) (bool, err
 	return hasJSONB, err
 }
 
-// ensureTable creates the table if it doesn't exist (RawMode: value + _metadata structure)
+// ensureTable creates the table if it doesn't exist (RawMode: data + _metadata structure)
 func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	exists, err := p.tableExists(ctx)
 	if err != nil {
@@ -504,7 +518,7 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	createQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id SERIAL PRIMARY KEY,
-			value JSONB NOT NULL,
+			data JSONB NOT NULL,
 			_metadata JSONB,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -518,12 +532,12 @@ func (p *PostgreSQLSinkConnector) ensureTable(ctx context.Context) error {
 	}
 	trueVal := true
 	p.tableExistsCached = &trueVal
-	p.hasJSONBCached = nil // raw mode table has value, not data column
+	p.hasJSONBCached = &trueVal // raw mode table uses data JSONB column
 	p.logger.Info("Table created successfully", "table", p.config.Table)
 
 	_, tableName := ParseTableRef(p.config.Table)
-	indexName := quotePostgreSQLIdentifier("idx_" + tableName + "_value")
-	indexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (value)`, indexName, quotedTable)
+	indexName := quotePostgreSQLIdentifier("idx_" + tableName + "_data")
+	indexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (data)`, indexName, quotedTable)
 	_, err = p.conn.Exec(ctx, indexQuery)
 	if err != nil {
 		p.logger.Info("Failed to create index (non-critical)", "table", p.config.Table, "error", err)
@@ -905,15 +919,19 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 
 	upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
 
+	if p.rawMode() && p.flattenMetadataColumns() {
+		return p.buildFlattenInsertForMessage(ctx, msg)
+	}
+
 	if p.rawMode() {
-		var valueJSON, metaJSON []byte
+		var dataJSON, metaJSON []byte
 		if data["value"] != nil {
-			// Source sent raw format: {"value": ..., "_metadata": ...}
-			valueJSON, _ = json.Marshal(data["value"])
+			// Pre-wrapped message: {"value": ..., "_metadata": ...} (wire format from upstream sinks)
+			dataJSON, _ = json.Marshal(data["value"])
 			metaJSON, _ = json.Marshal(data["_metadata"])
 		} else {
-			// Source sent plain format: {"id": 1, "name": "foo", ...} — wrap as value, use msg.Metadata for _metadata
-			valueJSON, _ = json.Marshal(data)
+			// Plain message — store body in data column, msg.Metadata in _metadata
+			dataJSON, _ = json.Marshal(data)
 			meta := map[string]interface{}{}
 			if msg != nil && msg.Metadata != nil {
 				for k, v := range msg.Metadata {
@@ -924,11 +942,11 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 		}
 		quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 		if upsertMode {
-			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb) ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value, _metadata = EXCLUDED._metadata", quotedTable)
+			query = fmt.Sprintf("INSERT INTO %s (data, _metadata) VALUES ($1::jsonb, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, _metadata = EXCLUDED._metadata", quotedTable)
 		} else {
-			query = fmt.Sprintf("INSERT INTO %s (value, _metadata) VALUES ($1::jsonb, $2::jsonb)", quotedTable)
+			query = fmt.Sprintf("INSERT INTO %s (data, _metadata) VALUES ($1::jsonb, $2::jsonb)", quotedTable)
 		}
-		values = []interface{}{string(valueJSON), string(metaJSON)}
+		values = []interface{}{string(dataJSON), string(metaJSON)}
 		return query, values, nil
 	}
 

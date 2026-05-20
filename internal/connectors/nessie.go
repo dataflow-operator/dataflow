@@ -468,9 +468,12 @@ type NessieSinkConnector struct {
 	connectorLogger
 	connectorMetadata
 	rawModeConfig
+	flattenMetadataSinkState
 	config *v1.NessieSinkSpec
 	cat    *rest.Catalog
 	tbl    *table.Table
+	// metaColumnTypes maps flattened column name to Iceberg type (Nessie-specific).
+	metaColumnTypes map[string]iceberg.Type
 }
 
 // NewNessieSinkConnector creates a new Nessie sink connector.
@@ -479,8 +482,31 @@ func NewNessieSinkConnector(config *v1.NessieSinkSpec) *NessieSinkConnector {
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
 		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "sink"},
-		rawModeConfig:     rawModeConfig{RawMode: config.RawMode},
+		rawModeConfig: rawModeConfig{
+			RawMode:                      config.RawMode,
+			FlattenMetadataColumns:       config.FlattenMetadataColumns,
+			FlattenMetadataColumnsPrefix: config.FlattenMetadataColumnsPrefix,
+		},
 	}
+}
+
+func nessieMetaColumnTypesFromTable(tbl *table.Table, metaColumns []string) map[string]iceberg.Type {
+	types := make(map[string]iceberg.Type, len(metaColumns))
+	if tbl == nil || tbl.Schema() == nil {
+		for _, col := range metaColumns {
+			types[col] = iceberg.PrimitiveTypes.String
+		}
+		return types
+	}
+	schema := tbl.Schema()
+	for _, col := range metaColumns {
+		if f, ok := schema.FindFieldByName(col); ok {
+			types[col] = f.Type
+		} else {
+			types[col] = iceberg.PrimitiveTypes.String
+		}
+	}
+	return types
 }
 
 func nessieIcebergSchema(rawMode bool) *iceberg.Schema {
@@ -549,17 +575,30 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 			return fmt.Errorf("failed to load table: %w", err)
 		}
 		if c.rawMode() {
-			if err := validateNessieRawModeSchema(tbl); err != nil {
+			if c.flattenMetadataColumns() {
+				metaCols, err := nessieFlattenMetaColumnNamesFromTable(tbl)
+				if err != nil {
+					return fmt.Errorf("table %s.%s: %w", c.config.Namespace, c.config.Table, err)
+				}
+				c.metaColumnNames = metaCols
+				c.metaColumnTypes = nessieMetaColumnTypesFromTable(tbl, metaCols)
+			} else if err := validateNessieRawModeSchema(tbl); err != nil {
 				return fmt.Errorf("table %s.%s: %w", c.config.Namespace, c.config.Table, err)
 			}
 		}
 	} else if c.config.AutoCreateTable != nil && *c.config.AutoCreateTable {
-		schema := nessieIcebergSchema(c.rawMode())
-		tbl, err = cat.CreateTable(ctx, ident, schema)
-		if err != nil {
-			return fmt.Errorf("failed to create table: %w", err)
+		if c.rawMode() && c.flattenMetadataColumns() {
+			c.deferredTableCreate = true
+			c.logger.Info("Deferring Iceberg table creation until first batch with metadata keys",
+				"namespace", c.config.Namespace, "table", c.config.Table)
+		} else {
+			schema := nessieIcebergSchema(c.rawMode())
+			tbl, err = cat.CreateTable(ctx, ident, schema)
+			if err != nil {
+				return fmt.Errorf("failed to create table: %w", err)
+			}
+			c.logger.Info("Created Iceberg table", "namespace", c.config.Namespace, "table", c.config.Table, "rawMode", c.rawMode())
 		}
-		c.logger.Info("Created Iceberg table", "namespace", c.config.Namespace, "table", c.config.Table, "rawMode", c.rawMode())
 	} else {
 		return fmt.Errorf("table %s.%s does not exist and AutoCreateTable is not set", c.config.Namespace, c.config.Table)
 	}
@@ -572,7 +611,10 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 
 // Write writes messages to the Iceberg table via Nessie.
 func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {
-	if c.tbl == nil {
+	if c.cat == nil {
+		return fmt.Errorf("not connected, call Connect first")
+	}
+	if c.tbl == nil && !c.deferredTableCreate {
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
@@ -606,7 +648,10 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		if len(msgs) == 0 {
 			return nil
 		}
-		arrowTbl, err := messagesToArrowTable(msgs, c.rawMode())
+		if err := c.ensureFlattenMetadataTable(ctx, msgs); err != nil {
+			return err
+		}
+		arrowTbl, err := c.buildArrowTableFromMessages(msgs)
 		if err != nil {
 			return err
 		}
@@ -758,7 +803,55 @@ func (c *NessieSinkConnector) Close() error {
 	c.logger.Info("Closing Nessie sink connection", "table", c.config.Table)
 	c.tbl = nil
 	c.cat = nil
+	c.flattenMetadataSinkState = flattenMetadataSinkState{}
+	c.metaColumnTypes = nil
 	return nil
+}
+
+func (c *NessieSinkConnector) ensureFlattenMetadataTable(ctx context.Context, msgs []*types.Message) error {
+	if !c.flattenMetadataColumns() || c.tbl != nil {
+		return nil
+	}
+	if !c.deferredTableCreate {
+		return fmt.Errorf("flattenMetadataColumns: table is not loaded")
+	}
+	cols, err := collectFlattenMetadataColumnNames(msgs, c.flattenMetadataPrefix())
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return fmt.Errorf("flattenMetadataColumns: no metadata keys found in first batch")
+	}
+	colTypes := inferFlattenColumnTypes(msgs, cols, c.flattenMetadataPrefix())
+	schema := nessieIcebergSchemaFlattened(cols, colTypes)
+	ident := catalog.ToIdentifier(c.config.Namespace, c.config.Table)
+	tbl, err := c.cat.CreateTable(ctx, ident, schema)
+	if err != nil {
+		return fmt.Errorf("failed to create flattened metadata table: %w", err)
+	}
+	c.tbl = tbl
+	c.metaColumnNames = cols
+	c.metaColumnTypes = colTypes
+	c.deferredTableCreate = false
+	c.logger.Info("Created Iceberg table with flattened metadata columns",
+		"namespace", c.config.Namespace,
+		"table", c.config.Table,
+		"columns", cols)
+	return nil
+}
+
+func (c *NessieSinkConnector) buildArrowTableFromMessages(msgs []*types.Message) (arrow.Table, error) {
+	if c.flattenMetadataColumns() {
+		if len(c.metaColumnNames) == 0 {
+			return nil, fmt.Errorf("flattenMetadataColumns: metadata columns not initialized")
+		}
+		colTypes := c.metaColumnTypes
+		if colTypes == nil {
+			colTypes = inferFlattenColumnTypes(msgs, c.metaColumnNames, c.flattenMetadataPrefix())
+		}
+		return messagesToArrowTableFlattened(msgs, c.metaColumnNames, colTypes, c.flattenMetadataPrefix(), c.logger)
+	}
+	return messagesToArrowTable(msgs, c.rawMode())
 }
 
 // arrowTableToMessages converts an Arrow table to types.Message slice.
@@ -793,6 +886,35 @@ func arrowTableToMessages(tbl arrow.Table, namespace, tableName string, rawMode 
 		}
 		var jsonData []byte
 		var err error
+		isFlatten, flattenPrefix, metaCols := detectFlattenMetadataFromArrowFields(cols)
+		if isFlatten {
+			var value interface{}
+			dataVal := rowMap["data"]
+			if s, ok := dataVal.(string); ok {
+				if uerr := json.Unmarshal([]byte(s), &value); uerr != nil {
+					value = dataVal
+				}
+			} else {
+				value = dataVal
+			}
+			meta := make(map[string]interface{})
+			for _, col := range metaCols {
+				key := metadataKeyFromColumn(col, flattenPrefix)
+				meta[key] = rowMap[col]
+			}
+			jsonData, err = buildRawModeJSON(value, meta)
+			if err != nil {
+				continue
+			}
+			msg := types.NewMessage(jsonData)
+			for k, v := range meta {
+				msg.Metadata[k] = v
+			}
+			msg.Metadata["namespace"] = namespace
+			msg.Metadata["table"] = tableName
+			msgs = append(msgs, msg)
+			continue
+		}
 		if rawMode {
 			metadata := map[string]interface{}{"namespace": namespace, "table": tableName}
 			jsonData, err = buildRawModeJSON(rowMap, metadata)

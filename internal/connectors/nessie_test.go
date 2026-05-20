@@ -27,7 +27,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/iceberg-go"
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
@@ -370,4 +372,82 @@ func TestValidateNessieRawModeSchema(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "nil")
 	})
+}
+
+func TestNessieIcebergSchemaFlattened(t *testing.T) {
+	cols := []string{"kafka_key", "kafka_offset", "kafka_topic"}
+	colTypes := map[string]iceberg.Type{
+		"kafka_key":    iceberg.PrimitiveTypes.String,
+		"kafka_offset": iceberg.PrimitiveTypes.Int64,
+		"kafka_topic":  iceberg.PrimitiveTypes.String,
+	}
+	schema := nessieIcebergSchemaFlattened(cols, colTypes)
+	require.NotNil(t, schema)
+	assert.Equal(t, 4, schema.NumFields())
+	_, ok := schema.FindFieldByName("kafka_offset")
+	assert.True(t, ok)
+}
+
+func TestCollectFlattenMetadataColumnNames(t *testing.T) {
+	msg := types.NewMessage([]byte(`{"id":1}`))
+	msg.Metadata["key"] = "k1"
+	msg.Metadata["offset"] = int64(42)
+	msg.Metadata["topic"] = "events"
+
+	cols, err := collectFlattenMetadataColumnNames([]*types.Message{msg}, "kafka_")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kafka_key", "kafka_offset", "kafka_topic"}, cols)
+}
+
+func TestMessagesToArrowTable_FlattenMetadata(t *testing.T) {
+	msg := types.NewMessage([]byte(`{"id":1,"event":"login"}`))
+	msg.Metadata["offset"] = int64(39700093)
+	msg.Metadata["partition"] = int32(2)
+	msg.Metadata["topic"] = "prod.events"
+	msg.Metadata["timestamp"] = "2026-05-20T08:00:07.486Z"
+	msg.Metadata["key"] = "\"11018455\""
+
+	cols := []string{"kafka_key", "kafka_offset", "kafka_partition", "kafka_timestamp", "kafka_topic"}
+	colTypes := inferFlattenColumnTypes([]*types.Message{msg}, cols, "kafka_")
+
+	tbl, err := messagesToArrowTableFlattened([]*types.Message{msg}, cols, colTypes, "kafka_", logr.Discard())
+	require.NoError(t, err)
+	defer tbl.Release()
+	require.Equal(t, int64(6), tbl.NumCols())
+	require.Equal(t, int64(1), tbl.NumRows())
+
+	schema := tbl.Schema()
+	colByName := func(name string) arrow.Array {
+		for i, f := range schema.Fields() {
+			if f.Name == name {
+				return tbl.Column(i).Data().Chunk(0)
+			}
+		}
+		t.Fatalf("column %q not found", name)
+		return nil
+	}
+
+	dataCol := colByName("data").(*array.String)
+	assert.JSONEq(t, `{"id":1,"event":"login"}`, dataCol.Value(0))
+
+	assert.Equal(t, int32(39700093), valueAt(colByName("kafka_offset"), 0))
+	assert.Equal(t, int32(2), valueAt(colByName("kafka_partition"), 0))
+	assert.Equal(t, "\"11018455\"", valueAt(colByName("kafka_key"), 0))
+}
+
+func TestDetectFlattenMetadataFromArrowFields(t *testing.T) {
+	fields := []arrow.Field{
+		{Name: "data", Type: arrow.BinaryTypes.String},
+		{Name: "kafka_offset", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "kafka_topic", Type: arrow.BinaryTypes.String},
+	}
+	isFlatten, prefix, cols := detectFlattenMetadataFromArrowFields(fields)
+	assert.True(t, isFlatten)
+	assert.Equal(t, "kafka_", prefix)
+	assert.Equal(t, []string{"kafka_offset", "kafka_topic"}, cols)
+}
+
+func TestMetadataKeyFromColumn(t *testing.T) {
+	assert.Equal(t, "offset", metadataKeyFromColumn("kafka_offset", "kafka_"))
+	assert.Equal(t, "topic", metadataKeyFromColumn("topic", ""))
 }

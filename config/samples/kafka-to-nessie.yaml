@@ -21,4 +21,6 @@ spec:
       table: events
       batchSize: 100
       autoCreateTable: true
-      rawMode: true  # data + _metadata columns (Kafka offset/partition/topic in _metadata)
+      rawMode: true
+      flattenMetadataColumns: true
+      flattenMetadataColumnsPrefix: kafka_

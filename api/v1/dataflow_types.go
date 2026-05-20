@@ -581,6 +581,8 @@ type NessieSinkSpec struct {
 	// +optional
 	RawMode *bool `json:"rawMode,omitempty"`
 
+	FlattenMetadataSpec `json:",inline"`
+
 	// BasicAuth for Nessie/Iceberg REST.
 	// +optional
 	BasicAuth *BasicAuthConfig `json:"basicAuth,omitempty"`
@@ -629,6 +631,18 @@ type NessieSinkSpec struct {
 	// Same namespace rules as AccessKeySecretRef.
 	// +optional
 	SecretAccessKeySecretRef *SecretRef `json:"secretAccessKeySecretRef,omitempty"`
+}
+
+// FlattenMetadataSpec configures writing msg.Metadata as separate columns instead of a single _metadata field.
+// Requires rawMode on the sink. Supported by PostgreSQL, Trino, ClickHouse, and Nessie sinks.
+type FlattenMetadataSpec struct {
+	// FlattenMetadataColumns when true, writes each metadata key as a separate column instead of _metadata.
+	// +optional
+	FlattenMetadataColumns *bool `json:"flattenMetadataColumns,omitempty"`
+
+	// FlattenMetadataColumnsPrefix is prepended to metadata keys for column names (e.g. kafka_).
+	// +optional
+	FlattenMetadataColumnsPrefix string `json:"flattenMetadataColumnsPrefix,omitempty"`
 }
 
 // KafkaSinkSpec defines Kafka sink configuration
@@ -691,10 +705,12 @@ type PostgreSQLSinkSpec struct {
 	// +optional
 	SoftDeleteColumn *string `json:"softDeleteColumn,omitempty"`
 
-	// RawMode when true, expects messages in format {"value": <data>, "_metadata": {...}}. Table is created with value JSONB and _metadata JSONB columns.
+	// RawMode when true, expects messages in format {"value": <data>, "_metadata": {...}} or plain body with msg.Metadata. Table is created with data JSONB and _metadata JSONB columns.
 	// When false, table structure is inferred from the first message (replicates source structure).
 	// +optional
 	RawMode *bool `json:"rawMode,omitempty"`
+
+	FlattenMetadataSpec `json:",inline"`
 
 	// ConnectionStringSecretRef references a Kubernetes secret for connection string
 	// +optional
@@ -735,6 +751,8 @@ type TrinoSinkSpec struct {
 	// When false (default), uses columnar format matching message keys to table columns.
 	// +optional
 	RawMode *bool `json:"rawMode,omitempty"`
+
+	FlattenMetadataSpec `json:",inline"`
 
 	// Keycloak authentication configuration
 	// +optional
@@ -781,6 +799,8 @@ type ClickHouseSinkSpec struct {
 	// When false (default), creates table from message structure (columnar, replicates source schema).
 	// +optional
 	RawMode *bool `json:"rawMode,omitempty"`
+
+	FlattenMetadataSpec `json:",inline"`
 
 	// ConnectionStringSecretRef references a Kubernetes secret for connection string
 	// +optional
