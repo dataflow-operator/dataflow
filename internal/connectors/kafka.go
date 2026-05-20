@@ -819,7 +819,7 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 			msg.Metadata["partition"] = message.Partition
 			msg.Metadata["offset"] = message.Offset
 			msg.Metadata["key"] = string(message.Key)
-			msg.Metadata["timestamp"] = message.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+			msg.Metadata["timestamp"] = message.Timestamp.UTC()
 			// Commit offset only after the message is successfully written to the sink.
 			// Mark is queued and applied in this goroutine (not from sink goroutine).
 			msg.Ack = func() { markPending(message) }

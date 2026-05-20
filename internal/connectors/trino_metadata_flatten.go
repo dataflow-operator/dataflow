@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dataflow-operator/dataflow/internal/types"
 )
@@ -83,9 +84,10 @@ func (t *TrinoSinkConnector) ensureTrinoFlattenTable(ctx context.Context, msgs [
 	quotedSchema := quoteTrinoIdentifier(t.config.Schema)
 	quotedTable := quoteTrinoIdentifier(t.config.Table)
 
+	categories := inferFlattenColumnCategories(msgs, cols, t.flattenMetadataPrefix())
 	colDefs := []string{`"data" VARCHAR(1048576)`}
 	for _, col := range cols {
-		colDefs = append(colDefs, fmt.Sprintf("%s %s", quoteTrinoIdentifier(col), trinoTypeForCategory(flattenCategoryString)))
+		colDefs = append(colDefs, fmt.Sprintf("%s %s", quoteTrinoIdentifier(col), trinoTypeForCategory(categories[col])))
 	}
 	createQuery := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s.%s.%s (%s) WITH (format = 'ORC')",
@@ -145,7 +147,15 @@ func (t *TrinoSinkConnector) executeBatchFlattened(ctx context.Context, batch []
 				parts = append(parts, "NULL")
 				continue
 			}
+			if isTimestampMetadataKey(key) {
+				if ts, ok := parseFlattenTimestampValue(v); ok {
+					parts = append(parts, "TIMESTAMP '"+ts.UTC().Format("2006-01-02 15:04:05.000")+"'")
+					continue
+				}
+			}
 			switch val := v.(type) {
+			case time.Time:
+				parts = append(parts, "TIMESTAMP '"+val.UTC().Format("2006-01-02 15:04:05.000")+"'")
 			case string:
 				parts = append(parts, "'"+strings.ReplaceAll(val, "'", "''")+"'")
 			case bool:

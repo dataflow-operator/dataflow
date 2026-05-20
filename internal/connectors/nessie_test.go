@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -375,17 +376,21 @@ func TestValidateNessieRawModeSchema(t *testing.T) {
 }
 
 func TestNessieIcebergSchemaFlattened(t *testing.T) {
-	cols := []string{"kafka_key", "kafka_offset", "kafka_topic"}
+	cols := []string{"kafka_key", "kafka_offset", "kafka_timestamp", "kafka_topic"}
 	colTypes := map[string]iceberg.Type{
-		"kafka_key":    iceberg.PrimitiveTypes.String,
-		"kafka_offset": iceberg.PrimitiveTypes.Int64,
-		"kafka_topic":  iceberg.PrimitiveTypes.String,
+		"kafka_key":       iceberg.PrimitiveTypes.String,
+		"kafka_offset":    iceberg.PrimitiveTypes.Int64,
+		"kafka_timestamp": iceberg.PrimitiveTypes.TimestampTz,
+		"kafka_topic":     iceberg.PrimitiveTypes.String,
 	}
 	schema := nessieIcebergSchemaFlattened(cols, colTypes)
 	require.NotNil(t, schema)
-	assert.Equal(t, 4, schema.NumFields())
+	assert.Equal(t, 5, schema.NumFields())
 	_, ok := schema.FindFieldByName("kafka_offset")
 	assert.True(t, ok)
+	tsField, ok := schema.FindFieldByName("kafka_timestamp")
+	require.True(t, ok)
+	assert.Equal(t, "timestamptz", tsField.Type.Type())
 }
 
 func TestCollectFlattenMetadataColumnNames(t *testing.T) {
@@ -404,11 +409,12 @@ func TestMessagesToArrowTable_FlattenMetadata(t *testing.T) {
 	msg.Metadata["offset"] = int64(39700093)
 	msg.Metadata["partition"] = int32(2)
 	msg.Metadata["topic"] = "prod.events"
-	msg.Metadata["timestamp"] = "2026-05-20T08:00:07.486Z"
+	msg.Metadata["timestamp"] = time.Date(2026, 5, 20, 8, 0, 7, 486000000, time.UTC)
 	msg.Metadata["key"] = "\"11018455\""
 
 	cols := []string{"kafka_key", "kafka_offset", "kafka_partition", "kafka_timestamp", "kafka_topic"}
 	colTypes := inferFlattenColumnTypes([]*types.Message{msg}, cols, "kafka_")
+	assert.Equal(t, "timestamptz", colTypes["kafka_timestamp"].Type())
 
 	tbl, err := messagesToArrowTableFlattened([]*types.Message{msg}, cols, colTypes, "kafka_", logr.Discard())
 	require.NoError(t, err)
@@ -433,6 +439,10 @@ func TestMessagesToArrowTable_FlattenMetadata(t *testing.T) {
 	assert.Equal(t, int32(39700093), valueAt(colByName("kafka_offset"), 0))
 	assert.Equal(t, int32(2), valueAt(colByName("kafka_partition"), 0))
 	assert.Equal(t, "\"11018455\"", valueAt(colByName("kafka_key"), 0))
+
+	ts, ok := valueAt(colByName("kafka_timestamp"), 0).(time.Time)
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 5, 20, 8, 0, 7, 486000000, time.UTC), ts)
 }
 
 func TestDetectFlattenMetadataFromArrowFields(t *testing.T) {

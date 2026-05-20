@@ -329,13 +329,13 @@ func TestConsumeClaim_SetsTimestampMetadata(t *testing.T) {
 
 	select {
 	case msg := <-msgChan:
-		ts, ok := msg.Metadata["timestamp"].(string)
+		ts, ok := msg.Metadata["timestamp"].(time.Time)
 		if !ok {
-			t.Fatal("timestamp not found in metadata or not a string")
+			t.Fatal("timestamp not found in metadata or not a time.Time")
 		}
-		want := "2024-02-27T10:13:20.000Z"
-		if ts != want {
-			t.Errorf("timestamp = %q, want %q", ts, want)
+		want := time.Date(2024, 2, 27, 10, 13, 20, 0, time.UTC)
+		if !ts.Equal(want) {
+			t.Errorf("timestamp = %v, want %v", ts, want)
 		}
 
 		if topic, _ := msg.Metadata["topic"].(string); topic != "test-topic" {
@@ -355,26 +355,26 @@ func TestConsumeClaim_SetsTimestampMetadata(t *testing.T) {
 	}
 }
 
-func TestConsumeClaim_TimestampFormatRFC3339Milli(t *testing.T) {
+func TestConsumeClaim_TimestampMetadataUTC(t *testing.T) {
 	tests := []struct {
 		name      string
 		timestamp time.Time
-		want      string
+		want      time.Time
 	}{
 		{
 			name:      "zero millis",
 			timestamp: time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
-			want:      "2024-01-15T08:00:00.000Z",
+			want:      time.Date(2024, 1, 15, 8, 0, 0, 0, time.UTC),
 		},
 		{
 			name:      "with millis",
 			timestamp: time.Date(2024, 6, 1, 12, 30, 45, 123000000, time.UTC),
-			want:      "2024-06-01T12:30:45.123Z",
+			want:      time.Date(2024, 6, 1, 12, 30, 45, 123000000, time.UTC),
 		},
 		{
 			name:      "non-UTC converted to UTC",
 			timestamp: time.Date(2024, 3, 10, 15, 0, 0, 0, time.FixedZone("EST", -5*3600)),
-			want:      "2024-03-10T20:00:00.000Z",
+			want:      time.Date(2024, 3, 10, 20, 0, 0, 0, time.UTC),
 		},
 	}
 
@@ -409,12 +409,12 @@ func TestConsumeClaim_TimestampFormatRFC3339Milli(t *testing.T) {
 			}
 
 			msg := <-msgChan
-			ts, ok := msg.Metadata["timestamp"].(string)
+			ts, ok := msg.Metadata["timestamp"].(time.Time)
 			if !ok {
-				t.Fatal("timestamp not found in metadata or not a string")
+				t.Fatal("timestamp not found in metadata or not a time.Time")
 			}
-			if ts != tt.want {
-				t.Errorf("timestamp = %q, want %q", ts, tt.want)
+			if !ts.Equal(tt.want) {
+				t.Errorf("timestamp = %v, want %v", ts, tt.want)
 			}
 		})
 	}

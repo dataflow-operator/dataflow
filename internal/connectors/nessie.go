@@ -949,6 +949,19 @@ func valueAt(arr arrow.Array, i int) interface{} {
 		return a.Value(i)
 	case *array.Boolean:
 		return a.Value(i)
+	case *array.Timestamp:
+		if a.IsNull(i) {
+			return nil
+		}
+		tsType, ok := a.DataType().(*arrow.TimestampType)
+		if !ok {
+			return a.Value(i)
+		}
+		toTime, err := tsType.GetToTimeFunc()
+		if err != nil {
+			return a.Value(i)
+		}
+		return toTime(a.Value(i)).UTC()
 	case *array.Binary:
 		return a.Value(i)
 	case *array.LargeString:

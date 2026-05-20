@@ -22,6 +22,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/iceberg-go"
@@ -44,7 +45,54 @@ const (
 	flattenCategoryInt64
 	flattenCategoryBool
 	flattenCategoryFloat64
+	flattenCategoryTimestamp
 )
+
+// kafkaMetadataTimestampLayout is the legacy string format from Kafka source before time.Time metadata.
+const kafkaMetadataTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
+
+var flattenTimestampArrowType = &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
+
+func isTimestampMetadataKey(key string) bool {
+	return key == "timestamp"
+}
+
+func parseFlattenTimestampValue(v interface{}) (time.Time, bool) {
+	switch val := v.(type) {
+	case time.Time:
+		return val.UTC(), true
+	case string:
+		if val == "" {
+			return time.Time{}, false
+		}
+		if t, err := time.Parse(time.RFC3339Nano, val); err == nil {
+			return t.UTC(), true
+		}
+		if t, err := time.Parse(time.RFC3339, val); err == nil {
+			return t.UTC(), true
+		}
+		if t, err := time.Parse(kafkaMetadataTimestampLayout, val); err == nil {
+			return t.UTC(), true
+		}
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
+	}
+}
+
+func inferFlattenValueCategoryForKey(key string, v interface{}) flattenValueCategory {
+	if isTimestampMetadataKey(key) {
+		if _, ok := v.(time.Time); ok {
+			return flattenCategoryTimestamp
+		}
+		if s, ok := v.(string); ok {
+			if _, ok := parseFlattenTimestampValue(s); ok {
+				return flattenCategoryTimestamp
+			}
+		}
+	}
+	return inferFlattenValueCategory(v)
+}
 
 func metadataColumnName(key, prefix string) string {
 	return prefix + key
@@ -118,6 +166,8 @@ func inferFlattenValueCategory(v interface{}) flattenValueCategory {
 	switch val := v.(type) {
 	case nil:
 		return flattenCategoryString
+	case time.Time:
+		return flattenCategoryTimestamp
 	case bool:
 		return flattenCategoryBool
 	case int:
@@ -161,8 +211,10 @@ func mergeFlattenCategories(current, next flattenValueCategory) flattenValueCate
 			return 3
 		case flattenCategoryFloat64:
 			return 4
-		default:
+		case flattenCategoryTimestamp:
 			return 5
+		default:
+			return 6
 		}
 	}
 	if rank(next) > rank(current) {
@@ -181,6 +233,8 @@ func flattenCategoryToArrowType(cat flattenValueCategory) arrow.DataType {
 		return arrow.PrimitiveTypes.Int64
 	case flattenCategoryFloat64:
 		return arrow.PrimitiveTypes.Float64
+	case flattenCategoryTimestamp:
+		return flattenTimestampArrowType
 	default:
 		return arrow.BinaryTypes.String
 	}
@@ -196,6 +250,8 @@ func flattenCategoryToIcebergType(cat flattenValueCategory) iceberg.Type {
 		return iceberg.PrimitiveTypes.Int64
 	case flattenCategoryFloat64:
 		return iceberg.PrimitiveTypes.Float64
+	case flattenCategoryTimestamp:
+		return iceberg.PrimitiveTypes.TimestampTz
 	default:
 		return iceberg.PrimitiveTypes.String
 	}
@@ -217,7 +273,7 @@ func inferFlattenColumnCategories(msgs []*types.Message, columnNames []string, p
 			if _, ok := allowed[col]; !ok {
 				continue
 			}
-			cat := inferFlattenValueCategory(v)
+			cat := inferFlattenValueCategoryForKey(k, v)
 			if existing, ok := types[col]; ok {
 				types[col] = mergeFlattenCategories(existing, cat)
 			} else {
@@ -252,18 +308,41 @@ func postgreSQLTypeForCategory(cat flattenValueCategory) string {
 		return "BIGINT"
 	case flattenCategoryFloat64:
 		return "DOUBLE PRECISION"
+	case flattenCategoryTimestamp:
+		return "TIMESTAMPTZ"
 	default:
 		return "TEXT"
 	}
 }
 
-func trinoTypeForCategory(flattenValueCategory) string {
-	return "VARCHAR(1048576)"
+func trinoTypeForCategory(cat flattenValueCategory) string {
+	switch cat {
+	case flattenCategoryBool:
+		return "BOOLEAN"
+	case flattenCategoryInt32:
+		return "INTEGER"
+	case flattenCategoryInt64:
+		return "BIGINT"
+	case flattenCategoryFloat64:
+		return "DOUBLE"
+	case flattenCategoryTimestamp:
+		return "TIMESTAMP(6) WITH TIME ZONE"
+	default:
+		return "VARCHAR(1048576)"
+	}
 }
 
 func flattenMetadataValueForSQL(v interface{}) interface{} {
 	if v == nil {
 		return nil
+	}
+	if t, ok := v.(time.Time); ok {
+		return t.UTC()
+	}
+	if s, ok := v.(string); ok {
+		if parsed, ok := parseFlattenTimestampValue(s); ok {
+			return parsed
+		}
 	}
 	return v
 }

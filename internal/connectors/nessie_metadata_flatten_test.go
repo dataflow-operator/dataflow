@@ -29,6 +29,7 @@ func TestArrowTypeForIceberg(t *testing.T) {
 	assert.Equal(t, arrow.PrimitiveTypes.Int32, arrowTypeForIceberg(iceberg.PrimitiveTypes.Int32))
 	assert.Equal(t, arrow.PrimitiveTypes.Int64, arrowTypeForIceberg(iceberg.PrimitiveTypes.Int64))
 	assert.Equal(t, arrow.BinaryTypes.String, arrowTypeForIceberg(iceberg.PrimitiveTypes.String))
+	assert.True(t, arrow.TypeEqual(flattenTimestampArrowType, arrowTypeForIceberg(iceberg.PrimitiveTypes.TimestampTz)))
 }
 
 func TestInferFlattenColumnTypes_OffsetInt32(t *testing.T) {

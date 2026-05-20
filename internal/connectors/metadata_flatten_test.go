@@ -18,6 +18,7 @@ package connectors
 
 import (
 	"testing"
+	"time"
 
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/stretchr/testify/assert"
@@ -44,9 +45,30 @@ func TestInferFlattenColumnCategories_IntMetadata(t *testing.T) {
 	assert.Equal(t, flattenCategoryInt32, cats["kafka_partition"])
 }
 
+func TestInferFlattenColumnCategories_TimestampMetadataKey(t *testing.T) {
+	msg := types.NewMessage([]byte(`{}`))
+	msg.Metadata["timestamp"] = time.Date(2026, 5, 20, 8, 0, 7, 486000000, time.UTC)
+
+	cats := inferFlattenColumnCategories([]*types.Message{msg}, []string{"kafka_timestamp"}, "kafka_")
+	assert.Equal(t, flattenCategoryTimestamp, cats["kafka_timestamp"])
+}
+
+func TestInferFlattenColumnCategories_TimestampStringLegacy(t *testing.T) {
+	msg := types.NewMessage([]byte(`{}`))
+	msg.Metadata["timestamp"] = "2026-05-20T08:00:07.486Z"
+
+	cats := inferFlattenColumnCategories([]*types.Message{msg}, []string{"kafka_timestamp"}, "kafka_")
+	assert.Equal(t, flattenCategoryTimestamp, cats["kafka_timestamp"])
+}
+
 func TestPostgreSQLTypeForCategory(t *testing.T) {
 	assert.Equal(t, "BIGINT", postgreSQLTypeForCategory(flattenCategoryInt64))
 	assert.Equal(t, "TEXT", postgreSQLTypeForCategory(flattenCategoryString))
+	assert.Equal(t, "TIMESTAMPTZ", postgreSQLTypeForCategory(flattenCategoryTimestamp))
+}
+
+func TestTrinoTypeForCategory(t *testing.T) {
+	assert.Equal(t, "TIMESTAMP(6) WITH TIME ZONE", trinoTypeForCategory(flattenCategoryTimestamp))
 }
 
 func TestRawModeConfig_FlattenHelpers(t *testing.T) {

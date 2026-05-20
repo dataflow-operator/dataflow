@@ -100,6 +100,8 @@ func inferClickHouseTypeFromCategory(cat flattenValueCategory) string {
 		return "Int64"
 	case flattenCategoryFloat64:
 		return "Float64"
+	case flattenCategoryTimestamp:
+		return "DateTime64(3, 'UTC')"
 	default:
 		return "String"
 	}

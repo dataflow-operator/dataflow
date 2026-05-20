@@ -21,6 +21,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -109,8 +110,10 @@ func icebergTypeRank(t iceberg.Type) int {
 		return 3
 	case "float", "double":
 		return 4
-	default:
+	case "timestamptz", "timestamp":
 		return 5
+	default:
+		return 6
 	}
 }
 
@@ -190,9 +193,15 @@ func arrowTypeForIceberg(t iceberg.Type) arrow.DataType {
 		return arrow.PrimitiveTypes.Float32
 	case "double":
 		return arrow.PrimitiveTypes.Float64
+	case "timestamptz", "timestamp":
+		return flattenTimestampArrowType
 	default:
 		return arrow.BinaryTypes.String
 	}
+}
+
+func timeToArrowTimestamp(t time.Time) arrow.Timestamp {
+	return arrow.Timestamp(t.UTC().UnixMicro())
 }
 
 func appendFlattenMetadataValue(b array.Builder, v interface{}) {
@@ -250,6 +259,12 @@ func appendFlattenMetadataValue(b array.Builder, v interface{}) {
 		default:
 			builder.AppendNull()
 		}
+	case *array.TimestampBuilder:
+		if t, ok := parseFlattenTimestampValue(v); ok {
+			builder.Append(timeToArrowTimestamp(t))
+		} else {
+			builder.AppendNull()
+		}
 	default:
 		b.AppendNull()
 	}
@@ -273,15 +288,17 @@ func messagesToArrowTableFlattened(
 	for i, col := range metaColumns {
 		at := flattenCategoryToArrowType(categories[col])
 		arrowFields = append(arrowFields, arrow.Field{Name: col, Type: at, Nullable: true})
-		switch at {
-		case arrow.FixedWidthTypes.Boolean:
+		switch {
+		case arrow.TypeEqual(at, arrow.FixedWidthTypes.Boolean):
 			builders[i] = array.NewBooleanBuilder(mem)
-		case arrow.PrimitiveTypes.Int32:
+		case arrow.TypeEqual(at, arrow.PrimitiveTypes.Int32):
 			builders[i] = array.NewInt32Builder(mem)
-		case arrow.PrimitiveTypes.Int64:
+		case arrow.TypeEqual(at, arrow.PrimitiveTypes.Int64):
 			builders[i] = array.NewInt64Builder(mem)
-		case arrow.PrimitiveTypes.Float64:
+		case arrow.TypeEqual(at, arrow.PrimitiveTypes.Float64):
 			builders[i] = array.NewFloat64Builder(mem)
+		case arrow.TypeEqual(at, flattenTimestampArrowType):
+			builders[i] = array.NewTimestampBuilder(mem, flattenTimestampArrowType)
 		default:
 			builders[i] = array.NewStringBuilder(mem)
 		}
