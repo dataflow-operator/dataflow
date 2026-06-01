@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +47,58 @@ func (testConsumerGroup) Resume(map[string][]int32) {}
 func (testConsumerGroup) PauseAll()                 {}
 func (testConsumerGroup) ResumeAll()                {}
 func (testConsumerGroup) Close() error              { return nil }
+
+var _ SourceReadErrors = (*KafkaSourceConnector)(nil)
+
+func TestKafkaRead_AsyncFatalErrorOnReadErrors(t *testing.T) {
+	asyncErrCh := make(chan error, 1)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: asyncErrCh}
+
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msgCh, err := k.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if msgCh == nil {
+		t.Fatal("expected non-nil message channel")
+	}
+	readErrors := k.ReadErrors()
+	if readErrors == nil {
+		t.Fatal("expected ReadErrors channel after Read")
+	}
+
+	asyncErrCh <- errors.New("unknown topic or partition")
+
+	select {
+	case got := <-readErrors:
+		if got == nil {
+			t.Fatal("expected non-nil error on ReadErrors")
+		}
+		if !strings.Contains(got.Error(), "unknown topic") {
+			t.Fatalf("ReadErrors = %v, want unknown topic error", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for fatal async consumer error on ReadErrors")
+	}
+
+	cancel()
+}
 
 func TestKafkaRead_ConsumeFatalErrorBeforeSetup_ReturnsError(t *testing.T) {
 	closedErrCh := make(chan error)
@@ -253,17 +306,370 @@ func TestIsKafkaAuthorizationError(t *testing.T) {
 	}
 }
 
+func TestIsKafkaConsumerGenerationError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"KError rebalance", sarama.ErrRebalanceInProgress, true},
+		{"KError illegal generation", sarama.ErrIllegalGeneration, true},
+		{"KError unknown member", sarama.ErrUnknownMemberId, true},
+		{"not known in current generation", errors.New("kafka server: The group member is not known in the current generation"), true},
+		{"rebalance in progress text", errors.New("rebalance in progress"), true},
+		{"illegal generation text", errors.New("illegal generation"), true},
+		{"other", errors.New("connection refused"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isKafkaConsumerGenerationError(tt.err); got != tt.want {
+				t.Errorf("isKafkaConsumerGenerationError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsKafkaConsumeRetriableError(t *testing.T) {
 	authWrapped := fmt.Errorf("wrap: %w", sarama.ErrGroupAuthorizationFailed)
-	if !isKafkaConsumeRetriableError(authWrapped) {
-		t.Error("authorization error should be retriable")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"authorization wrapped", authWrapped, true},
+		{"coordinator unavailable", errors.New("kafka server: The coordinator is not available"), true},
+		{"i/o timeout", errors.New("read tcp 10.0.0.1:9092->10.0.0.2:9093: i/o timeout"), true},
+		{"generation not known", errors.New("kafka server: The group member is not known in the current generation"), true},
+		{"rebalance in progress KError", sarama.ErrRebalanceInProgress, true},
+		{"illegal generation KError", sarama.ErrIllegalGeneration, true},
+		{"context deadline (timeout)", context.DeadlineExceeded, true},
+		{"permanent", errors.New("some permanent failure"), false},
+		{"unknown topic", errors.New("unknown topic or partition"), false},
 	}
-	if !isKafkaConsumeRetriableError(errors.New("kafka server: The coordinator is not available")) {
-		t.Error("coordinator error should be retriable")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isKafkaConsumeRetriableError(tt.err); got != tt.want {
+				t.Errorf("isKafkaConsumeRetriableError() = %v, want %v", got, tt.want)
+			}
+		})
 	}
-	if isKafkaConsumeRetriableError(errors.New("some permanent failure")) {
-		t.Error("non-retriable error should be false")
+}
+
+func TestKafkaConsumeRetryReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"authorization", sarama.ErrTopicAuthorizationFailed, "authorization"},
+		{"coordinator", errors.New("coordinator is not available"), "coordinator_unavailable"},
+		{"timeout", errors.New("read tcp: i/o timeout"), "timeout"},
+		{"generation", sarama.ErrRebalanceInProgress, "generation"},
+		{"unknown", errors.New("something else"), "transient"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := kafkaConsumeRetryReason(tt.err); got != tt.want {
+				t.Errorf("kafkaConsumeRetryReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsKafkaConsumerAsyncRetriableError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"i/o timeout", errors.New("read tcp: i/o timeout"), true},
+		{"rebalance KError", sarama.ErrRebalanceInProgress, true},
+		{"illegal generation", sarama.ErrIllegalGeneration, true},
+		{"not known in generation text", errors.New("not known in the current generation"), true},
+		{"request timed out (not async-retriable)", errors.New("request exceeded the user-specified time limit"), false},
+		{"unknown topic", errors.New("unknown topic or partition"), false},
+		{"authorization", sarama.ErrTopicAuthorizationFailed, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isKafkaConsumerAsyncRetriableError(tt.err); got != tt.want {
+				t.Errorf("isKafkaConsumerAsyncRetriableError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKafkaRead_ConsumeRebalanceNilContinues(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+
+	var calls int
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		calls++
+		if calls == 1 {
+			return nil // rebalance / session end
+		}
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan struct {
+		ch  <-chan *types.Message
+		err error
+	}, 1)
+	go func() {
+		msgCh, err := k.Read(ctx)
+		readDone <- struct {
+			ch  <-chan *types.Message
+			err error
+		}{ch: msgCh, err: err}
+	}()
+
+	select {
+	case res := <-readDone:
+		if res.err != nil {
+			t.Fatalf("Read: %v", res.err)
+		}
+		if res.ch == nil {
+			t.Fatal("expected non-nil message channel after rebalance rejoin")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read blocked; expected success after nil Consume (rebalance) and rejoin")
+	}
+
+	if calls < 2 {
+		t.Fatalf("Consume calls = %d, want at least 2 (nil rebalance, then successful session)", calls)
+	}
+
+	cancel()
+}
+
+func TestKafkaRead_MultipleRebalanceNilReturnsBeforeReady(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+
+	var calls int
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		calls++
+		if calls < 3 {
+			return nil
+		}
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := k.Read(ctx)
+		readDone <- err
+	}()
+
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read blocked; expected success after multiple nil Consume (rebalance) returns")
+	}
+
+	if calls < 3 {
+		t.Fatalf("Consume calls = %d, want at least 3 (two nil rebalances, then successful session)", calls)
+	}
+
+	cancel()
+}
+
+func TestKafkaRead_GenerationErrorRetriesThenReady(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.consumeRetryDelay = 5 * time.Millisecond
+
+	var calls int
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("kafka server: %w", sarama.ErrRebalanceInProgress)
+		}
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan struct {
+		ch  <-chan *types.Message
+		err error
+	}, 1)
+	go func() {
+		msgCh, err := k.Read(ctx)
+		readDone <- struct {
+			ch  <-chan *types.Message
+			err error
+		}{ch: msgCh, err: err}
+	}()
+
+	select {
+	case res := <-readDone:
+		if res.err != nil {
+			t.Fatalf("Read: %v", res.err)
+		}
+		if res.ch == nil {
+			t.Fatal("expected non-nil message channel")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read blocked; expected success after generation error retry")
+	}
+
+	if calls != 2 {
+		t.Fatalf("Consume calls = %d, want 2 (one generation error, one success)", calls)
+	}
+
+	cancel()
+}
+
+func TestKafkaRead_AsyncRetriableErrorsDoNotSurfaceOnReadErrors(t *testing.T) {
+	asyncErrCh := make(chan error, 4)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: asyncErrCh}
+
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		asyncErrCh <- errors.New("read tcp 127.0.0.1:54321->127.0.0.1:9092: i/o timeout")
+		asyncErrCh <- fmt.Errorf("consumer: %w", sarama.ErrIllegalGeneration)
+		asyncErrCh <- errors.New("kafka server: The group member is not known in the current generation")
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msgCh, err := k.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if msgCh == nil {
+		t.Fatal("expected non-nil message channel")
+	}
+	readErrors := k.ReadErrors()
+	if readErrors == nil {
+		t.Fatal("expected ReadErrors channel after Read")
+	}
+
+	select {
+	case fatal := <-readErrors:
+		t.Fatalf("retriable async consumer errors must not surface on ReadErrors, got: %v", fatal)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	cancel()
+}
+
+func TestKafkaRead_IOTimeoutRetriesThenReady(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.consumeRetryDelay = 5 * time.Millisecond
+
+	var calls int
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		calls++
+		if calls == 1 {
+			return errors.New("read tcp 127.0.0.1:54321->127.0.0.1:9092: i/o timeout")
+		}
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan struct {
+		ch  <-chan *types.Message
+		err error
+	}, 1)
+	go func() {
+		msgCh, err := k.Read(ctx)
+		readDone <- struct {
+			ch  <-chan *types.Message
+			err error
+		}{ch: msgCh, err: err}
+	}()
+
+	select {
+	case res := <-readDone:
+		if res.err != nil {
+			t.Fatalf("Read: %v", res.err)
+		}
+		if res.ch == nil {
+			t.Fatal("expected non-nil message channel")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read blocked; expected success after i/o timeout retry")
+	}
+
+	if calls != 2 {
+		t.Fatalf("Consume calls = %d, want 2 (one timeout, one success)", calls)
+	}
+
+	cancel()
 }
 
 // mockConsumerGroupSession implements sarama.ConsumerGroupSession for testing.

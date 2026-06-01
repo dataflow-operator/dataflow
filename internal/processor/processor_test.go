@@ -621,6 +621,77 @@ func TestProcessor_Ready_BecomesTrueAfterRead(t *testing.T) {
 	assert.True(t, proc.Ready())
 }
 
+// mockSourceWithReadErrors implements connectors.SourceReadErrors for processor shutdown tests.
+type mockSourceWithReadErrors struct {
+	mockSourceConnector
+	msgCh     chan *types.Message
+	readErrCh chan error
+}
+
+func (m *mockSourceWithReadErrors) Read(context.Context) (<-chan *types.Message, error) {
+	if m.msgCh == nil {
+		m.msgCh = make(chan *types.Message)
+	}
+	return m.msgCh, nil
+}
+
+func (m *mockSourceWithReadErrors) ReadErrors() <-chan error {
+	return m.readErrCh
+}
+
+// mockContextAwareSinkConnector blocks in Write until the context is cancelled or the channel closes.
+type mockContextAwareSinkConnector struct {
+	mockSinkConnector
+}
+
+func (m *mockContextAwareSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case msg, ok := <-messages:
+			if !ok {
+				return nil
+			}
+			m.messages = append(m.messages, msg)
+		}
+	}
+}
+
+func TestProcessor_Start_FatalSourceReadError(t *testing.T) {
+	ctx := context.Background()
+	fatalErr := errors.New("consumer error: kafka broker unavailable")
+	readErrCh := make(chan error, 1)
+
+	src := &mockSourceWithReadErrors{readErrCh: readErrCh}
+	sink := &mockContextAwareSinkConnector{}
+	proc := &Processor{
+		source:       src,
+		sink:         sink,
+		transformers: nil,
+		routerSinks:  map[string]v1.SinkSpec{},
+		logger:       logr.Discard(),
+		spec:         &v1.DataFlowSpec{},
+	}
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		readErrCh <- fatalErr
+	}()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proc.Start(ctx) }()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "source read error")
+		assert.ErrorIs(t, err, fatalErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after fatal source read error")
+	}
+}
+
 func TestProcessor_Start_CompletesWhenSourceIsImmediatelyExhausted(t *testing.T) {
 	ctx := context.Background()
 	src := &mockSourceConnector{messages: nil}

@@ -63,6 +63,8 @@ type KafkaSourceConnector struct {
 	consumeRetryDelay time.Duration
 	// testConsumeFunc, if set, replaces consumer.Consume in Read (unit tests only).
 	testConsumeFunc func(ctx context.Context, topics []string, handler sarama.ConsumerGroupHandler) error
+	// readErrCh receives fatal errors from the consumer after Read returns; set during Read.
+	readErrCh chan error
 }
 
 // schemaCache caches Avro schemas by ID
@@ -495,6 +497,7 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 
 	msgChan := make(chan *types.Message, k.channelBufferSize)
 	errCh := make(chan error, constants.DefaultSingleValueChannelBufferSize)
+	k.readErrCh = errCh
 
 	handler := &kafkaConsumerGroupHandler{
 		connector: k,
@@ -522,7 +525,13 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 			}
 			consumeErr := consumeFn(ctx, []string{k.config.Topic}, handler)
 			if consumeErr == nil {
-				return
+				// Sarama returns nil after a normal session end (e.g. rebalance); rejoin instead of exiting.
+				k.logger.Info("Kafka consumer Consume session ended, rejoining consumer group",
+					"topic", k.config.Topic)
+				if k.consumeRetryDelay <= 0 {
+					backoff = kafkaConsumeRetryInitialBackoff
+				}
+				continue
 			}
 			if errors.Is(consumeErr, context.Canceled) {
 				return
@@ -543,12 +552,7 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 						delay = kafkaConsumeRetryMaxBackoff
 					}
 				}
-				reason := "transient"
-				if isKafkaAuthorizationError(consumeErr) {
-					reason = "authorization"
-				} else if isCoordinatorUnavailableError(consumeErr) {
-					reason = "coordinator_unavailable"
-				}
+				reason := kafkaConsumeRetryReason(consumeErr)
 				k.logger.Info("Kafka consumer Consume failed, retrying with backoff",
 					"topic", k.config.Topic, "reason", reason, "backoff", delay, "err", consumeErr)
 				select {
@@ -593,6 +597,11 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 					"topic", k.config.Topic, "err", err)
 				continue
 			}
+			if isKafkaConsumerAsyncRetriableError(err) {
+				k.logger.Info("Kafka consumer error (transient), continuing",
+					"topic", k.config.Topic, "reason", kafkaConsumeRetryReason(err), "err", err)
+				continue
+			}
 			errWrap := fmt.Errorf("consumer error: %w", err)
 			k.logger.Error(errWrap, "Kafka consumer error", "topic", k.config.Topic)
 			select {
@@ -604,6 +613,11 @@ func (k *KafkaSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	}()
 
 	return msgChan, nil
+}
+
+// ReadErrors implements SourceReadErrors. Returns the error channel created by the last Read call.
+func (k *KafkaSourceConnector) ReadErrors() <-chan error {
+	return k.readErrCh
 }
 
 // applyKafkaConsumerConfig maps optional KafkaSourceSpec consumer tuning to Sarama.
@@ -705,10 +719,54 @@ func isKafkaAuthorizationError(err error) bool {
 		strings.Contains(lower, "authorization failed")
 }
 
-// isKafkaConsumeRetriableError reports coordinator-unavailable and topic/group authorization failures.
-// Read retries those with exponential backoff capped at kafkaConsumeRetryMaxBackoff until ctx is cancelled.
+// isKafkaConsumerGenerationError reports consumer-group generation / rebalance errors (retriable).
+func isKafkaConsumerGenerationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ke sarama.KError
+	if errors.As(err, &ke) {
+		switch ke {
+		case sarama.ErrRebalanceInProgress,
+			sarama.ErrIllegalGeneration,
+			sarama.ErrUnknownMemberId:
+			return true
+		}
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "not known in the current generation") ||
+		strings.Contains(lower, "not known in current generation") ||
+		strings.Contains(lower, "rebalance in progress") ||
+		strings.Contains(lower, "illegal generation")
+}
+
+// isKafkaConsumeRetriableError reports transient Consume() failures retried until ctx is cancelled.
 func isKafkaConsumeRetriableError(err error) bool {
-	return isCoordinatorUnavailableError(err) || isKafkaAuthorizationError(err)
+	return isCoordinatorUnavailableError(err) ||
+		isKafkaAuthorizationError(err) ||
+		retry.IsTimeoutError(err) ||
+		isKafkaConsumerGenerationError(err)
+}
+
+// isKafkaConsumerAsyncRetriableError reports transient errors from consumer.Errors() (not fatal).
+func isKafkaConsumerAsyncRetriableError(err error) bool {
+	return retry.IsTimeoutError(err) || isKafkaConsumerGenerationError(err)
+}
+
+// kafkaConsumeRetryReason returns a short label for logging retriable consumer errors.
+func kafkaConsumeRetryReason(err error) string {
+	switch {
+	case isKafkaAuthorizationError(err):
+		return "authorization"
+	case isCoordinatorUnavailableError(err):
+		return "coordinator_unavailable"
+	case retry.IsTimeoutError(err):
+		return "timeout"
+	case isKafkaConsumerGenerationError(err):
+		return "generation"
+	default:
+		return "transient"
+	}
 }
 
 // Close closes the Kafka connection

@@ -52,6 +52,48 @@ func processorLogLevel() string {
 	return "info"
 }
 
+// processorProgressTimeoutSeconds returns PROCESSOR_PROGRESS_TIMEOUT_SECONDS for processor pods
+// (from operator env PROCESSOR_PROGRESS_TIMEOUT_SECONDS or default "600").
+func processorProgressTimeoutSeconds() string {
+	if v := os.Getenv("PROCESSOR_PROGRESS_TIMEOUT_SECONDS"); v != "" {
+		return v
+	}
+	return "600"
+}
+
+// processorStartupProbe returns the startup probe for processor containers (/readyz).
+func processorStartupProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/readyz",
+				Port: intstr.FromInt(9090),
+			},
+		},
+		PeriodSeconds:    10,
+		TimeoutSeconds:   5,
+		FailureThreshold: 120,
+		SuccessThreshold: 1,
+	}
+}
+
+// processorLivenessProbe returns the liveness probe for processor containers (/livez).
+// Fails when the pipeline has no progress for PROCESSOR_PROGRESS_TIMEOUT_SECONDS (~3 failures × 30s).
+func processorLivenessProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/livez",
+				Port: intstr.FromInt(9090),
+			},
+		},
+		PeriodSeconds:    30,
+		TimeoutSeconds:   5,
+		FailureThreshold: 3,
+		SuccessThreshold: 1,
+	}
+}
+
 // processorSentryEnvVars returns env vars for Sentry to pass to processor pods.
 // When SENTRY_DSN is set in the operator, these vars are forwarded so processors can report to Sentry.
 func processorSentryEnvVars() []corev1.EnvVar {
@@ -123,7 +165,10 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 	processorImage := r.processorImageFor(dataflow)
 
 	processorEnv := append(
-		[]corev1.EnvVar{{Name: "LOG_LEVEL", Value: processorLogLevel()}},
+		[]corev1.EnvVar{
+			{Name: "LOG_LEVEL", Value: processorLogLevel()},
+			{Name: "PROCESSOR_PROGRESS_TIMEOUT_SECONDS", Value: processorProgressTimeoutSeconds()},
+		},
 		processorSentryEnvVars()...,
 	)
 	if resolvedSpec != nil {
@@ -170,18 +215,8 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 							Ports: []corev1.ContainerPort{
 								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
 							},
-							StartupProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/readyz",
-										Port: intstr.FromInt(9090),
-									},
-								},
-								PeriodSeconds:    10,
-								TimeoutSeconds:   5,
-								FailureThreshold: 120,
-								SuccessThreshold: 1,
-							},
+							StartupProbe:  processorStartupProbe(),
+							LivenessProbe: processorLivenessProbe(),
 							Lifecycle: &corev1.Lifecycle{
 								PreStop: &corev1.LifecycleHandler{
 									Exec: &corev1.ExecAction{

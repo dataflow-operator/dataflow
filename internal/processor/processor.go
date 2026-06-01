@@ -227,13 +227,44 @@ func (p *Processor) Start(ctx context.Context) error {
 	p.RecordProgress()
 	p.logger.Info("Started reading from source")
 
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
+	fatalSourceErr := make(chan error, constants.DefaultSingleValueChannelBufferSize)
+	if re, ok := p.source.(connectors.SourceReadErrors); ok {
+		if readErrCh := re.ReadErrors(); readErrCh != nil {
+			go func() {
+				select {
+				case <-runCtx.Done():
+				case err, ok := <-readErrCh:
+					if ok && err != nil {
+						p.logger.Error(err, "Fatal error from source read")
+						select {
+						case fatalSourceErr <- err:
+						default:
+						}
+						runCancel()
+					}
+				}
+			}()
+		}
+	}
+
 	// Process messages
 	processedChan := make(chan *types.Message, p.channelBufferSize())
-	go p.processMessages(ctx, msgChan, processedChan)
+	go p.processMessages(runCtx, msgChan, processedChan)
 
 	// Write messages to sink(s)
 	p.logger.Info("Starting to write messages to sink")
-	return p.writeMessages(ctx, processedChan)
+	writeErr := p.writeMessages(runCtx, processedChan)
+
+	select {
+	case err := <-fatalSourceErr:
+		return fmt.Errorf("source read error: %w", err)
+	default:
+	}
+
+	return writeErr
 }
 
 // Connectable represents any connector that can establish a connection.

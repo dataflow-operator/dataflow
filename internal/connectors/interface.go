@@ -35,6 +35,15 @@ type SourceConnector interface {
 	Close() error
 }
 
+// SourceReadErrors is implemented by sources that may report fatal read errors on a
+// background goroutine after Read has returned successfully (e.g. Kafka consumer.Errors).
+type SourceReadErrors interface {
+	SourceConnector
+	// ReadErrors returns a channel that receives at most one fatal error per Read session.
+	// The channel is set when Read is called; nil before the first Read.
+	ReadErrors() <-chan error
+}
+
 // SinkConnector defines the interface for writing to a data sink
 type SinkConnector interface {
 	// Connect establishes connection to the sink
