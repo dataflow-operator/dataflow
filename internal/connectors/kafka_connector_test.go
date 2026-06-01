@@ -319,6 +319,7 @@ func TestIsKafkaConsumerGenerationError(t *testing.T) {
 		{"not known in current generation", errors.New("kafka server: The group member is not known in the current generation"), true},
 		{"rebalance in progress text", errors.New("rebalance in progress"), true},
 		{"illegal generation text", errors.New("illegal generation"), true},
+		{"unknown member id KError", sarama.ErrUnknownMemberId, true},
 		{"other", errors.New("connection refused"), false},
 	}
 	for _, tt := range tests {
@@ -341,6 +342,7 @@ func TestIsKafkaConsumeRetriableError(t *testing.T) {
 		{"authorization wrapped", authWrapped, true},
 		{"coordinator unavailable", errors.New("kafka server: The coordinator is not available"), true},
 		{"i/o timeout", errors.New("read tcp 10.0.0.1:9092->10.0.0.2:9093: i/o timeout"), true},
+		{"partition i/o timeout", errors.New("kafka: error while consuming topic/partition/2: read tcp 10.0.0.1:54321->10.0.0.2:9092: i/o timeout"), true},
 		{"generation not known", errors.New("kafka server: The group member is not known in the current generation"), true},
 		{"rebalance in progress KError", sarama.ErrRebalanceInProgress, true},
 		{"illegal generation KError", sarama.ErrIllegalGeneration, true},
@@ -408,6 +410,7 @@ func TestKafkaRead_ConsumeRebalanceNilContinues(t *testing.T) {
 
 	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
 	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.consumeRetryDelay = 5 * time.Millisecond
 
 	var calls int
 	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
@@ -466,6 +469,7 @@ func TestKafkaRead_MultipleRebalanceNilReturnsBeforeReady(t *testing.T) {
 
 	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
 	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.consumeRetryDelay = 5 * time.Millisecond
 
 	var calls int
 	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
@@ -504,6 +508,59 @@ func TestKafkaRead_MultipleRebalanceNilReturnsBeforeReady(t *testing.T) {
 
 	if calls < 3 {
 		t.Fatalf("Consume calls = %d, want at least 3 (two nil rebalances, then successful session)", calls)
+	}
+
+	cancel()
+}
+
+func TestKafkaRead_SessionEndRebalanceCallsConsumeAgain(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.consumeRetryDelay = 5 * time.Millisecond
+
+	var calls int
+	rejoined := make(chan struct{}, 1)
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		calls++
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		if calls == 1 {
+			return nil // Sarama: normal session end after rebalance
+		}
+		select {
+		case rejoined <- struct{}{}:
+		default:
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msgCh, err := k.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if msgCh == nil {
+		t.Fatal("expected non-nil message channel after first session Setup")
+	}
+
+	select {
+	case <-rejoined:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Consume did not rejoin after session-end rebalance (calls=%d)", calls)
+	}
+	if calls < 2 {
+		t.Fatalf("Consume calls = %d, want >= 2 (session end, then rejoin)", calls)
 	}
 
 	cancel()
@@ -559,6 +616,65 @@ func TestKafkaRead_GenerationErrorRetriesThenReady(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Read blocked; expected success after generation error retry")
+	}
+
+	if calls != 2 {
+		t.Fatalf("Consume calls = %d, want 2 (one generation error, one success)", calls)
+	}
+
+	cancel()
+}
+
+func TestKafkaRead_UnknownMemberIdRetriesThenReady(t *testing.T) {
+	closedErrCh := make(chan error)
+	close(closedErrCh)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.consumer = testConsumerGroup{errorsCh: closedErrCh}
+	k.consumeRetryDelay = 5 * time.Millisecond
+
+	var calls int
+	k.testConsumeFunc = func(cctx context.Context, topics []string, h sarama.ConsumerGroupHandler) error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("kafka server: %w", sarama.ErrUnknownMemberId)
+		}
+		hh, ok := h.(*kafkaConsumerGroupHandler)
+		if !ok {
+			return fmt.Errorf("unexpected handler type %T", h)
+		}
+		if err := hh.Setup(&mockConsumerGroupSession{ctx: cctx}); err != nil {
+			return err
+		}
+		<-cctx.Done()
+		return context.Canceled
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan struct {
+		ch  <-chan *types.Message
+		err error
+	}, 1)
+	go func() {
+		msgCh, err := k.Read(ctx)
+		readDone <- struct {
+			ch  <-chan *types.Message
+			err error
+		}{ch: msgCh, err: err}
+	}()
+
+	select {
+	case res := <-readDone:
+		if res.err != nil {
+			t.Fatalf("Read: %v", res.err)
+		}
+		if res.ch == nil {
+			t.Fatal("expected non-nil message channel")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read blocked; expected success after unknown member id retry")
 	}
 
 	if calls != 2 {

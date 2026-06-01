@@ -804,177 +804,48 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	batchSize := 100
+	cfg := NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100)
+	batchSize := cfg.MaxBatchSize
 	if c.config.BatchSize != nil {
 		batchSize = int(*c.config.BatchSize)
 	}
-	maxBatchSize := batchSize
-	if batchSize == 0 {
-		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
-	}
-
 	flushIntervalSec := 10
 	if c.config.BatchFlushIntervalSeconds != nil {
 		flushIntervalSec = int(*c.config.BatchFlushIntervalSeconds)
 	}
-	useTimer := flushIntervalSec > 0
-	flushInterval := time.Duration(flushIntervalSec) * time.Second
-
 	c.logger.Info("Starting to write messages to ClickHouse", "table", c.config.Table, "batchSize", batchSize, "flushIntervalSeconds", flushIntervalSec)
+
 	messageCount := 0
-	var batch []*types.Message
-	var flushTimer *time.Timer
-
-	stopTimer := func() {
-		if flushTimer != nil {
-			flushTimer.Stop()
-			flushTimer = nil
-		}
-	}
-
-	flushBatch := func(batchCtx context.Context, msgs []*types.Message) error {
-		if len(msgs) == 0 {
-			return nil
-		}
-		if c.rawMode() && c.flattenMetadataColumns() {
-			return c.flushBatchFlattened(batchCtx, msgs)
-		}
-		if c.rawMode() {
-			return c.flushBatchRaw(batchCtx, msgs)
-		}
-		return c.flushBatchColumnar(batchCtx, msgs)
-	}
-
-	doFlush := func(toFlush []*types.Message) error {
-		stopTimer()
-		if len(toFlush) == 0 {
-			return nil
-		}
-		// Use non-cancelled context for batch execution when ctx is done (e.g. Ctrl+C).
-		// Connection may close on context cancellation; a fresh context allows the flush to complete.
-		batchCtx := ctx
-		if batchCtx.Err() != nil {
-			var cancel context.CancelFunc
-			batchCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-		}
-		if err := retry.OnRetryableClickHouse(batchCtx, retry.ClickHouseMaxAttempts, retry.ClickHouseInitialBackoff, func() error {
-			return flushBatch(batchCtx, toFlush)
-		}); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	for {
-		if useTimer && len(batch) > 0 && flushTimer == nil {
-			flushTimer = time.NewTimer(flushInterval)
-		}
-
-		if useTimer && flushTimer != nil {
-			select {
-			case <-ctx.Done():
-				stopTimer()
-				if len(batch) > 0 {
-					c.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch), "table", c.config.Table)
-					if err := doFlush(batch); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case <-flushTimer.C:
-				flushTimer = nil
-				if len(batch) == 0 {
-					continue
-				}
-				c.logger.V(1).Info("Flush interval reached, sending batch", "batchSize", len(batch), "table", c.config.Table)
-				toFlush := batch
-				batch = nil
-				if err := doFlush(toFlush); err != nil {
-					c.logger.Error(err, "Failed to send batch on timer", "batchSize", len(toFlush), "table", c.config.Table)
-					return err
-				}
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					if len(batch) > 0 {
-						c.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount, "table", c.config.Table)
-						if err := doFlush(batch); err != nil {
-							return err
-						}
-					}
-					c.logger.Info("Message channel closed", "totalMessages", messageCount, "table", c.config.Table)
-					return nil
-				}
-
-				messageCount++
-				var data map[string]interface{}
-				if err := json.Unmarshal(msg.Data, &data); err != nil {
-					c.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
-					continue
-				}
-
-				c.logger.V(1).Info("Received message for ClickHouse", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", c.config.Table, "fields", getKeys(data))
-
-				batch = append(batch, msg)
-
-				if len(batch) >= maxBatchSize {
-					c.logger.V(1).Info("Batch size reached, sending batch", "batchSize", len(batch), "table", c.config.Table)
-					toFlush := batch
-					batch = nil
-					if err := doFlush(toFlush); err != nil {
-						c.logger.Error(err, "Failed to send batch", "batchSize", len(toFlush), "table", c.config.Table)
-						return err
-					}
-				}
+	return RunBatchWriteLoop(ctx, messages, cfg, BatchWriteOptions{
+		Logger:    c.logger,
+		LogFields: []any{"table", c.config.Table},
+		OnFlush: func(batchCtx context.Context, msgs []*types.Message) error {
+			if len(msgs) == 0 {
+				return nil
 			}
-		} else {
-			select {
-			case <-ctx.Done():
-				stopTimer()
-				if len(batch) > 0 {
-					c.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch), "table", c.config.Table)
-					if err := doFlush(batch); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					if len(batch) > 0 {
-						c.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount, "table", c.config.Table)
-						if err := doFlush(batch); err != nil {
-							return err
-						}
-					}
-					c.logger.Info("Message channel closed", "totalMessages", messageCount, "table", c.config.Table)
-					return nil
-				}
-
-				messageCount++
-				var data map[string]interface{}
-				if err := json.Unmarshal(msg.Data, &data); err != nil {
-					c.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
-					continue
-				}
-
-				c.logger.V(1).Info("Received message for ClickHouse", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", c.config.Table, "fields", getKeys(data))
-
-				batch = append(batch, msg)
-
-				if len(batch) >= maxBatchSize {
-					c.logger.V(1).Info("Batch size reached, sending batch", "batchSize", len(batch), "table", c.config.Table)
-					toFlush := batch
-					batch = nil
-					if err := doFlush(toFlush); err != nil {
-						c.logger.Error(err, "Failed to send batch", "batchSize", len(toFlush), "table", c.config.Table)
-						return err
-					}
-				}
+			var flushFn func(context.Context, []*types.Message) error
+			if c.rawMode() && c.flattenMetadataColumns() {
+				flushFn = c.flushBatchFlattened
+			} else if c.rawMode() {
+				flushFn = c.flushBatchRaw
+			} else {
+				flushFn = c.flushBatchColumnar
 			}
-		}
-	}
+			return retry.OnRetryableClickHouse(batchCtx, retry.ClickHouseMaxAttempts, retry.ClickHouseInitialBackoff, func() error {
+				return flushFn(batchCtx, msgs)
+			})
+		},
+		OnMessage: func(msg *types.Message) bool {
+			messageCount++
+			var data map[string]interface{}
+			if err := json.Unmarshal(msg.Data, &data); err != nil {
+				c.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
+				return false
+			}
+			c.logger.V(1).Info("Received message for ClickHouse", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", c.config.Table, "fields", getKeys(data))
+			return true
+		},
+	})
 }
 
 // Close closes the ClickHouse connection

@@ -497,160 +497,49 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
+	cfg := NewBatchWriteConfig(t.config.BatchSize, t.config.BatchFlushIntervalSeconds, 1)
 	batchSize := 1
 	if t.config.BatchSize != nil {
 		batchSize = int(*t.config.BatchSize)
 	}
-	maxBatchSize := batchSize
-	if batchSize == 0 {
-		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
-	}
-
 	flushIntervalSec := 10
 	if t.config.BatchFlushIntervalSeconds != nil {
 		flushIntervalSec = int(*t.config.BatchFlushIntervalSeconds)
 	}
-	useTimer := flushIntervalSec > 0
-	flushInterval := time.Duration(flushIntervalSec) * time.Second
+	tableRef := fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
+	t.logger.Info("Starting to write messages to Trino", "batchSize", batchSize, "flushIntervalSeconds", flushIntervalSec, "table", tableRef)
 
-	t.logger.Info("Starting to write messages to Trino", "batchSize", batchSize, "flushIntervalSeconds", flushIntervalSec, "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table))
-
-	batch := make([]*types.Message, 0, maxBatchSize)
 	messageCount := 0
-	var flushTimer *time.Timer
-
-	stopTimer := func() {
-		if flushTimer != nil {
-			flushTimer.Stop()
-			flushTimer = nil
-		}
-	}
-
-	doFlush := func() error {
-		stopTimer()
-		if len(batch) == 0 {
-			return nil
-		}
-		if err := retry.OnRetryableTrino(ctx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
-			return t.executeBatch(ctx, batch)
-		}); err != nil {
-			return err
-		}
-		firstMsgID := ""
-		if len(batch) > 0 {
-			firstMsgID = types.MessageID(batch[0])
-		}
-		t.logger.Info("Committing source offsets after successful batch", "batchSize", len(batch), logkeys.MessageID, firstMsgID)
-		for i, m := range batch {
-			if m.Ack != nil {
-				m.Ack()
-			} else if i == 0 {
-				t.logger.V(1).Info("Message has no Ack callback", logkeys.MessageID, types.MessageID(m))
+	return RunBatchWriteLoop(ctx, messages, cfg, BatchWriteOptions{
+		Logger:    t.logger,
+		LogFields: []any{"table", tableRef},
+		OnFlush: func(batchCtx context.Context, msgs []*types.Message) error {
+			return retry.OnRetryableTrino(batchCtx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
+				return t.executeBatch(batchCtx, msgs)
+			})
+		},
+		OnAck: func(msgs []*types.Message) {
+			firstMsgID := ""
+			if len(msgs) > 0 {
+				firstMsgID = types.MessageID(msgs[0])
 			}
-		}
-		t.logger.Info("Committed source offsets after successful batch", "batchSize", len(batch), logkeys.MessageID, firstMsgID)
-		t.notifyProgress()
-		batch = make([]*types.Message, 0, maxBatchSize)
-		return nil
-	}
-
-	for {
-		if useTimer && len(batch) > 0 && flushTimer == nil {
-			flushTimer = time.NewTimer(flushInterval)
-		}
-
-		if useTimer && flushTimer != nil {
-			select {
-			case <-ctx.Done():
-				stopTimer()
-				t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
-				if len(batch) > 0 {
-					if err := doFlush(); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case <-flushTimer.C:
-				flushTimer = nil
-				if len(batch) == 0 {
-					continue
-				}
-				t.logger.Info("Flush interval reached, executing batch", "batchSize", len(batch))
-				if err := doFlush(); err != nil {
-					t.logger.Error(err, "Failed to execute batch on timer", "batchSize", len(batch))
-					return err
-				}
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
-					if len(batch) > 0 {
-						if err := doFlush(); err != nil {
-							return err
-						}
-					}
-					return nil
-				}
-
-				messageCount++
-				t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data), "batchSize", len(batch)+1)
-
-				batch = append(batch, msg)
-
-				if len(batch) >= maxBatchSize {
-					t.logger.Info("Batch size reached, executing batch", "batchSize", len(batch))
-					if err := doFlush(); err != nil {
-						firstMsgID := ""
-						if len(batch) > 0 {
-							firstMsgID = types.MessageID(batch[0])
-						}
-						t.logger.Error(err, "Failed to execute batch", logkeys.MessageID, firstMsgID, "batchSize", len(batch))
-						return err
-					}
+			t.logger.Info("Committing source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
+			for i, m := range msgs {
+				if m.Ack != nil {
+					m.Ack()
+				} else if i == 0 {
+					t.logger.V(1).Info("Message has no Ack callback", logkeys.MessageID, types.MessageID(m))
 				}
 			}
-		} else {
-			select {
-			case <-ctx.Done():
-				stopTimer()
-				t.logger.Info("Context cancelled, flushing batch", "batchSize", len(batch))
-				if len(batch) > 0 {
-					if err := doFlush(); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					t.logger.Info("Message channel closed, flushing batch", "batchSize", len(batch), "totalMessages", messageCount)
-					if len(batch) > 0 {
-						if err := doFlush(); err != nil {
-							return err
-						}
-					}
-					return nil
-				}
-
-				messageCount++
-				t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data), "batchSize", len(batch)+1)
-
-				batch = append(batch, msg)
-
-				if len(batch) >= maxBatchSize {
-					t.logger.Info("Batch size reached, executing batch", "batchSize", len(batch))
-					if err := doFlush(); err != nil {
-						firstMsgID := ""
-						if len(batch) > 0 {
-							firstMsgID = types.MessageID(batch[0])
-						}
-						t.logger.Error(err, "Failed to execute batch", logkeys.MessageID, firstMsgID, "batchSize", len(batch))
-						return err
-					}
-				}
-			}
-		}
-	}
+			t.logger.Info("Committed source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
+			t.notifyProgress()
+		},
+		OnMessage: func(msg *types.Message) bool {
+			messageCount++
+			t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data))
+			return true
+		},
+	})
 }
 
 // hasRawModeColumns checks if the table has (data or value) and _metadata columns (required for raw mode).

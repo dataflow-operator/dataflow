@@ -291,6 +291,16 @@ func TestIsRetryableNessieAppendError(t *testing.T) {
 			err:  errors.New("append table: invalid schema evolution"),
 			want: false,
 		},
+		{
+			name: "context canceled upload",
+			err:  errors.New("append table: error in rolling data writer: read upload data failed: context canceled"),
+			want: true,
+		},
+		{
+			name: "wrapped context canceled",
+			err:  fmt.Errorf("append table: %w", context.Canceled),
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

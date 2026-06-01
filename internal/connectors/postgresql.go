@@ -681,15 +681,9 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		if count == 0 {
 			return nil
 		}
-		// Use non-cancelled context for batch execution when ctx is done (e.g. Ctrl+C).
-		// pgx closes the connection on context cancellation, causing "conn closed" during
-		// br.Close() deallocation. A fresh context allows the flush to complete.
-		batchCtx := ctx
-		if batchCtx.Err() != nil {
-			var cancel context.CancelFunc
-			batchCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-		}
+		// Detached context so pgx batch IO is not aborted by SIGTERM (see BatchWriteContext).
+		batchCtx, cancel := BatchWriteContext(ctx)
+		defer cancel()
 		if err := retry.OnTimeout(batchCtx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
 			return p.executeBatch(batchCtx, batch)
 		}); err != nil {

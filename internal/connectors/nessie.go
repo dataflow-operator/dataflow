@@ -39,7 +39,6 @@ import (
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
-	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
@@ -618,159 +617,61 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	batchSize := int64(100)
-	if c.config.BatchSize != nil && *c.config.BatchSize > 0 {
-		batchSize = int64(*c.config.BatchSize)
-	}
-	maxBatchSize := int(batchSize)
-	if batchSize == 0 {
-		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
-	}
-
-	flushIntervalSec := 10
-	if c.config.BatchFlushIntervalSeconds != nil {
-		flushIntervalSec = int(*c.config.BatchFlushIntervalSeconds)
-	}
-	useTimer := flushIntervalSec > 0
-	flushInterval := time.Duration(flushIntervalSec) * time.Second
-
-	var batch []*types.Message
-	var flushTimer *time.Timer
-
-	stopTimer := func() {
-		if flushTimer != nil {
-			flushTimer.Stop()
-			flushTimer = nil
-		}
-	}
-
-	flush := func(msgs []*types.Message) error {
-		if len(msgs) == 0 {
-			return nil
-		}
-		if err := c.ensureFlattenMetadataTable(ctx, msgs); err != nil {
-			return err
-		}
-		arrowTbl, err := c.buildArrowTableFromMessages(msgs)
-		if err != nil {
-			return err
-		}
-		defer arrowTbl.Release()
-		appendSize := batchSize
-		if appendSize == 0 {
-			appendSize = int64(len(msgs))
-		}
-		err = retry.OnRetry(ctx, retry.NessieAppendMaxAttempts, retry.NessieAppendInitialBackoff, func(err error) bool {
-			return isRetryableNessieAppendError(err)
-		}, func() error {
-			newTbl, appendErr := c.tbl.AppendTable(ctx, arrowTbl, appendSize, nil)
-			if appendErr != nil {
-				if isRetryableNessieSnapshotConflict(appendErr) {
-					if refreshErr := c.tbl.Refresh(ctx); refreshErr != nil {
-						return fmt.Errorf("append table: %w (refresh after snapshot conflict: %v)", appendErr, refreshErr)
-					}
+	cfg := NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100)
+	return RunBatchWriteLoop(ctx, messages, cfg, BatchWriteOptions{
+		Logger:    c.logger,
+		LogFields: []any{"table", c.config.Table},
+		OnFlush:   c.flushBatch,
+		OnAck: func(msgs []*types.Message) {
+			for _, m := range msgs {
+				if m.Ack != nil {
+					m.Ack()
 				}
-				return fmt.Errorf("append table: %w", appendErr)
 			}
-			if newTbl != nil {
-				c.tbl = newTbl
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		for _, m := range msgs {
-			if m.Ack != nil {
-				m.Ack()
-			}
-		}
+		},
+	})
+}
+
+func (c *NessieSinkConnector) flushBatch(batchCtx context.Context, msgs []*types.Message) error {
+	if len(msgs) == 0 {
 		return nil
 	}
+	if err := c.ensureFlattenMetadataTable(batchCtx, msgs); err != nil {
+		return err
+	}
+	arrowTbl, err := c.buildArrowTableFromMessages(msgs)
+	if err != nil {
+		return err
+	}
+	defer arrowTbl.Release()
 
-	doFlush := func(toFlush []*types.Message) error {
-		stopTimer()
-		return flush(toFlush)
+	appendSize := int64(100)
+	if c.config.BatchSize != nil && *c.config.BatchSize > 0 {
+		appendSize = int64(*c.config.BatchSize)
+	}
+	if appendSize == 0 {
+		appendSize = int64(len(msgs))
 	}
 
-	for {
-		if useTimer && len(batch) > 0 && flushTimer == nil {
-			flushTimer = time.NewTimer(flushInterval)
-		}
-
-		if useTimer && flushTimer != nil {
-			select {
-			case <-ctx.Done():
-				stopTimer()
-				if len(batch) > 0 {
-					if err := doFlush(batch); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case <-flushTimer.C:
-				flushTimer = nil
-				if len(batch) == 0 {
-					continue
-				}
-				toFlush := batch
-				batch = nil
-				if err := doFlush(toFlush); err != nil {
-					c.logger.Error(err, "Failed to write batch on timer", "table", c.config.Table)
-					return err
-				}
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					if len(batch) > 0 {
-						if err := doFlush(batch); err != nil {
-							return err
-						}
-					}
-					return nil
-				}
-				batch = append(batch, msg)
-				if len(batch) >= maxBatchSize {
-					toFlush := batch
-					batch = nil
-					if err := doFlush(toFlush); err != nil {
-						c.logger.Error(err, "Failed to write batch", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
-						return err
-					}
+	return retry.OnRetry(batchCtx, retry.NessieAppendMaxAttempts, retry.NessieAppendInitialBackoff, func(err error) bool {
+		return isRetryableNessieAppendError(err)
+	}, func() error {
+		attemptCtx, cancel := BatchWriteContext(batchCtx)
+		defer cancel()
+		newTbl, appendErr := c.tbl.AppendTable(attemptCtx, arrowTbl, appendSize, nil)
+		if appendErr != nil {
+			if isRetryableNessieSnapshotConflict(appendErr) {
+				if refreshErr := c.tbl.Refresh(attemptCtx); refreshErr != nil {
+					return fmt.Errorf("append table: %w (refresh after snapshot conflict: %v)", appendErr, refreshErr)
 				}
 			}
-		} else {
-			select {
-			case <-ctx.Done():
-				stopTimer()
-				if len(batch) > 0 {
-					if err := doFlush(batch); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					if len(batch) > 0 {
-						if err := doFlush(batch); err != nil {
-							return err
-						}
-					}
-					return nil
-				}
-				batch = append(batch, msg)
-				if len(batch) >= maxBatchSize {
-					toFlush := batch
-					batch = nil
-					if err := doFlush(toFlush); err != nil {
-						c.logger.Error(err, "Failed to write batch", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
-						return err
-					}
-				}
-			}
+			return fmt.Errorf("append table: %w", appendErr)
 		}
-	}
+		if newTbl != nil {
+			c.tbl = newTbl
+		}
+		return nil
+	})
 }
 
 func isRetryableNessieSnapshotConflict(err error) bool {
@@ -790,8 +691,11 @@ func isRetryableNessieAppendError(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
 	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, ": eof")
+	return strings.Contains(lower, ": eof") || strings.Contains(lower, "context canceled")
 }
 
 // Close closes the Nessie sink connector.
