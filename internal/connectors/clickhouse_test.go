@@ -23,6 +23,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,41 +90,36 @@ func TestClickHouseSourceConnector_advanceCheckpoint(t *testing.T) {
 	ts1 := time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)
 	ts2 := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 
-	c.advanceCheckpoint(100, &ts1)
-	assert.Equal(t, int64(100), c.lastReadID)
-	require.NotNil(t, c.lastReadTime)
-	assert.True(t, c.lastReadTime.Equal(ts1))
+	c.cp.Advance(checkpoint.Composite{ChangeTime: &ts1, OrderByValue: int64(100)}, true)
+	snap := c.cp.Snapshot()
+	require.NotNil(t, snap.ChangeTime)
+	assert.True(t, snap.ChangeTime.Equal(ts1))
+	assert.Equal(t, int64(100), snap.OrderByValue)
 
-	c.advanceCheckpoint(150, &ts2)
-	assert.Equal(t, int64(150), c.lastReadID)
-	assert.True(t, c.lastReadTime.Equal(ts2))
+	c.cp.Advance(checkpoint.Composite{ChangeTime: &ts2, OrderByValue: int64(150)}, true)
+	snap = c.cp.Snapshot()
+	assert.True(t, snap.ChangeTime.Equal(ts2))
+	assert.Equal(t, int64(150), snap.OrderByValue)
 
-	c.advanceCheckpoint(120, &ts1) // earlier id and time - no regression
-	assert.Equal(t, int64(150), c.lastReadID)
-	assert.True(t, c.lastReadTime.Equal(ts2))
+	c.cp.Advance(checkpoint.Composite{ChangeTime: &ts1, OrderByValue: int64(120)}, true)
+	snap = c.cp.Snapshot()
+	assert.True(t, snap.ChangeTime.Equal(ts2))
 }
 
 func TestClickHouseSourceConnector_extractRowCheckpoint(t *testing.T) {
-	c := NewClickHouseSourceConnector(&v1.ClickHouseSourceSpec{Table: "t"})
 	ts := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	rowID, rowTime := c.extractRowCheckpoint([]interface{}{uint64(42), ts}, 0, 1)
-	assert.Equal(t, int64(42), rowID)
-	require.NotNil(t, rowTime)
-	assert.True(t, rowTime.Equal(ts))
+	changeTime, orderBy := ExtractRowCheckpoint([]interface{}{uint64(42), ts}, 1, 0, nil)
+	assert.Equal(t, int64(42), int64(orderBy.(uint64)))
+	require.NotNil(t, changeTime)
+	assert.True(t, changeTime.Equal(ts))
 
-	rowID, rowTime = c.extractRowCheckpoint([]interface{}{int64(100)}, 0, -1)
-	assert.Equal(t, int64(100), rowID)
-	assert.Nil(t, rowTime)
-
-	rowID, rowTime = c.extractRowCheckpoint([]interface{}{ts}, -1, 0)
-	assert.Equal(t, int64(0), rowID)
-	require.NotNil(t, rowTime)
-	assert.True(t, rowTime.Equal(ts))
+	changeTime, orderBy = ExtractRowCheckpoint([]interface{}{int64(100)}, -1, 0, nil)
+	assert.Equal(t, int64(100), orderBy)
+	assert.Nil(t, changeTime)
 }
 
 func TestNewClickHouseSinkConnector_WithBatchFlushInterval(t *testing.T) {
-	// Default: both batch size and timer
 	spec := &v1.ClickHouseSinkSpec{
 		ConnectionString: "clickhouse://localhost:9000",
 		Table:            "out",
@@ -132,7 +128,6 @@ func TestNewClickHouseSinkConnector_WithBatchFlushInterval(t *testing.T) {
 	require.NotNil(t, conn)
 	assert.Equal(t, spec, conn.config)
 
-	// Timer only (batchSize 0)
 	spec0 := &v1.ClickHouseSinkSpec{
 		ConnectionString:          "clickhouse://localhost:9000",
 		Table:                     "out",
@@ -144,7 +139,6 @@ func TestNewClickHouseSinkConnector_WithBatchFlushInterval(t *testing.T) {
 	assert.Equal(t, int32(0), *conn0.config.BatchSize)
 	assert.Equal(t, int32(5), *conn0.config.BatchFlushIntervalSeconds)
 
-	// Size only (timer 0)
 	specSize := &v1.ClickHouseSinkSpec{
 		ConnectionString:          "clickhouse://localhost:9000",
 		Table:                     "out",
@@ -165,30 +159,26 @@ func TestInferClickHouseType(t *testing.T) {
 	}{
 		{nil, "Nullable(String)"},
 		{true, "UInt8"},
-		// float64 value-based: whole numbers by range
 		{float64(0), "UInt8"},
 		{float64(1), "UInt8"},
 		{float64(255), "UInt8"},
 		{float64(256), "UInt16"},
 		{float64(65535), "UInt16"},
 		{float64(65536), "UInt32"},
-		{float64(100), "UInt8"}, // 100 <= 255
+		{float64(100), "UInt8"},
 		{float64(1000), "UInt16"},
 		{float64(-1), "Int8"},
 		{float64(-128), "Int8"},
 		{float64(-129), "Int16"},
-		{float64(32767), "UInt16"}, // positive whole: 32767 <= 65535
+		{float64(32767), "UInt16"},
 		{float64(-32768), "Int16"},
 		{float64(-32769), "Int32"},
-		// float64 with decimals
 		{float64(99.99), "Decimal(10, 2)"},
-		{float64(1.5), "Decimal(10, 2)"}, // has at most 2 decimal places
+		{float64(1.5), "Decimal(10, 2)"},
 		{float64(99.999), "Float64"},
-		// RFC3339 string -> DateTime
 		{"2026-03-05T12:27:38Z", "DateTime"},
 		{"2026-01-02 15:04:05", "DateTime"},
 		{"hello", "String"},
-		// Native types
 		{int(1), "UInt8"},
 		{int64(1000), "Int32"},
 		{uint64(1), "UInt8"},
@@ -255,7 +245,7 @@ func TestBuildInsertValues_preservesCreatedAtFromSource(t *testing.T) {
 	}
 }
 
-func TestClickHouseSourceConnector_buildTableReadQuery(t *testing.T) {
+func TestClickHouseSourceConnector_buildReadQuery(t *testing.T) {
 	spec := &v1.ClickHouseSourceSpec{
 		ConnectionString: "clickhouse://localhost:9000",
 		Table:            "events",
@@ -263,20 +253,23 @@ func TestClickHouseSourceConnector_buildTableReadQuery(t *testing.T) {
 	c := NewClickHouseSourceConnector(spec)
 
 	t.Run("first read", func(t *testing.T) {
-		got := c.buildTableReadQuery(0, nil)
+		got := c.buildReadQuery()
 		assert.Contains(t, got, "ORDER BY created_at, id")
 		assert.NotContains(t, got, "WHERE")
 	})
-	t.Run("incremental by id", func(t *testing.T) {
-		got := c.buildTableReadQuery(100, nil)
-		assert.Contains(t, got, "WHERE id > 100")
-		assert.Contains(t, got, "ORDER BY id")
-	})
-	t.Run("incremental by created_at", func(t *testing.T) {
+	t.Run("composite checkpoint", func(t *testing.T) {
 		ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
-		got := c.buildTableReadQuery(0, &ts)
-		assert.Contains(t, got, "WHERE created_at > '2024-06-01 12:00:00'")
+		c.cp.Advance(checkpoint.Composite{ChangeTime: &ts, OrderByValue: int64(100)}, true)
+		got := c.buildReadQuery()
+		assert.Contains(t, got, "WHERE (created_at, id) > ('2024-06-01 12:00:00', 100)")
 		assert.Contains(t, got, "ORDER BY created_at, id")
+	})
+	t.Run("order only legacy", func(t *testing.T) {
+		c2 := NewClickHouseSourceConnector(spec)
+		c2.cp.ApplyInitial([]byte(`{"lastReadOrderByValue":50}`))
+		got := c2.buildReadQuery()
+		assert.Contains(t, got, "WHERE id > 50")
+		assert.Contains(t, got, "ORDER BY id")
 	})
 	t.Run("custom orderByColumn", func(t *testing.T) {
 		spec := &v1.ClickHouseSourceSpec{
@@ -285,10 +278,20 @@ func TestClickHouseSourceConnector_buildTableReadQuery(t *testing.T) {
 			OrderByColumn:    "price_id",
 		}
 		c := NewClickHouseSourceConnector(spec)
-		got := c.buildTableReadQuery(50, nil)
+		c.cp.ApplyInitial([]byte(`{"lastReadOrderByValue":50}`))
+		got := c.buildReadQuery()
 		assert.Contains(t, got, "WHERE price_id > 50")
 		assert.Contains(t, got, "ORDER BY price_id")
 	})
+}
+
+func TestClickHouseSourceConnector_applyInitialCheckpoint_legacy(t *testing.T) {
+	opts := &SourceConnectorOptions{
+		InitialCheckpoint: []byte(`{"lastReadID":100,"lastReadTime":"2024-06-01 12:00:00"}`),
+	}
+	c := NewClickHouseSourceConnectorWithOptions(&v1.ClickHouseSourceSpec{Table: "events"}, opts)
+	got := c.buildReadQuery()
+	assert.Contains(t, got, "WHERE (created_at, id) > ('2024-06-01 12:00:00', 100)")
 }
 
 func TestClickHouseSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
@@ -297,7 +300,6 @@ func TestClickHouseSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
 		Table:            "t",
 		OrderByColumn:    "price_id",
 	})
-	got := c.wrapQueryWithStableOrder("SELECT * FROM prices")
-	assert.Contains(t, got, "__dataflow_src")
-	assert.Contains(t, got, "ORDER BY price_id")
+	got := c.wrapQueryWithStableOrder("SELECT 1")
+	assert.Contains(t, got, "ORDER BY created_at, price_id")
 }

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
@@ -579,7 +580,7 @@ func TestQuoteTrinoIdentifier(t *testing.T) {
 	}
 }
 
-func TestTrinoSourceConnector_buildTableReadQuery(t *testing.T) {
+func TestTrinoSourceConnector_buildReadQuery(t *testing.T) {
 	cfg := &v1.TrinoSourceSpec{
 		Catalog: "cat",
 		Schema:  "sch",
@@ -587,21 +588,24 @@ func TestTrinoSourceConnector_buildTableReadQuery(t *testing.T) {
 	}
 	t.Run("default order by id", func(t *testing.T) {
 		c := NewTrinoSourceConnector(cfg)
-		got := c.buildTableReadQuery(nil)
-		assert.Contains(t, got, "ORDER BY id")
+		got := c.buildReadQuery()
+		assert.Contains(t, got, "ORDER BY updated_at, id")
 		assert.NotContains(t, got, "WHERE")
 	})
-	t.Run("incremental", func(t *testing.T) {
+	t.Run("composite checkpoint", func(t *testing.T) {
 		c := NewTrinoSourceConnector(cfg)
-		got := c.buildTableReadQuery(int64(10))
-		assert.Contains(t, got, "WHERE id > 10")
-		assert.Contains(t, got, "ORDER BY id")
+		ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+		c.cp.Advance(checkpoint.Composite{ChangeTime: &ts, OrderByValue: int64(10)}, true)
+		got := c.buildReadQuery()
+		assert.Contains(t, got, "WHERE (updated_at, id) > (TIMESTAMP '2024-06-01 12:00:00', 10)")
+		assert.Contains(t, got, "ORDER BY updated_at, id")
 	})
-	t.Run("custom orderByColumn", func(t *testing.T) {
+	t.Run("order only legacy", func(t *testing.T) {
 		cfg := *cfg
 		cfg.OrderByColumn = "price_id"
 		c := NewTrinoSourceConnector(&cfg)
-		got := c.buildTableReadQuery(int64(5))
+		c.cp.ApplyInitial([]byte(`{"lastReadOrderByValue":5}`))
+		got := c.buildReadQuery()
 		assert.Contains(t, got, "WHERE price_id > 5")
 		assert.Contains(t, got, "ORDER BY price_id")
 	})

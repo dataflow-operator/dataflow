@@ -20,12 +20,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
-	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -39,13 +40,10 @@ type PostgreSQLSourceConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
-	config             *v1.PostgreSQLSourceSpec
-	conn               *pgx.Conn
-	lastReadChangeTime *time.Time // Track last change time for CDC; advanced only on Ack (after sink write)
-	checkpointMu       sync.Mutex // Protects lastReadChangeTime when advancing from Ack (different goroutine)
-	checkpointStore    checkpoint.Store
-	sourceType         string
-	channelBufferSize  int
+	config            *v1.PostgreSQLSourceSpec
+	conn              *pgx.Conn
+	cp                CompositeCheckpointHolder
+	channelBufferSize int
 }
 
 // NewPostgreSQLSourceConnector creates a new PostgreSQL source connector
@@ -61,14 +59,11 @@ func NewPostgreSQLSourceConnectorWithOptions(config *v1.PostgreSQLSourceSpec, op
 		connectorMetadata: connectorMetadata{connectorType: "postgresql", connectorRole: "source"},
 	}
 	if opts != nil {
-		p.checkpointStore = opts.CheckpointStore
-		p.sourceType = opts.SourceType
-		if p.sourceType == "" {
-			p.sourceType = "postgresql"
+		sourceType := opts.SourceType
+		if sourceType == "" {
+			sourceType = "postgresql"
 		}
-		if len(opts.InitialCheckpoint) > 0 {
-			p.applyInitialCheckpoint(opts.InitialCheckpoint)
-		}
+		p.cp.InitCompositeCheckpoint(opts.CheckpointStore, sourceType, opts.InitialCheckpoint)
 		if opts.ChannelBufferSize > 0 {
 			p.channelBufferSize = opts.ChannelBufferSize
 		} else {
@@ -78,30 +73,6 @@ func NewPostgreSQLSourceConnectorWithOptions(config *v1.PostgreSQLSourceSpec, op
 		p.channelBufferSize = constants.DefaultChannelBufferSize
 	}
 	return p
-}
-
-// applyInitialCheckpoint restores lastReadChangeTime from persisted checkpoint.
-func (p *PostgreSQLSourceConnector) applyInitialCheckpoint(data []byte) {
-	var m struct {
-		LastReadChangeTime string `json:"lastReadChangeTime"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return
-	}
-	if m.LastReadChangeTime == "" {
-		return
-	}
-	t, err := time.Parse(time.RFC3339Nano, m.LastReadChangeTime)
-	if err != nil {
-		// try RFC3339
-		t, err = time.Parse(time.RFC3339, m.LastReadChangeTime)
-		if err != nil {
-			return
-		}
-	}
-	p.checkpointMu.Lock()
-	p.lastReadChangeTime = &t
-	p.checkpointMu.Unlock()
 }
 
 // Connect establishes connection to PostgreSQL
@@ -199,7 +170,11 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 	for {
 		var query string
 		if p.config.Query != "" {
-			query = p.wrapQueryWithStableOrder(p.config.Query)
+			if p.config.ChangeTrackingColumn != "" {
+				query = p.buildIncrementalQueryWrapper()
+			} else {
+				query = p.config.Query
+			}
 		} else {
 			query = p.buildReadQuery()
 		}
@@ -235,6 +210,10 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				changeTrackingIndex = i
 			}
 		}
+		if p.config.Query != "" && p.config.ChangeTrackingColumn != "" && changeTrackingIndex < 0 {
+			p.logger.Info("changeTrackingColumn not found in query result; checkpoint will not advance",
+				"column", changeCol, "table", p.config.Table)
+		}
 
 		rowCount := 0
 		for rows.Next() {
@@ -266,7 +245,11 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			}
 
 			// Extract change time for checkpoint; advance only on Ack (after sink write)
-			changeTime := p.extractChangeTime(values, createdAtIndex, updatedAtIndex, changeTrackingIndex)
+			changeTime, orderByVal := ExtractRowCheckpoint(values, changeTrackingIndex, idIndex, &ChangeTimeFallback{
+				UseUpdatedAtCreatedAt: p.getChangeTrackingColumn() == "updated_at",
+				CreatedAtIndex:        createdAtIndex,
+				UpdatedAtIndex:        updatedAtIndex,
+			})
 
 			jsonData, err := json.Marshal(rowMap)
 			if err != nil {
@@ -284,7 +267,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
 			if changeTime != nil {
 				ct := *changeTime
-				msg.Ack = func() { p.advanceCheckpoint(&ct) }
+				msg.Ack = p.cp.MakeAck(&ct, orderByVal, true)
 			}
 
 			select {
@@ -321,76 +304,59 @@ func (p *PostgreSQLSourceConnector) getChangeTrackingColumn() string {
 }
 
 func (p *PostgreSQLSourceConnector) changeTrackingOrderExpr() string {
-	changeCol := p.getChangeTrackingColumn()
-	if changeCol == "updated_at" {
-		return "COALESCE(updated_at, created_at)"
+	return ResolveChangeTrackingExpr(postgresDialect{}, p.getChangeTrackingColumn(), true)
+}
+
+func (p *PostgreSQLSourceConnector) incrementalSelectInput(fromExpr string) IncrementalSelectInput {
+	return IncrementalSelectInput{
+		FromExpr:           fromExpr,
+		ChangeTrackingExpr: p.changeTrackingOrderExpr(),
+		OrderByColumn:      p.config.OrderByColumn,
+		State:              p.cp.Snapshot(),
+		Dialect:            postgresDialect{},
 	}
-	return quotePostgreSQLIdentifier(changeCol)
 }
 
 func (p *PostgreSQLSourceConnector) buildReadQuery() string {
-	orderExpr := p.changeTrackingOrderExpr()
-	orderByCol := quotePostgreSQLIdentifier(ResolveOrderByColumn(p.config.OrderByColumn))
-	p.checkpointMu.Lock()
-	lastRead := p.lastReadChangeTime
-	p.checkpointMu.Unlock()
-	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
-	if lastRead != nil {
-		// RFC3339Nano preserves sub-second precision to avoid re-reading or skipping rows at boundaries
-		return fmt.Sprintf("SELECT * FROM %s WHERE %s > '%s' ORDER BY %s, %s",
-			quotedTable, orderExpr, lastRead.UTC().Format(time.RFC3339Nano), orderExpr, orderByCol)
-	}
-	return fmt.Sprintf("SELECT * FROM %s ORDER BY %s, %s", quotedTable, orderExpr, orderByCol)
+	return BuildIncrementalSelect(p.incrementalSelectInput(QuotePostgreSQLTableRef(p.config.Table)))
 }
 
-func (p *PostgreSQLSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
-	return WrapQueryStableOrder(userQuery,
-		p.changeTrackingOrderExpr(),
-		quotePostgreSQLIdentifier(ResolveOrderByColumn(p.config.OrderByColumn)),
-	)
+func (p *PostgreSQLSourceConnector) buildIncrementalQueryWrapper() string {
+	return BuildIncrementalSelect(p.incrementalSelectInput("(" + strings.TrimSpace(p.config.Query) + ") AS " + stableOrderSubqueryAlias))
 }
 
-// extractChangeTime returns the change tracking timestamp for the row (for checkpoint).
-func (p *PostgreSQLSourceConnector) extractChangeTime(values []interface{}, createdAtIndex, updatedAtIndex, changeTrackingIndex int) *time.Time {
-	if changeTrackingIndex >= 0 && len(values) > changeTrackingIndex {
-		if ts, ok := values[changeTrackingIndex].(time.Time); ok {
-			return &ts
+// formatPostgreSQLLiteral formats a Go value as a PostgreSQL SQL literal for inline queries.
+func formatPostgreSQLLiteral(v interface{}) string {
+	if v == nil {
+		return "NULL"
+	}
+	switch val := v.(type) {
+	case time.Time:
+		return "'" + val.UTC().Format(time.RFC3339Nano) + "'"
+	case *time.Time:
+		if val == nil {
+			return "NULL"
 		}
-	}
-	if p.getChangeTrackingColumn() == "updated_at" {
-		if updatedAtIndex >= 0 && len(values) > updatedAtIndex {
-			if ts, ok := values[updatedAtIndex].(time.Time); ok {
-				return &ts
-			}
+		return "'" + val.UTC().Format(time.RFC3339Nano) + "'"
+	case string:
+		return "'" + strings.ReplaceAll(val, "'", "''") + "'"
+	case int:
+		return fmt.Sprintf("%d", val)
+	case int32:
+		return fmt.Sprintf("%d", val)
+	case int64:
+		return fmt.Sprintf("%d", val)
+	case uint32:
+		return fmt.Sprintf("%d", val)
+	case uint64:
+		return fmt.Sprintf("%d", val)
+	case float64:
+		if val == math.Trunc(val) {
+			return fmt.Sprintf("%.0f", val)
 		}
-		if createdAtIndex >= 0 && len(values) > createdAtIndex {
-			if ts, ok := values[createdAtIndex].(time.Time); ok {
-				return &ts
-			}
-		}
-	}
-	return nil
-}
-
-// advanceCheckpoint updates lastReadChangeTime only after sink successfully wrote the message.
-// Called from Ack callback (different goroutine); uses checkpointMu to avoid deadlock with readRows.
-func (p *PostgreSQLSourceConnector) advanceCheckpoint(changeTime *time.Time) {
-	if changeTime == nil {
-		return
-	}
-	p.checkpointMu.Lock()
-	if p.lastReadChangeTime == nil || changeTime.After(*p.lastReadChangeTime) {
-		t := *changeTime
-		p.lastReadChangeTime = &t
-	}
-	toSave := p.lastReadChangeTime
-	p.checkpointMu.Unlock()
-
-	if p.checkpointStore != nil && toSave != nil {
-		data, _ := json.Marshal(map[string]string{
-			"lastReadChangeTime": toSave.UTC().Format(time.RFC3339Nano),
-		})
-		_ = p.checkpointStore.Save(context.Background(), p.sourceType, data)
+		return fmt.Sprintf("%v", val)
+	default:
+		return "'" + strings.ReplaceAll(fmt.Sprintf("%v", val), "'", "''") + "'"
 	}
 }
 

@@ -29,7 +29,6 @@ import (
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register clickhouse driver for database/sql
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
-	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -44,11 +43,7 @@ type ClickHouseSourceConnector struct {
 	connectorMetadata
 	config            *v1.ClickHouseSourceSpec
 	conn              *sql.DB
-	lastReadID        int64      // Track last read ID to avoid duplicates
-	lastReadTime      *time.Time // Track last read time to avoid duplicates
-	readStateMu       sync.Mutex // protects lastReadID, lastReadTime (separate from conn to avoid blocking Connect/Close)
-	checkpointStore   checkpoint.Store
-	sourceType        string
+	cp                CompositeCheckpointHolder
 	channelBufferSize int
 }
 
@@ -65,14 +60,11 @@ func NewClickHouseSourceConnectorWithOptions(config *v1.ClickHouseSourceSpec, op
 		connectorMetadata: connectorMetadata{connectorType: "clickhouse", connectorRole: "source"},
 	}
 	if opts != nil {
-		c.checkpointStore = opts.CheckpointStore
-		c.sourceType = opts.SourceType
-		if c.sourceType == "" {
-			c.sourceType = "clickhouse"
+		sourceType := opts.SourceType
+		if sourceType == "" {
+			sourceType = "clickhouse"
 		}
-		if len(opts.InitialCheckpoint) > 0 {
-			c.applyInitialCheckpoint(opts.InitialCheckpoint)
-		}
+		c.cp.InitCompositeCheckpoint(opts.CheckpointStore, sourceType, opts.InitialCheckpoint)
 		if opts.ChannelBufferSize > 0 {
 			c.channelBufferSize = opts.ChannelBufferSize
 		} else {
@@ -82,34 +74,6 @@ func NewClickHouseSourceConnectorWithOptions(config *v1.ClickHouseSourceSpec, op
 		c.channelBufferSize = constants.DefaultChannelBufferSize
 	}
 	return c
-}
-
-// applyInitialCheckpoint restores lastReadID and lastReadTime from persisted checkpoint.
-func (c *ClickHouseSourceConnector) applyInitialCheckpoint(data []byte) {
-	var m struct {
-		LastReadID   int64  `json:"lastReadID"`
-		LastReadTime string `json:"lastReadTime"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return
-	}
-	c.readStateMu.Lock()
-	defer c.readStateMu.Unlock()
-	if m.LastReadID > 0 && m.LastReadID > c.lastReadID {
-		c.lastReadID = m.LastReadID
-	}
-	if m.LastReadTime != "" {
-		t, err := time.Parse("2006-01-02 15:04:05", m.LastReadTime)
-		if err != nil {
-			t, err = time.Parse(time.RFC3339, m.LastReadTime)
-			if err != nil {
-				return
-			}
-		}
-		if c.lastReadTime == nil || t.After(*c.lastReadTime) {
-			c.lastReadTime = &t
-		}
-	}
 }
 
 // Connect establishes connection to ClickHouse
@@ -167,20 +131,15 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		return nil
 	}
 
-	c.readStateMu.Lock()
-	lastReadID := c.lastReadID
-	var lastReadTime *time.Time
-	if c.lastReadTime != nil {
-		t := *c.lastReadTime
-		lastReadTime = &t
-	}
-	c.readStateMu.Unlock()
-
 	var query string
 	if c.config.Query != "" {
-		query = c.wrapQueryWithStableOrder(c.config.Query)
+		if c.config.ChangeTrackingColumn != "" {
+			query = c.buildIncrementalQueryWrapper()
+		} else {
+			query = c.wrapQueryWithStableOrder(c.config.Query)
+		}
 	} else {
-		query = c.buildTableReadQuery(lastReadID, lastReadTime)
+		query = c.buildReadQuery()
 	}
 
 	c.logger.V(1).Info("Executing ClickHouse query", "query", query, "table", c.config.Table)
@@ -204,14 +163,8 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 
 	orderByCol := ResolveOrderByColumn(c.config.OrderByColumn)
 	idIndex := ColumnIndex(columns, orderByCol)
-	createdAtIndex := ColumnIndex(columns, "created_at")
-
-	var maxReadID int64 = lastReadID
-	var maxReadTime *time.Time
-	if lastReadTime != nil {
-		t := *lastReadTime
-		maxReadTime = &t
-	}
+	changeCol := c.getChangeTrackingColumn()
+	changeIndex := ColumnIndex(columns, changeCol)
 
 	rowCount := 0
 	for rows.Next() {
@@ -231,29 +184,7 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 			rowMap[col] = values[i]
 		}
 
-		if idIndex >= 0 {
-			if id, ok := values[idIndex].(uint64); ok {
-				if int64(id) > maxReadID {
-					maxReadID = int64(id)
-				}
-			} else if id, ok := values[idIndex].(int64); ok {
-				if id > maxReadID {
-					maxReadID = id
-				}
-			} else if id, ok := values[idIndex].(int32); ok {
-				if int64(id) > maxReadID {
-					maxReadID = int64(id)
-				}
-			}
-		}
-		if createdAtIndex >= 0 {
-			if ts, ok := values[createdAtIndex].(time.Time); ok {
-				if maxReadTime == nil || ts.After(*maxReadTime) {
-					t := ts
-					maxReadTime = &t
-				}
-			}
-		}
+		changeTime, orderByVal := ExtractRowCheckpoint(values, changeIndex, idIndex, nil)
 
 		jsonData, err := json.Marshal(rowMap)
 		if err != nil {
@@ -267,9 +198,11 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 			SetSourceRowIDMetadata(msg, values[idIndex])
 		}
 		// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
-		rowID, rowTime := c.extractRowCheckpoint(values, idIndex, createdAtIndex)
-		if rowID > 0 || rowTime != nil {
-			msg.Ack = func() { c.advanceCheckpoint(rowID, rowTime) }
+		if changeTime != nil {
+			ct := *changeTime
+			msg.Ack = c.cp.MakeAck(&ct, orderByVal, true)
+		} else if orderByVal != nil {
+			msg.Ack = c.cp.MakeAck(nil, orderByVal, false)
 		}
 
 		select {
@@ -285,69 +218,39 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 	return nil
 }
 
-func (c *ClickHouseSourceConnector) buildTableReadQuery(lastReadID int64, lastReadTime *time.Time) string {
-	table := c.config.Table
-	col := ResolveOrderByColumn(c.config.OrderByColumn)
-	if lastReadID > 0 {
-		return fmt.Sprintf("SELECT * FROM %s WHERE %s > %d ORDER BY %s", table, col, lastReadID, col)
+func (c *ClickHouseSourceConnector) getChangeTrackingColumn() string {
+	if c.config.ChangeTrackingColumn != "" {
+		return c.config.ChangeTrackingColumn
 	}
-	if lastReadTime != nil {
-		return fmt.Sprintf("SELECT * FROM %s WHERE created_at > '%s' ORDER BY created_at, %s",
-			table, lastReadTime.Format("2006-01-02 15:04:05"), col)
+	return "created_at"
+}
+
+func (c *ClickHouseSourceConnector) changeTrackingOrderExpr() string {
+	return ResolveChangeTrackingExpr(clickHouseDialect{}, c.getChangeTrackingColumn(), false)
+}
+
+func (c *ClickHouseSourceConnector) incrementalSelectInput(fromExpr string) IncrementalSelectInput {
+	return IncrementalSelectInput{
+		FromExpr:           fromExpr,
+		ChangeTrackingExpr: c.changeTrackingOrderExpr(),
+		OrderByColumn:      c.config.OrderByColumn,
+		State:              c.cp.Snapshot(),
+		Dialect:            clickHouseDialect{},
 	}
-	return fmt.Sprintf("SELECT * FROM %s ORDER BY created_at, %s", table, col)
+}
+
+func (c *ClickHouseSourceConnector) buildReadQuery() string {
+	return BuildIncrementalSelect(c.incrementalSelectInput(c.config.Table))
+}
+
+func (c *ClickHouseSourceConnector) buildIncrementalQueryWrapper() string {
+	return BuildIncrementalSelect(c.incrementalSelectInput("(" + strings.TrimSpace(c.config.Query) + ") AS " + stableOrderSubqueryAlias))
 }
 
 func (c *ClickHouseSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
 	col := ResolveOrderByColumn(c.config.OrderByColumn)
-	return WrapQueryStableOrder(userQuery, col)
-}
-
-// extractRowCheckpoint returns (id, created_at) for checkpoint advancement.
-func (c *ClickHouseSourceConnector) extractRowCheckpoint(values []interface{}, idIndex, createdAtIndex int) (int64, *time.Time) {
-	var rowID int64
-	if idIndex >= 0 && len(values) > idIndex {
-		switch v := values[idIndex].(type) {
-		case uint64:
-			rowID = int64(v)
-		case int64:
-			rowID = v
-		case int32:
-			rowID = int64(v)
-		}
-	}
-	var rowTime *time.Time
-	if createdAtIndex >= 0 && len(values) > createdAtIndex {
-		if ts, ok := values[createdAtIndex].(time.Time); ok {
-			rowTime = &ts
-		}
-	}
-	return rowID, rowTime
-}
-
-// advanceCheckpoint updates lastReadID/lastReadTime only after sink successfully wrote the message.
-// Called from Ack callback (different goroutine).
-func (c *ClickHouseSourceConnector) advanceCheckpoint(rowID int64, rowTime *time.Time) {
-	c.readStateMu.Lock()
-	if rowID > 0 && rowID > c.lastReadID {
-		c.lastReadID = rowID
-	}
-	if rowTime != nil && (c.lastReadTime == nil || rowTime.After(*c.lastReadTime)) {
-		t := *rowTime
-		c.lastReadTime = &t
-	}
-	lastID := c.lastReadID
-	lastTime := c.lastReadTime
-	c.readStateMu.Unlock()
-
-	if c.checkpointStore != nil {
-		m := map[string]interface{}{"lastReadID": lastID}
-		if lastTime != nil {
-			m["lastReadTime"] = lastTime.Format("2006-01-02 15:04:05")
-		}
-		data, _ := json.Marshal(m)
-		_ = c.checkpointStore.Save(context.Background(), c.sourceType, data)
-	}
+	changeCol := c.getChangeTrackingColumn()
+	return WrapQueryStableOrder(userQuery, changeCol, col)
 }
 
 // Close closes the ClickHouse connection

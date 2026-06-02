@@ -69,8 +69,8 @@ func TestMergeCheckpointData(t *testing.T) {
 		checkpointKey: `{"postgresql":{"lastReadChangeTime":"2024-01-15T09:00:00Z"}}`,
 	}
 	pending := map[string][]byte{
-		"postgresql": []byte(`{"lastReadChangeTime":"2024-01-15T10:00:00Z"}`),
-		"clickhouse": []byte(`{"lastReadID":456,"lastReadTime":"2024-01-15 10:00:00"}`),
+		"postgresql": []byte(`{"lastReadChangeTime":"2024-01-15T10:00:00Z","lastReadOrderByValue":5042}`),
+		"clickhouse": []byte(`{"lastReadChangeTime":"2024-01-15T10:00:00Z","lastReadOrderByValue":456}`),
 	}
 	merged := mergeCheckpointData(existing, pending)
 	var m map[string]json.RawMessage

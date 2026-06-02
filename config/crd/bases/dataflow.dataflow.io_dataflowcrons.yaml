@@ -958,7 +958,7 @@ spec:
                 type: integer
               checkpointPersistence:
                 description: |-
-                  CheckpointPersistence enables persisting source checkpoint (lastReadID, lastReadChangeTime) to a ConfigMap.
+                  CheckpointPersistence enables persisting source checkpoint (lastReadChangeTime, lastReadOrderByValue) to a ConfigMap.
                   When enabled, polling sources (PostgreSQL, ClickHouse, Trino) resume from the last committed position after restart, reducing duplicates.
                   Default: true. Set to false to disable.
                 type: boolean

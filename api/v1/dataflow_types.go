@@ -70,7 +70,7 @@ type DataFlowSpec struct {
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
-	// CheckpointPersistence enables persisting source checkpoint (lastReadID, lastReadChangeTime) to a ConfigMap.
+	// CheckpointPersistence enables persisting source checkpoint (lastReadChangeTime, lastReadOrderByValue) to a ConfigMap.
 	// When enabled, polling sources (PostgreSQL, ClickHouse, Trino) resume from the last committed position after restart, reducing duplicates.
 	// Default: true. Set to false to disable.
 	// +optional
@@ -286,7 +286,7 @@ type PostgreSQLSourceSpec struct {
 	ReadBatchSize *int32 `json:"readBatchSize,omitempty"`
 
 	// ChangeTrackingColumn is the column used to track changes (default: updated_at).
-	// Not used when Query is specified.
+	// Used in table mode and in query mode when explicitly set (subquery wrapper + composite checkpoint).
 	// +optional
 	// +kubebuilder:default="updated_at"
 	ChangeTrackingColumn string `json:"changeTrackingColumn,omitempty"`
@@ -346,6 +346,12 @@ type TrinoSourceSpec struct {
 	// OrderByColumn is the column used for incremental pagination and stable ORDER BY (default: id).
 	// +optional
 	OrderByColumn string `json:"orderByColumn,omitempty"`
+
+	// ChangeTrackingColumn is the column used to track changes (default: updated_at).
+	// Used in table mode and in query mode when explicitly set (subquery wrapper + composite checkpoint).
+	// +optional
+	// +kubebuilder:default="updated_at"
+	ChangeTrackingColumn string `json:"changeTrackingColumn,omitempty"`
 }
 
 // ClickHouseSourceSpec defines ClickHouse source configuration
@@ -375,9 +381,14 @@ type ClickHouseSourceSpec struct {
 	// OrderByColumn is the column used for incremental pagination and stable ORDER BY (default: id).
 	// +optional
 	OrderByColumn string `json:"orderByColumn,omitempty"`
+
+	// ChangeTrackingColumn is the column used to track changes (default: created_at).
+	// Used in table mode and in query mode when explicitly set (subquery wrapper + composite checkpoint).
+	// +optional
+	// +kubebuilder:default="created_at"
+	ChangeTrackingColumn string `json:"changeTrackingColumn,omitempty"`
 }
 
-// NessieSourceSpec defines Nessie (Iceberg REST catalog) source configuration.
 // All catalog operations (load table, read) are performed in the context of the given branch.
 // URI for Nessie Iceberg REST: {baseURL}/iceberg[/{branch}][|{warehouse}].
 type NessieAuthenticationType string

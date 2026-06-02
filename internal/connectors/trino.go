@@ -25,7 +25,6 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
-	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -40,10 +39,7 @@ type TrinoSourceConnector struct {
 	connectorMetadata
 	config            *v1.TrinoSourceSpec
 	client            *trinoClient
-	lastReadID        interface{} // advanced only on Ack (after sink write)
-	readStateMu       sync.Mutex  // protects lastReadID
-	checkpointStore   checkpoint.Store
-	sourceType        string
+	cp                CompositeCheckpointHolder
 	channelBufferSize int
 }
 
@@ -60,14 +56,11 @@ func NewTrinoSourceConnectorWithOptions(config *v1.TrinoSourceSpec, opts *Source
 		connectorMetadata: connectorMetadata{connectorType: "trino", connectorRole: "source"},
 	}
 	if opts != nil {
-		t.checkpointStore = opts.CheckpointStore
-		t.sourceType = opts.SourceType
-		if t.sourceType == "" {
-			t.sourceType = "trino"
+		sourceType := opts.SourceType
+		if sourceType == "" {
+			sourceType = "trino"
 		}
-		if len(opts.InitialCheckpoint) > 0 {
-			t.applyInitialCheckpoint(opts.InitialCheckpoint)
-		}
+		t.cp.InitCompositeCheckpoint(opts.CheckpointStore, sourceType, opts.InitialCheckpoint)
 		if opts.ChannelBufferSize > 0 {
 			t.channelBufferSize = opts.ChannelBufferSize
 		} else {
@@ -77,21 +70,6 @@ func NewTrinoSourceConnectorWithOptions(config *v1.TrinoSourceSpec, opts *Source
 		t.channelBufferSize = constants.DefaultChannelBufferSize
 	}
 	return t
-}
-
-// applyInitialCheckpoint restores lastReadID from persisted checkpoint.
-func (t *TrinoSourceConnector) applyInitialCheckpoint(data []byte) {
-	var m struct {
-		LastReadID interface{} `json:"lastReadID"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return
-	}
-	if m.LastReadID != nil {
-		t.readStateMu.Lock()
-		t.lastReadID = m.LastReadID
-		t.readStateMu.Unlock()
-	}
 }
 
 // Connect establishes connection to Trino
@@ -141,17 +119,17 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 }
 
 func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
-	t.readStateMu.Lock()
-	lastReadID := t.lastReadID
-	t.readStateMu.Unlock()
-
 	var query string
 	if t.config.Query != "" {
-		query = t.wrapQueryWithStableOrder(t.config.Query)
+		if t.config.ChangeTrackingColumn != "" {
+			query = t.buildIncrementalQueryWrapper()
+		} else {
+			query = t.wrapQueryWithStableOrder(t.config.Query)
+		}
 		t.logger.Info("Using custom query from configuration", "query", query)
 	} else {
-		query = t.buildTableReadQuery(lastReadID)
-		t.logger.Info("Built table read query", "query", query, "lastReadID", lastReadID)
+		query = t.buildReadQuery()
+		t.logger.Info("Built table read query", "query", query)
 	}
 
 	rows, err := t.client.executeQuery(ctx, query)
@@ -163,13 +141,10 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 		return ErrSourceExhausted
 	}
 
+	changeCol := t.getChangeTrackingColumn()
 	orderByCol := ResolveOrderByColumn(t.config.OrderByColumn)
 	for _, row := range rows {
-		// Ack advances checkpoint only after sink successfully writes; prevents gaps on crash
-		var rowID interface{}
-		if v, ok := row[orderByCol]; ok {
-			rowID = v
-		}
+		changeTime, orderByVal := extractMapRowCheckpoint(row, changeCol, orderByCol)
 
 		jsonData, err := json.Marshal(row)
 		if err != nil {
@@ -181,10 +156,13 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 		msg.Metadata["catalog"] = t.config.Catalog
 		msg.Metadata["schema"] = t.config.Schema
 		msg.Metadata["table"] = t.config.Table
-		SetSourceRowIDMetadata(msg, rowID)
-		if rowID != nil {
-			rid := rowID
-			msg.Ack = func() { t.advanceCheckpoint(rid) }
+		SetSourceRowIDMetadata(msg, orderByVal)
+
+		if changeTime != nil {
+			ct := *changeTime
+			msg.Ack = t.cp.MakeAck(&ct, orderByVal, true)
+		} else if orderByVal != nil {
+			msg.Ack = t.cp.MakeAck(nil, orderByVal, false)
 		}
 
 		select {
@@ -197,31 +175,39 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 	return nil
 }
 
-func (t *TrinoSourceConnector) buildTableReadQuery(lastReadID interface{}) string {
-	base := fmt.Sprintf("SELECT * FROM %s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
-	col := ResolveOrderByColumn(t.config.OrderByColumn)
-	if lastReadID != nil {
-		return fmt.Sprintf("%s WHERE %s > %v ORDER BY %s", base, col, lastReadID, col)
+func (t *TrinoSourceConnector) getChangeTrackingColumn() string {
+	if t.config.ChangeTrackingColumn != "" {
+		return t.config.ChangeTrackingColumn
 	}
-	return fmt.Sprintf("%s ORDER BY %s", base, col)
+	return "updated_at"
+}
+
+func (t *TrinoSourceConnector) changeTrackingOrderExpr() string {
+	return ResolveChangeTrackingExpr(trinoDialect{}, t.getChangeTrackingColumn(), false)
+}
+
+func (t *TrinoSourceConnector) incrementalSelectInput(fromExpr string) IncrementalSelectInput {
+	return IncrementalSelectInput{
+		FromExpr:           fromExpr,
+		ChangeTrackingExpr: t.changeTrackingOrderExpr(),
+		OrderByColumn:      t.config.OrderByColumn,
+		State:              t.cp.Snapshot(),
+		Dialect:            trinoDialect{},
+	}
+}
+
+func (t *TrinoSourceConnector) buildReadQuery() string {
+	from := fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
+	return BuildIncrementalSelect(t.incrementalSelectInput(from))
+}
+
+func (t *TrinoSourceConnector) buildIncrementalQueryWrapper() string {
+	return BuildIncrementalSelect(t.incrementalSelectInput("(" + strings.TrimSpace(t.config.Query) + ") AS " + stableOrderSubqueryAlias))
 }
 
 func (t *TrinoSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
 	col := ResolveOrderByColumn(t.config.OrderByColumn)
 	return WrapQueryStableOrder(userQuery, col)
-}
-
-// advanceCheckpoint updates lastReadID only after sink successfully wrote the message.
-func (t *TrinoSourceConnector) advanceCheckpoint(rowID interface{}) {
-	t.readStateMu.Lock()
-	t.lastReadID = rowID
-	toSave := rowID
-	t.readStateMu.Unlock()
-
-	if t.checkpointStore != nil && toSave != nil {
-		data, _ := json.Marshal(map[string]interface{}{"lastReadID": toSave})
-		_ = t.checkpointStore.Save(context.Background(), t.sourceType, data)
-	}
 }
 
 // Close closes the Trino connection

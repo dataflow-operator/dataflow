@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/types"
 )
@@ -38,6 +39,7 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 		name               string
 		config             *v1.PostgreSQLSourceSpec
 		lastReadChangeTime *time.Time
+		lastReadOrderBy    interface{}
 		wantContains       []string
 		wantNotContains    []string
 	}{
@@ -56,6 +58,15 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 			},
 			lastReadChangeTime: ptrTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
 			wantContains:       []string{"WHERE COALESCE(updated_at, created_at) > '2024-01-15T10:00:00", `ORDER BY COALESCE(updated_at, created_at), "id"`},
+		},
+		{
+			name: "incremental read composite checkpoint",
+			config: &v1.PostgreSQLSourceSpec{
+				Table: table,
+			},
+			lastReadChangeTime: ptrTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
+			lastReadOrderBy:    int64(5042),
+			wantContains:       []string{`WHERE (COALESCE(updated_at, created_at), "id") > ('2024-01-15T10:00:00`, ", 5042)"},
 		},
 		{
 			name: "custom ChangeTrackingColumn first read",
@@ -95,7 +106,10 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewPostgreSQLSourceConnector(tt.config)
 			if tt.lastReadChangeTime != nil {
-				p.advanceCheckpoint(tt.lastReadChangeTime)
+				p.cp.Advance(checkpoint.Composite{
+					ChangeTime:   tt.lastReadChangeTime,
+					OrderByValue: tt.lastReadOrderBy,
+				}, true)
 			}
 			got := p.buildReadQuery()
 			for _, s := range tt.wantContains {
@@ -108,66 +122,112 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 	}
 }
 
-func TestPostgreSQLSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
-	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{
-		Table:         "t",
-		OrderByColumn: "price_id",
+func TestPostgreSQLSourceConnector_buildIncrementalQueryWrapper(t *testing.T) {
+	userQuery := `SELECT material_number, price, update_date, price_id
+FROM price.price WHERE price_status = 'EXPORTED'`
+
+	t.Run("first read without checkpoint", func(t *testing.T) {
+		p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{
+			Table:                "price.price",
+			Query:                userQuery,
+			ChangeTrackingColumn: "update_date",
+			OrderByColumn:        "price_id",
+		})
+		got := p.buildIncrementalQueryWrapper()
+		assert.Contains(t, got, "SELECT * FROM ("+userQuery+") AS __dataflow_src")
+		assert.Contains(t, got, `ORDER BY "update_date", "price_id"`)
+		assert.Contains(t, got, ") AS __dataflow_src ORDER BY")
+		assert.NotContains(t, got, ") AS __dataflow_src WHERE")
 	})
-	got := p.wrapQueryWithStableOrder("SELECT * FROM prices")
-	assert.Contains(t, got, "SELECT * FROM (SELECT * FROM prices) AS __dataflow_src")
-	assert.Contains(t, got, `ORDER BY COALESCE(updated_at, created_at), "price_id"`)
+
+	t.Run("incremental with composite checkpoint", func(t *testing.T) {
+		p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{
+			Table:                "price.price",
+			Query:                userQuery,
+			ChangeTrackingColumn: "update_date",
+			OrderByColumn:        "price_id",
+		})
+		ts := time.Date(2024, 6, 1, 12, 0, 0, 123456789, time.UTC)
+		p.cp.Advance(checkpoint.Composite{ChangeTime: &ts, OrderByValue: int64(5042)}, true)
+		got := p.buildIncrementalQueryWrapper()
+		assert.Contains(t, got, `WHERE ("update_date", "price_id") > ('2024-06-01T12:00:00.123456789Z', 5042)`)
+		assert.Contains(t, got, `ORDER BY "update_date", "price_id"`)
+	})
 }
 
 func TestPostgreSQLSourceConnector_advanceCheckpoint(t *testing.T) {
-	// advanceCheckpoint updates lastReadChangeTime only when new time is after current
 	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{Table: "t"})
 
 	t1 := time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)
 	t2 := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
-	t3 := time.Date(2024, 1, 12, 0, 0, 0, 0, time.UTC) // between t1 and t2
+	t3 := time.Date(2024, 1, 12, 0, 0, 0, 0, time.UTC)
 
-	p.advanceCheckpoint(&t1)
+	p.cp.Advance(checkpoint.Composite{ChangeTime: &t1, OrderByValue: int64(1)}, true)
 	got := p.buildReadQuery()
 	assert.Contains(t, got, "2024-01-10", "query should use t1 after first advance")
+	assert.Contains(t, got, ", 1)")
 
-	p.advanceCheckpoint(&t2)
+	p.cp.Advance(checkpoint.Composite{ChangeTime: &t2, OrderByValue: int64(2)}, true)
 	got = p.buildReadQuery()
 	assert.Contains(t, got, "2024-01-15", "query should use t2 after advancing to later time")
+	assert.Contains(t, got, ", 2)")
 
-	p.advanceCheckpoint(&t3)
+	p.cp.Advance(checkpoint.Composite{ChangeTime: &t3, OrderByValue: int64(1)}, true)
 	got = p.buildReadQuery()
 	assert.Contains(t, got, "2024-01-15", "query should still use t2 when advancing to earlier time (no regression)")
+	assert.Contains(t, got, ", 2)")
+
+	p.cp.Advance(checkpoint.Composite{ChangeTime: &t2, OrderByValue: int64(99)}, true)
+	got = p.buildReadQuery()
+	assert.Contains(t, got, ", 99)")
 }
 
 func TestPostgreSQLSourceConnector_applyInitialCheckpoint(t *testing.T) {
 	opts := &SourceConnectorOptions{
-		InitialCheckpoint: []byte(`{"lastReadChangeTime":"2024-01-15T10:30:00Z"}`),
+		InitialCheckpoint: []byte(`{"lastReadChangeTime":"2024-01-15T10:30:00Z","lastReadOrderByValue":5042}`),
 	}
 	p := NewPostgreSQLSourceConnectorWithOptions(&v1.PostgreSQLSourceSpec{Table: "t"}, opts)
 	got := p.buildReadQuery()
 	assert.Contains(t, got, "2024-01-15T10:30:00", "query should use restored checkpoint")
+	assert.Contains(t, got, ", 5042)")
 }
 
-func TestPostgreSQLSourceConnector_extractChangeTime(t *testing.T) {
-	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{Table: "t"})
+func TestFormatPostgreSQLLiteral(t *testing.T) {
+	ts := time.Date(2024, 6, 1, 12, 0, 0, 123456789, time.UTC)
+	assert.Equal(t, "'2024-06-01T12:00:00.123456789Z'", formatPostgreSQLLiteral(ts))
+	assert.Equal(t, "5042", formatPostgreSQLLiteral(int64(5042)))
+	assert.Equal(t, "'hello''world'", formatPostgreSQLLiteral("hello'world"))
+	assert.Equal(t, "NULL", formatPostgreSQLLiteral(nil))
+}
+
+func TestCompareOrderByValues(t *testing.T) {
+	assert.Equal(t, -1, checkpoint.CompareOrderBy(int64(1), int64(2)))
+	assert.Equal(t, 1, checkpoint.CompareOrderBy(int64(3), int64(2)))
+	assert.Equal(t, 0, checkpoint.CompareOrderBy(int64(2), int64(2)))
+}
+
+func TestExtractRowCheckpoint_postgresqlFallback(t *testing.T) {
 	ts := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	fallback := &ChangeTimeFallback{
+		UseUpdatedAtCreatedAt: true,
+		CreatedAtIndex:        0,
+		UpdatedAtIndex:        1,
+	}
 
 	tests := []struct {
 		name              string
 		values            []interface{}
-		createdIdx        int
-		updatedIdx        int
 		changeTrackingIdx int
 		wantChangeTime    *time.Time
 	}{
-		{"change tracking column", []interface{}{nil, nil, ts}, -1, -1, 2, &ts},
-		{"updated_at fallback", []interface{}{nil, ts, nil}, -1, 1, -1, &ts},
-		{"created_at fallback", []interface{}{ts, nil, nil}, 0, -1, -1, &ts},
-		{"no time columns", []interface{}{1, "x"}, -1, -1, -1, nil},
+		{"change tracking column", []interface{}{nil, nil, ts}, 2, &ts},
+		{"updated_at fallback", []interface{}{nil, ts, nil}, -1, &ts},
+		{"created_at fallback", []interface{}{ts, nil, nil}, -1, &ts},
+		{"no time columns", []interface{}{1, "x"}, -1, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := p.extractChangeTime(tt.values, tt.createdIdx, tt.updatedIdx, tt.changeTrackingIdx)
+			got, _ := ExtractRowCheckpoint(tt.values, tt.changeTrackingIdx, -1, fallback)
 			if tt.wantChangeTime == nil {
 				assert.Nil(t, got)
 			} else {

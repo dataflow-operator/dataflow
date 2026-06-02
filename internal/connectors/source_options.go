@@ -57,9 +57,14 @@ func WithChannelBufferSize(size int) SourceConnectorOption {
 
 // LoadInitialCheckpoint loads checkpoint from store for the given source type.
 // Returns nil if store is nil or no checkpoint exists.
+// Legacy checkpoint formats are normalized to canonical composite JSON.
 func LoadInitialCheckpoint(ctx context.Context, store checkpoint.Store, sourceType string) ([]byte, error) {
 	if store == nil {
 		return nil, nil
 	}
-	return store.Load(ctx, sourceType)
+	data, err := store.Load(ctx, sourceType)
+	if err != nil || len(data) == 0 {
+		return data, err
+	}
+	return checkpoint.NormalizeCheckpoint(data), nil
 }
