@@ -147,19 +147,11 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 
 	var query string
 	if t.config.Query != "" {
-		query = t.config.Query
+		query = t.wrapQueryWithStableOrder(t.config.Query)
 		t.logger.Info("Using custom query from configuration", "query", query)
 	} else {
-		// Build query to read from table
-		query = fmt.Sprintf("SELECT * FROM %s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
-		if lastReadID != nil {
-			// Add WHERE clause to filter already read rows (assuming id column exists)
-			query = fmt.Sprintf("%s WHERE id > %v ORDER BY id", query, lastReadID)
-			t.logger.Info("Built query with lastReadID filter", "query", query, "lastReadID", lastReadID)
-		} else {
-			query = fmt.Sprintf("%s ORDER BY id", query)
-			t.logger.Info("Built query without filter", "query", query)
-		}
+		query = t.buildTableReadQuery(lastReadID)
+		t.logger.Info("Built table read query", "query", query, "lastReadID", lastReadID)
 	}
 
 	rows, err := t.client.executeQuery(ctx, query)
@@ -171,11 +163,12 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 		return ErrSourceExhausted
 	}
 
+	orderByCol := ResolveOrderByColumn(t.config.OrderByColumn)
 	for _, row := range rows {
 		// Ack advances checkpoint only after sink successfully writes; prevents gaps on crash
 		var rowID interface{}
-		if id, ok := row["id"]; ok {
-			rowID = id
+		if v, ok := row[orderByCol]; ok {
+			rowID = v
 		}
 
 		jsonData, err := json.Marshal(row)
@@ -188,6 +181,7 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 		msg.Metadata["catalog"] = t.config.Catalog
 		msg.Metadata["schema"] = t.config.Schema
 		msg.Metadata["table"] = t.config.Table
+		SetSourceRowIDMetadata(msg, rowID)
 		if rowID != nil {
 			rid := rowID
 			msg.Ack = func() { t.advanceCheckpoint(rid) }
@@ -201,6 +195,20 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 	}
 
 	return nil
+}
+
+func (t *TrinoSourceConnector) buildTableReadQuery(lastReadID interface{}) string {
+	base := fmt.Sprintf("SELECT * FROM %s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
+	col := ResolveOrderByColumn(t.config.OrderByColumn)
+	if lastReadID != nil {
+		return fmt.Sprintf("%s WHERE %s > %v ORDER BY %s", base, col, lastReadID, col)
+	}
+	return fmt.Sprintf("%s ORDER BY %s", base, col)
+}
+
+func (t *TrinoSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
+	col := ResolveOrderByColumn(t.config.OrderByColumn)
+	return WrapQueryStableOrder(userQuery, col)
 }
 
 // advanceCheckpoint updates lastReadID only after sink successfully wrote the message.

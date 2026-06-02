@@ -178,16 +178,9 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 
 	var query string
 	if c.config.Query != "" {
-		query = c.config.Query
+		query = c.wrapQueryWithStableOrder(c.config.Query)
 	} else {
-		if lastReadID > 0 {
-			query = fmt.Sprintf("SELECT * FROM %s WHERE id > %d ORDER BY id", c.config.Table, lastReadID)
-		} else if lastReadTime != nil {
-			query = fmt.Sprintf("SELECT * FROM %s WHERE created_at > '%s' ORDER BY created_at",
-				c.config.Table, lastReadTime.Format("2006-01-02 15:04:05"))
-		} else {
-			query = fmt.Sprintf("SELECT * FROM %s", c.config.Table)
-		}
+		query = c.buildTableReadQuery(lastReadID, lastReadTime)
 	}
 
 	c.logger.V(1).Info("Executing ClickHouse query", "query", query, "table", c.config.Table)
@@ -209,16 +202,9 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		return fmt.Errorf("clickhouse columns: %w", err)
 	}
 
-	var idIndex = -1
-	var createdAtIndex = -1
-	for i, col := range columns {
-		if col == "id" {
-			idIndex = i
-		}
-		if col == "created_at" {
-			createdAtIndex = i
-		}
-	}
+	orderByCol := ResolveOrderByColumn(c.config.OrderByColumn)
+	idIndex := ColumnIndex(columns, orderByCol)
+	createdAtIndex := ColumnIndex(columns, "created_at")
 
 	var maxReadID int64 = lastReadID
 	var maxReadTime *time.Time
@@ -278,7 +264,7 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		msg := types.NewMessage(jsonData)
 		msg.Metadata["table"] = c.config.Table
 		if idIndex >= 0 && len(values) > idIndex {
-			msg.Metadata["id"] = values[idIndex]
+			SetSourceRowIDMetadata(msg, values[idIndex])
 		}
 		// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
 		rowID, rowTime := c.extractRowCheckpoint(values, idIndex, createdAtIndex)
@@ -297,6 +283,24 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		return ErrSourceExhausted
 	}
 	return nil
+}
+
+func (c *ClickHouseSourceConnector) buildTableReadQuery(lastReadID int64, lastReadTime *time.Time) string {
+	table := c.config.Table
+	col := ResolveOrderByColumn(c.config.OrderByColumn)
+	if lastReadID > 0 {
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s > %d ORDER BY %s", table, col, lastReadID, col)
+	}
+	if lastReadTime != nil {
+		return fmt.Sprintf("SELECT * FROM %s WHERE created_at > '%s' ORDER BY created_at, %s",
+			table, lastReadTime.Format("2006-01-02 15:04:05"), col)
+	}
+	return fmt.Sprintf("SELECT * FROM %s ORDER BY created_at, %s", table, col)
+}
+
+func (c *ClickHouseSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
+	col := ResolveOrderByColumn(c.config.OrderByColumn)
+	return WrapQueryStableOrder(userQuery, col)
 }
 
 // extractRowCheckpoint returns (id, created_at) for checkpoint advancement.

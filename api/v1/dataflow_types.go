@@ -291,6 +291,11 @@ type PostgreSQLSourceSpec struct {
 	// +kubebuilder:default="updated_at"
 	ChangeTrackingColumn string `json:"changeTrackingColumn,omitempty"`
 
+	// OrderByColumn is the secondary sort key for stable pagination (default: id).
+	// Used in ORDER BY together with changeTrackingColumn.
+	// +optional
+	OrderByColumn string `json:"orderByColumn,omitempty"`
+
 	// AutoCreateTable creates the table if it doesn't exist before reading
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
@@ -337,6 +342,10 @@ type TrinoSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// OrderByColumn is the column used for incremental pagination and stable ORDER BY (default: id).
+	// +optional
+	OrderByColumn string `json:"orderByColumn,omitempty"`
 }
 
 // ClickHouseSourceSpec defines ClickHouse source configuration
@@ -362,6 +371,10 @@ type ClickHouseSourceSpec struct {
 	// TableSecretRef references a Kubernetes secret for table name
 	// +optional
 	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// OrderByColumn is the column used for incremental pagination and stable ORDER BY (default: id).
+	// +optional
+	OrderByColumn string `json:"orderByColumn,omitempty"`
 }
 
 // NessieSourceSpec defines Nessie (Iceberg REST catalog) source configuration.

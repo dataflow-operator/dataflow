@@ -55,7 +55,7 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 				Table: table,
 			},
 			lastReadChangeTime: ptrTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
-			wantContains:       []string{"WHERE COALESCE(updated_at, created_at) > '2024-01-15T10:00:00", "ORDER BY COALESCE(updated_at, created_at), id"},
+			wantContains:       []string{"WHERE COALESCE(updated_at, created_at) > '2024-01-15T10:00:00", `ORDER BY COALESCE(updated_at, created_at), "id"`},
 		},
 		{
 			name: "custom ChangeTrackingColumn first read",
@@ -73,7 +73,15 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 				ChangeTrackingColumn: "modified_at",
 			},
 			lastReadChangeTime: ptrTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
-			wantContains:       []string{`WHERE "modified_at" > '2024-01-15T10:00:00`, `ORDER BY "modified_at", id`},
+			wantContains:       []string{`WHERE "modified_at" > '2024-01-15T10:00:00`, `ORDER BY "modified_at", "id"`},
+		},
+		{
+			name: "custom orderByColumn",
+			config: &v1.PostgreSQLSourceSpec{
+				Table:         table,
+				OrderByColumn: "price_id",
+			},
+			wantContains: []string{`ORDER BY COALESCE(updated_at, created_at), "price_id"`},
 		},
 		{
 			name: "table with hyphens is properly quoted",
@@ -98,6 +106,16 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostgreSQLSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
+	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{
+		Table:         "t",
+		OrderByColumn: "price_id",
+	})
+	got := p.wrapQueryWithStableOrder("SELECT * FROM prices")
+	assert.Contains(t, got, "SELECT * FROM (SELECT * FROM prices) AS __dataflow_src")
+	assert.Contains(t, got, `ORDER BY COALESCE(updated_at, created_at), "price_id"`)
 }
 
 func TestPostgreSQLSourceConnector_advanceCheckpoint(t *testing.T) {

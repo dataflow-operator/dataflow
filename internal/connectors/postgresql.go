@@ -199,7 +199,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 	for {
 		var query string
 		if p.config.Query != "" {
-			query = p.config.Query
+			query = p.wrapQueryWithStableOrder(p.config.Query)
 		} else {
 			query = p.buildReadQuery()
 		}
@@ -218,10 +218,14 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		fieldNames := rows.FieldDescriptions()
 		var idIndex, createdAtIndex, updatedAtIndex, changeTrackingIndex = -1, -1, -1, -1
 		changeCol := p.getChangeTrackingColumn()
+		orderByCol := ResolveOrderByColumn(p.config.OrderByColumn)
+		colNames := make([]string, len(fieldNames))
+		for i, field := range fieldNames {
+			colNames[i] = field.Name
+		}
+		idIndex = ColumnIndex(colNames, orderByCol)
 		for i, field := range fieldNames {
 			switch field.Name {
-			case "id":
-				idIndex = i
 			case "created_at":
 				createdAtIndex = i
 			case "updated_at":
@@ -274,7 +278,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			msg := types.NewMessage(jsonData)
 			msg.Metadata["table"] = p.config.Table
 			if idIndex >= 0 && len(values) > idIndex {
-				msg.Metadata["id"] = values[idIndex]
+				SetSourceRowIDMetadata(msg, values[idIndex])
 			}
 			msg.Metadata["operation"] = operation
 			// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
@@ -316,24 +320,34 @@ func (p *PostgreSQLSourceConnector) getChangeTrackingColumn() string {
 	return "updated_at"
 }
 
-func (p *PostgreSQLSourceConnector) buildReadQuery() string {
+func (p *PostgreSQLSourceConnector) changeTrackingOrderExpr() string {
 	changeCol := p.getChangeTrackingColumn()
-	var orderExpr string
 	if changeCol == "updated_at" {
-		orderExpr = "COALESCE(updated_at, created_at)"
-	} else {
-		orderExpr = fmt.Sprintf(`"%s"`, changeCol)
+		return "COALESCE(updated_at, created_at)"
 	}
+	return quotePostgreSQLIdentifier(changeCol)
+}
+
+func (p *PostgreSQLSourceConnector) buildReadQuery() string {
+	orderExpr := p.changeTrackingOrderExpr()
+	orderByCol := quotePostgreSQLIdentifier(ResolveOrderByColumn(p.config.OrderByColumn))
 	p.checkpointMu.Lock()
 	lastRead := p.lastReadChangeTime
 	p.checkpointMu.Unlock()
 	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 	if lastRead != nil {
 		// RFC3339Nano preserves sub-second precision to avoid re-reading or skipping rows at boundaries
-		return fmt.Sprintf("SELECT * FROM %s WHERE %s > '%s' ORDER BY %s, id",
-			quotedTable, orderExpr, lastRead.UTC().Format(time.RFC3339Nano), orderExpr)
+		return fmt.Sprintf("SELECT * FROM %s WHERE %s > '%s' ORDER BY %s, %s",
+			quotedTable, orderExpr, lastRead.UTC().Format(time.RFC3339Nano), orderExpr, orderByCol)
 	}
-	return fmt.Sprintf("SELECT * FROM %s ORDER BY %s, id", quotedTable, orderExpr)
+	return fmt.Sprintf("SELECT * FROM %s ORDER BY %s, %s", quotedTable, orderExpr, orderByCol)
+}
+
+func (p *PostgreSQLSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
+	return WrapQueryStableOrder(userQuery,
+		p.changeTrackingOrderExpr(),
+		quotePostgreSQLIdentifier(ResolveOrderByColumn(p.config.OrderByColumn)),
+	)
 }
 
 // extractChangeTime returns the change tracking timestamp for the row (for checkpoint).

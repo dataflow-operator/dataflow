@@ -254,3 +254,50 @@ func TestBuildInsertValues_preservesCreatedAtFromSource(t *testing.T) {
 		})
 	}
 }
+
+func TestClickHouseSourceConnector_buildTableReadQuery(t *testing.T) {
+	spec := &v1.ClickHouseSourceSpec{
+		ConnectionString: "clickhouse://localhost:9000",
+		Table:            "events",
+	}
+	c := NewClickHouseSourceConnector(spec)
+
+	t.Run("first read", func(t *testing.T) {
+		got := c.buildTableReadQuery(0, nil)
+		assert.Contains(t, got, "ORDER BY created_at, id")
+		assert.NotContains(t, got, "WHERE")
+	})
+	t.Run("incremental by id", func(t *testing.T) {
+		got := c.buildTableReadQuery(100, nil)
+		assert.Contains(t, got, "WHERE id > 100")
+		assert.Contains(t, got, "ORDER BY id")
+	})
+	t.Run("incremental by created_at", func(t *testing.T) {
+		ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+		got := c.buildTableReadQuery(0, &ts)
+		assert.Contains(t, got, "WHERE created_at > '2024-06-01 12:00:00'")
+		assert.Contains(t, got, "ORDER BY created_at, id")
+	})
+	t.Run("custom orderByColumn", func(t *testing.T) {
+		spec := &v1.ClickHouseSourceSpec{
+			ConnectionString: "clickhouse://localhost:9000",
+			Table:            "prices",
+			OrderByColumn:    "price_id",
+		}
+		c := NewClickHouseSourceConnector(spec)
+		got := c.buildTableReadQuery(50, nil)
+		assert.Contains(t, got, "WHERE price_id > 50")
+		assert.Contains(t, got, "ORDER BY price_id")
+	})
+}
+
+func TestClickHouseSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
+	c := NewClickHouseSourceConnector(&v1.ClickHouseSourceSpec{
+		ConnectionString: "clickhouse://localhost:9000",
+		Table:            "t",
+		OrderByColumn:    "price_id",
+	})
+	got := c.wrapQueryWithStableOrder("SELECT * FROM prices")
+	assert.Contains(t, got, "__dataflow_src")
+	assert.Contains(t, got, "ORDER BY price_id")
+}

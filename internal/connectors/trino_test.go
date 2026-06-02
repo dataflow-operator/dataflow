@@ -579,6 +579,46 @@ func TestQuoteTrinoIdentifier(t *testing.T) {
 	}
 }
 
+func TestTrinoSourceConnector_buildTableReadQuery(t *testing.T) {
+	cfg := &v1.TrinoSourceSpec{
+		Catalog: "cat",
+		Schema:  "sch",
+		Table:   "tbl",
+	}
+	t.Run("default order by id", func(t *testing.T) {
+		c := NewTrinoSourceConnector(cfg)
+		got := c.buildTableReadQuery(nil)
+		assert.Contains(t, got, "ORDER BY id")
+		assert.NotContains(t, got, "WHERE")
+	})
+	t.Run("incremental", func(t *testing.T) {
+		c := NewTrinoSourceConnector(cfg)
+		got := c.buildTableReadQuery(int64(10))
+		assert.Contains(t, got, "WHERE id > 10")
+		assert.Contains(t, got, "ORDER BY id")
+	})
+	t.Run("custom orderByColumn", func(t *testing.T) {
+		cfg := *cfg
+		cfg.OrderByColumn = "price_id"
+		c := NewTrinoSourceConnector(&cfg)
+		got := c.buildTableReadQuery(int64(5))
+		assert.Contains(t, got, "WHERE price_id > 5")
+		assert.Contains(t, got, "ORDER BY price_id")
+	})
+}
+
+func TestTrinoSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
+	c := NewTrinoSourceConnector(&v1.TrinoSourceSpec{
+		Catalog:       "c",
+		Schema:        "s",
+		Table:         "t",
+		OrderByColumn: "price_id",
+	})
+	got := c.wrapQueryWithStableOrder("SELECT * FROM prices")
+	assert.Contains(t, got, "__dataflow_src")
+	assert.Contains(t, got, "ORDER BY price_id")
+}
+
 // newTrinoClientForTest creates a trinoClient with custom HTTP client for tests.
 func newTrinoClientForTest(serverURL, catalog, schema string, hc *http.Client) *trinoClient {
 	return &trinoClient{

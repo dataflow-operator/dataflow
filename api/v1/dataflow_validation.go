@@ -19,6 +19,7 @@ package v1
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -197,7 +198,23 @@ func validatePostgreSQLSource(p *PostgreSQLSourceSpec, f *field.Path) field.Erro
 	if p.TableSecretRef != nil {
 		all = append(all, validateSecretRef(p.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
+	if err := validateOrderByColumn(p.OrderByColumn, f.Child("orderByColumn")); err != nil {
+		all = append(all, err)
+	}
 	return all
+}
+
+var sqlIdentifierRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+func validateOrderByColumn(col string, f *field.Path) *field.Error {
+	if col == "" {
+		return nil
+	}
+	if !sqlIdentifierRe.MatchString(col) {
+		return field.Invalid(f, col,
+			"must be a valid SQL identifier (letters, digits, underscore; must not start with a digit)")
+	}
+	return nil
 }
 
 func validateTrinoSource(t *TrinoSourceSpec, f *field.Path) field.ErrorList {
@@ -229,6 +246,9 @@ func validateTrinoSource(t *TrinoSourceSpec, f *field.Path) field.ErrorList {
 	}
 	if t.TableSecretRef != nil {
 		all = append(all, validateSecretRef(t.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	if err := validateOrderByColumn(t.OrderByColumn, f.Child("orderByColumn")); err != nil {
+		all = append(all, err)
 	}
 	return all
 }
@@ -502,6 +522,9 @@ func validateClickHouseSource(c *ClickHouseSourceSpec, f *field.Path) field.Erro
 	}
 	if c.TableSecretRef != nil {
 		all = append(all, validateSecretRef(c.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	if err := validateOrderByColumn(c.OrderByColumn, f.Child("orderByColumn")); err != nil {
+		all = append(all, err)
 	}
 	return all
 }
