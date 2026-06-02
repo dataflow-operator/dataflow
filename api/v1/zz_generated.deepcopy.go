@@ -1103,6 +1103,11 @@ func (in *TrinoSinkSpec) DeepCopyInto(out *TrinoSinkSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.QueryTimeoutSeconds != nil {
+		in, out := &in.QueryTimeoutSeconds, &out.QueryTimeoutSeconds
+		*out = new(int32)
+		**out = **in
+	}
 	if in.AutoCreateTable != nil {
 		in, out := &in.AutoCreateTable, &out.AutoCreateTable
 		*out = new(bool)

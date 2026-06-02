@@ -69,7 +69,16 @@ func NewBatchWriteConfig(batchSize, flushIntervalSec *int32, defaultBatchSize in
 // Parent cancel (SIGTERM) must not abort in-flight batch IO; timeout bounds duration.
 // Uses a shorter timeout when parent is already cancelled (shutdown flush).
 func BatchWriteContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return BatchWriteContextWithTimeout(parent, 0)
+}
+
+// BatchWriteContextWithTimeout returns a detached context with optional custom timeout.
+// customTimeout <= 0 means BatchWriteTimeout.
+func BatchWriteContextWithTimeout(parent context.Context, customTimeout time.Duration) (context.Context, context.CancelFunc) {
 	timeout := BatchWriteTimeout
+	if customTimeout > 0 {
+		timeout = customTimeout
+	}
 	if parent.Err() != nil {
 		timeout = BatchShutdownFlushTimeout
 	}
@@ -90,6 +99,9 @@ type BatchWriteOptions struct {
 	OnMessage func(msg *types.Message) bool
 	// LogFields are appended to error logs from the loop (e.g. "table", name).
 	LogFields []any
+	// FlushTimeout overrides default batch write timeout for normal (non-shutdown) flushes.
+	// <= 0 uses BatchWriteTimeout.
+	FlushTimeout time.Duration
 }
 
 // RunBatchWriteLoop reads messages, batches them, and flushes on size, timer, shutdown, or channel close.
@@ -115,7 +127,7 @@ func RunBatchWriteLoop(
 		if len(toFlush) == 0 {
 			return nil
 		}
-		batchCtx, cancel := BatchWriteContext(ctx)
+		batchCtx, cancel := BatchWriteContextWithTimeout(ctx, opts.FlushTimeout)
 		defer cancel()
 		if err := opts.OnFlush(batchCtx, toFlush); err != nil {
 			return err

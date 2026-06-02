@@ -775,6 +775,12 @@ type TrinoSinkSpec struct {
 	// +optional
 	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
 
+	// QueryTimeoutSeconds bounds a single batch INSERT end-to-end (POST + all nextUri polling).
+	// Use larger values for Iceberg/Nessie-heavy writes; 0 or negative falls back to the processor default timeout.
+	// +optional
+	// +kubebuilder:default=600
+	QueryTimeoutSeconds *int32 `json:"queryTimeoutSeconds,omitempty"`
+
 	// AutoCreateTable automatically creates the table if it doesn't exist
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`

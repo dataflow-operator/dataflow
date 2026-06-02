@@ -260,10 +260,29 @@ func IsRetryableForTrino(err error) bool {
 	return IsTimeoutError(err) || IsTransientTrinoError(err)
 }
 
+// IsRetryableForTrinoBatch is stricter than IsRetryableForTrino for sink DML batches.
+// If timeout happened while following Trino nextUri, the server may still commit the INSERT,
+// so retrying the whole query can duplicate rows.
+func IsRetryableForTrinoBatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "failed to follow next uri") && IsTimeoutError(err) {
+		return false
+	}
+	return IsRetryableForTrino(err)
+}
+
 // OnRetryableTrino runs op and retries when it returns a timeout or transient Trino error.
 // Use TrinoMaxAttempts and TrinoInitialBackoff for batch inserts.
 func OnRetryableTrino(ctx context.Context, maxAttempts int, initialBackoff time.Duration, op func() error) error {
 	return OnRetry(ctx, maxAttempts, initialBackoff, IsRetryableForTrino, op)
+}
+
+// OnRetryableTrinoBatch runs op with the stricter Trino batch retry policy.
+func OnRetryableTrinoBatch(ctx context.Context, maxAttempts int, initialBackoff time.Duration, op func() error) error {
+	return OnRetry(ctx, maxAttempts, initialBackoff, IsRetryableForTrinoBatch, op)
 }
 
 // OnTimeout runs op and retries up to maxAttempts times when op returns a timeout error.

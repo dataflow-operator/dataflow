@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -170,4 +171,30 @@ func TestTrinoClient_executeQuery_retriesNextURIOnUnexpectedEOF(t *testing.T) {
 	_, err := client.executeQuery(context.Background(), "INSERT INTO memory.default.t VALUES (1)")
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, nextGETs.Load(), int32(1), "server should receive at least one successful nextURI GET after retry")
+}
+
+func TestNewTrinoClient_DefaultHTTPTimeout(t *testing.T) {
+	t.Parallel()
+	client, err := newTrinoClient(context.Background(), trinoClientConfig{
+		ServerURL: "http://example.com",
+		Catalog:   "memory",
+		Schema:    "default",
+	}, logr.Discard())
+	require.NoError(t, err)
+	require.NotNil(t, client.httpClient)
+	assert.Equal(t, 30*time.Second, client.httpClient.Timeout)
+}
+
+func TestNewTrinoClient_ZeroHTTPTimeoutOverride(t *testing.T) {
+	t.Parallel()
+	zero := time.Duration(0)
+	client, err := newTrinoClient(context.Background(), trinoClientConfig{
+		ServerURL:   "http://example.com",
+		Catalog:     "memory",
+		Schema:      "default",
+		HTTPTimeout: &zero,
+	}, logr.Discard())
+	require.NoError(t, err)
+	require.NotNil(t, client.httpClient)
+	assert.Equal(t, time.Duration(0), client.httpClient.Timeout)
 }

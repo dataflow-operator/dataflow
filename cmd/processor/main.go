@@ -19,7 +19,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/pprof"
@@ -27,6 +29,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,6 +46,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	_ "github.com/dataflow-operator/dataflow/internal/metrics" // Register metrics
 	"github.com/dataflow-operator/dataflow/internal/processor"
+	retryutil "github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/sentry"
 	"github.com/dataflow-operator/dataflow/pkg/k8snames"
 )
@@ -166,38 +170,61 @@ func main() {
 	// Signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, constants.DefaultSingleValueChannelBufferSize)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Start processor in goroutine
-	errChan := make(chan error, constants.DefaultSingleValueChannelBufferSize)
-	go func() {
-		logger.Info("Starting processor")
-		errChan <- proc.Start(ctx)
-	}()
-
-	// Wait for signal or error
 	var procErr error
-	select {
-	case sig := <-sigChan:
+	var shutdownRequested atomic.Bool
+	go func() {
+		sig := <-sigChan
+		shutdownRequested.Store(true)
 		logger.Info("Received signal, shutting down", "signal", sig)
 		cancel()
-		procErr = <-errChan
-		if procErr != nil {
-			logger.Error(procErr, "Processor exited with error")
+	}()
+
+	maxRetries := processorSinkErrorMaxRetriesFromEnv(os.Getenv("PROCESSOR_SINK_ERROR_MAX_RETRIES"))
+	backoff := 30 * time.Second
+	const maxBackoff = 5 * time.Minute
+
+	for attempt := 1; ; attempt++ {
+		logger.Info("Starting processor", "attempt", attempt)
+		procErr = proc.Start(ctx)
+		if procErr == nil || errors.Is(procErr, context.Canceled) {
+			break
 		}
+		if !isRetryableProcessorError(procErr) {
+			logger.Error(procErr, "Processor error is not retryable")
+			break
+		}
+		if maxRetries > 0 && attempt >= maxRetries {
+			procErr = fmt.Errorf("processor retry limit reached (%d): %w", maxRetries, procErr)
+			logger.Error(procErr, "Processor error")
+			break
+		}
+		logger.Error(procErr, "Transient processor error, retrying", "backoff", backoff.String(), "attempt", attempt)
+		select {
+		case <-ctx.Done():
+			break
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+
+	if shutdownRequested.Load() {
 		// Flush checkpoint before exit
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := proc.FlushCheckpoint(flushCtx); err != nil {
 			logger.Error(err, "Failed to flush checkpoint")
 		}
 		flushCancel()
-	case procErr = <-errChan:
-		if procErr != nil {
-			logger.Error(procErr, "Processor error")
-			os.Exit(1)
-		}
 	}
 
-	if procErr != nil {
+	if procErr != nil && !errors.Is(procErr, context.Canceled) {
 		os.Exit(1)
 	}
 	logger.Info("Processor stopped successfully")
@@ -227,4 +254,23 @@ func processorLevelFromEnv(envLevel string, optsLevel zapcore.LevelEnabler) zapc
 		return optsLevel
 	}
 	return zap.NewAtomicLevelAt(l)
+}
+
+func isRetryableProcessorError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return retryutil.IsTimeoutError(err) || retryutil.IsTransientTrinoError(err)
+}
+
+func processorSinkErrorMaxRetriesFromEnv(env string) int {
+	s := strings.TrimSpace(env)
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }

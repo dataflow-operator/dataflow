@@ -51,6 +51,16 @@ func TestBatchWriteContext(t *testing.T) {
 		require.True(t, ok)
 		assert.InDelta(t, time.Now().Add(BatchShutdownFlushTimeout).Unix(), deadline.Unix(), 2)
 	})
+
+	t.Run("custom timeout", func(t *testing.T) {
+		parent := context.Background()
+		ctx, cancel := BatchWriteContextWithTimeout(parent, 45*time.Second)
+		defer cancel()
+
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok)
+		assert.InDelta(t, time.Now().Add(45*time.Second).Unix(), deadline.Unix(), 2)
+	})
 }
 
 func TestNewBatchWriteConfig(t *testing.T) {

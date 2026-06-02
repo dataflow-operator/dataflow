@@ -48,18 +48,23 @@ type trinoClient struct {
 
 // trinoClientConfig holds connection parameters for creating a trinoClient.
 type trinoClientConfig struct {
-	ServerURL  string
-	Catalog    string
-	Schema     string
-	Keycloak   *v1.KeycloakConfig
-	HTTPClient *http.Client // optional, for tests; when set, used instead of default client
+	ServerURL   string
+	Catalog     string
+	Schema      string
+	Keycloak    *v1.KeycloakConfig
+	HTTPClient  *http.Client // optional, for tests; when set, used instead of default client
+	HTTPTimeout *time.Duration
 }
 
 // newTrinoClient creates a trinoClient and optionally sets up Keycloak auth.
 func newTrinoClient(ctx context.Context, cfg trinoClientConfig, logger logr.Logger) (*trinoClient, error) {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		timeout := 30 * time.Second
+		if cfg.HTTPTimeout != nil {
+			timeout = *cfg.HTTPTimeout
+		}
+		httpClient = &http.Client{Timeout: timeout}
 	}
 	c := &trinoClient{
 		serverURL:  cfg.ServerURL,

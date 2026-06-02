@@ -246,11 +246,14 @@ func (t *TrinoSinkConnector) Connect(ctx context.Context) error {
 		"schema", t.config.Schema,
 		"table", t.config.Table)
 
+	noRequestTimeout := time.Duration(0)
 	client, err := newTrinoClient(ctx, trinoClientConfig{
 		ServerURL: t.config.ServerURL,
 		Catalog:   t.config.Catalog,
 		Schema:    t.config.Schema,
 		Keycloak:  t.config.Keycloak,
+		// Trino sink queries can run for minutes; batch context controls the total deadline.
+		HTTPTimeout: &noRequestTimeout,
 	}, t.logger)
 	if err != nil {
 		return err
@@ -491,8 +494,14 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 	return RunBatchWriteLoop(ctx, messages, cfg, BatchWriteOptions{
 		Logger:    t.logger,
 		LogFields: []any{"table", tableRef},
+		FlushTimeout: func() time.Duration {
+			if t.config.QueryTimeoutSeconds == nil || *t.config.QueryTimeoutSeconds <= 0 {
+				return 0
+			}
+			return time.Duration(*t.config.QueryTimeoutSeconds) * time.Second
+		}(),
 		OnFlush: func(batchCtx context.Context, msgs []*types.Message) error {
-			return retry.OnRetryableTrino(batchCtx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
+			return retry.OnRetryableTrinoBatch(batchCtx, retry.TrinoMaxAttempts, retry.TrinoInitialBackoff, func() error {
 				return t.executeBatch(batchCtx, msgs)
 			})
 		},

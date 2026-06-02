@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestIsTimeoutError(t *testing.T) {
@@ -29,6 +31,18 @@ func TestIsTimeoutError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIsRetryableForTrinoBatch(t *testing.T) {
+	t.Run("timeout on next uri is not retryable", func(t *testing.T) {
+		err := errors.New(`failed to execute batch insert: failed to follow next URI: context deadline exceeded`)
+		assert.False(t, IsRetryableForTrinoBatch(err))
+	})
+
+	t.Run("transient trino error remains retryable", func(t *testing.T) {
+		err := errors.New("Trino query failed with status 503: service temporarily unavailable")
+		assert.True(t, IsRetryableForTrinoBatch(err))
+	})
 }
 
 func TestOnRetry_SuccessFirstTry(t *testing.T) {
