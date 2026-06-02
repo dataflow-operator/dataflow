@@ -17,11 +17,13 @@ limitations under the License.
 package connectors
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildIncrementalSelect_postgres(t *testing.T) {
@@ -101,8 +103,132 @@ func TestBuildIncrementalSelect_clickhouse(t *testing.T) {
 		State:              checkpoint.Composite{ChangeTime: &ts, OrderByValue: int64(100)},
 		Dialect:            d,
 	})
-	assert.Contains(t, got, "WHERE (created_at, id) > ('2024-06-01 12:00:00', 100)")
-	assert.Contains(t, got, "ORDER BY created_at, id")
+	assert.Contains(t, got, "WHERE (created_at, `id`) > ('2024-06-01 12:00:00', 100)")
+	assert.Contains(t, got, "ORDER BY created_at, `id`")
+}
+
+func TestBuildIncrementalSelect_clickhouse_reservedIdentifier(t *testing.T) {
+	d := clickHouseDialect{}
+	ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	got := BuildIncrementalSelect(IncrementalSelectInput{
+		FromExpr:           "events",
+		ChangeTrackingExpr: "`order`",
+		OrderByColumn:      "id",
+		State:              checkpoint.Composite{ChangeTime: &ts, OrderByValue: int64(1)},
+		Dialect:            d,
+	})
+	assert.Contains(t, got, "WHERE (`order`, `id`) >")
+}
+
+func TestIncrementalQueryConfig_ResolveReadQuery(t *testing.T) {
+	ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	state := checkpoint.Composite{ChangeTime: &ts, OrderByValue: int64(10)}
+
+	t.Run("postgres table", func(t *testing.T) {
+		cfg := IncrementalQueryConfig{
+			DefaultChangeColumn: "updated_at",
+			CoalesceUpdatedAt:   true,
+			LegacyWrap:          LegacyQueryAsIs,
+			Dialect:             postgresDialect{},
+			FromTableExpr:       `"public"."events"`,
+			State:               state,
+		}
+		got := cfg.ResolveReadQuery()
+		assert.Contains(t, got, `"public"."events"`)
+		assert.Contains(t, got, "WHERE (COALESCE(updated_at, created_at)")
+	})
+
+	t.Run("postgres legacy query as-is", func(t *testing.T) {
+		cfg := IncrementalQueryConfig{
+			UserQuery:           "SELECT 1",
+			DefaultChangeColumn: "updated_at",
+			LegacyWrap:          LegacyQueryAsIs,
+			Dialect:             postgresDialect{},
+		}
+		assert.Equal(t, "SELECT 1", cfg.ResolveReadQuery())
+	})
+
+	t.Run("trino incremental query", func(t *testing.T) {
+		cfg := IncrementalQueryConfig{
+			UserQuery:            "SELECT * FROM t",
+			ExplicitChangeColumn: "updated_at",
+			DefaultChangeColumn:  "updated_at",
+			LegacyWrap:           LegacyQueryOrderByOnly,
+			Dialect:              trinoDialect{},
+			State:                state,
+		}
+		got := cfg.ResolveReadQuery()
+		assert.Contains(t, got, "FROM (SELECT * FROM t) AS __dataflow_src")
+		assert.Contains(t, got, "WHERE (updated_at, id) >")
+	})
+
+	t.Run("trino legacy order only", func(t *testing.T) {
+		cfg := IncrementalQueryConfig{
+			UserQuery:           "SELECT * FROM prices",
+			DefaultChangeColumn: "updated_at",
+			LegacyWrap:          LegacyQueryOrderByOnly,
+			Dialect:             trinoDialect{},
+			OrderByColumn:       "price_id",
+		}
+		got := cfg.ResolveReadQuery()
+		assert.Contains(t, got, "__dataflow_src")
+		assert.Contains(t, got, "ORDER BY price_id")
+		assert.NotContains(t, got, "WHERE")
+	})
+
+	t.Run("clickhouse incremental query", func(t *testing.T) {
+		cfg := IncrementalQueryConfig{
+			UserQuery:            "SELECT * FROM events",
+			ExplicitChangeColumn: "created_at",
+			DefaultChangeColumn:  "created_at",
+			LegacyWrap:           LegacyQueryChangeAndOrderBy,
+			Dialect:              clickHouseDialect{},
+			State:                state,
+		}
+		got := cfg.ResolveReadQuery()
+		assert.Contains(t, got, "FROM (SELECT * FROM events) AS __dataflow_src")
+		assert.Contains(t, got, "WHERE (`created_at`, `id`) >")
+	})
+}
+
+func TestAppendSQLLimit(t *testing.T) {
+	assert.Equal(t, "SELECT 1", AppendSQLLimit("SELECT 1", 0))
+	assert.Equal(t, "SELECT 1 LIMIT 100", AppendSQLLimit("SELECT 1", 100))
+}
+
+func TestRunIncrementalBatchPoll(t *testing.T) {
+	cfg := IncrementalQueryConfig{
+		FromTableExpr:       "t",
+		DefaultChangeColumn: "created_at",
+		Dialect:             clickHouseDialect{},
+	}
+	ctx := context.Background()
+	var queries []string
+
+	err := RunIncrementalBatchPoll(ctx, cfg, 2, func(_ context.Context, query string) (int, error) {
+		queries = append(queries, query)
+		switch len(queries) {
+		case 1:
+			return 2, nil
+		case 2:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, queries, 2)
+	assert.Contains(t, queries[0], "LIMIT 2")
+	assert.Contains(t, queries[1], "LIMIT 2")
+
+	queries = nil
+	err = RunIncrementalBatchPoll(ctx, cfg, 0, func(_ context.Context, query string) (int, error) {
+		queries = append(queries, query)
+		return 0, nil
+	})
+	assert.ErrorIs(t, err, ErrSourceExhausted)
+	require.Len(t, queries, 1)
+	assert.NotContains(t, queries[0], "LIMIT")
 }
 
 func TestCompositeCheckpointHolder_advance(t *testing.T) {
@@ -135,5 +261,5 @@ func TestCompositeCheckpointHolder_orderOnlyLegacy(t *testing.T) {
 		State:              h.Snapshot(),
 		Dialect:            clickHouseDialect{},
 	})
-	assert.Contains(t, got, "WHERE id > 50")
+	assert.Contains(t, got, "WHERE `id` > 50")
 }

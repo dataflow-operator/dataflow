@@ -198,7 +198,10 @@ func validatePostgreSQLSource(p *PostgreSQLSourceSpec, f *field.Path) field.Erro
 	if p.TableSecretRef != nil {
 		all = append(all, validateSecretRef(p.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
-	if err := validateOrderByColumn(p.OrderByColumn, f.Child("orderByColumn")); err != nil {
+	if err := validateSQLIdentifier(p.OrderByColumn, f.Child("orderByColumn")); err != nil {
+		all = append(all, err)
+	}
+	if err := validateSQLIdentifier(p.ChangeTrackingColumn, f.Child("changeTrackingColumn")); err != nil {
 		all = append(all, err)
 	}
 	return all
@@ -206,7 +209,7 @@ func validatePostgreSQLSource(p *PostgreSQLSourceSpec, f *field.Path) field.Erro
 
 var sqlIdentifierRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-func validateOrderByColumn(col string, f *field.Path) *field.Error {
+func validateSQLIdentifier(col string, f *field.Path) *field.Error {
 	if col == "" {
 		return nil
 	}
@@ -215,6 +218,10 @@ func validateOrderByColumn(col string, f *field.Path) *field.Error {
 			"must be a valid SQL identifier (letters, digits, underscore; must not start with a digit)")
 	}
 	return nil
+}
+
+func validateOrderByColumn(col string, f *field.Path) *field.Error {
+	return validateSQLIdentifier(col, f)
 }
 
 func validateTrinoSource(t *TrinoSourceSpec, f *field.Path) field.ErrorList {
@@ -248,6 +255,9 @@ func validateTrinoSource(t *TrinoSourceSpec, f *field.Path) field.ErrorList {
 		all = append(all, validateSecretRef(t.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
 	if err := validateOrderByColumn(t.OrderByColumn, f.Child("orderByColumn")); err != nil {
+		all = append(all, err)
+	}
+	if err := validateSQLIdentifier(t.ChangeTrackingColumn, f.Child("changeTrackingColumn")); err != nil {
 		all = append(all, err)
 	}
 	return all
@@ -524,6 +534,9 @@ func validateClickHouseSource(c *ClickHouseSourceSpec, f *field.Path) field.Erro
 		all = append(all, validateSecretRef(c.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
 	if err := validateOrderByColumn(c.OrderByColumn, f.Child("orderByColumn")); err != nil {
+		all = append(all, err)
+	}
+	if err := validateSQLIdentifier(c.ChangeTrackingColumn, f.Child("changeTrackingColumn")); err != nil {
 		all = append(all, err)
 	}
 	return all

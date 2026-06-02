@@ -119,95 +119,79 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 }
 
 func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
-	var query string
-	if t.config.Query != "" {
-		if t.config.ChangeTrackingColumn != "" {
-			query = t.buildIncrementalQueryWrapper()
-		} else {
-			query = t.wrapQueryWithStableOrder(t.config.Query)
-		}
-		t.logger.Info("Using custom query from configuration", "query", query)
-	} else {
-		query = t.buildReadQuery()
-		t.logger.Info("Built table read query", "query", query)
+	readBatchSize := 0
+	if t.config.ReadBatchSize != nil && *t.config.ReadBatchSize > 0 {
+		readBatchSize = int(*t.config.ReadBatchSize)
 	}
 
-	rows, err := t.client.executeQuery(ctx, query)
-	if err != nil {
-		t.RecordError("read", "query_error")
-		return err
-	}
-	if len(rows) == 0 {
-		return ErrSourceExhausted
-	}
-
-	changeCol := t.getChangeTrackingColumn()
+	cfg := t.incrementalConfig()
+	changeCol := cfg.ChangeColumn()
 	orderByCol := ResolveOrderByColumn(t.config.OrderByColumn)
-	for _, row := range rows {
-		changeTime, orderByVal := extractMapRowCheckpoint(row, changeCol, orderByCol)
 
-		jsonData, err := json.Marshal(row)
+	return RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string) (int, error) {
+		t.logger.V(1).Info("Executing Trino query", "query", query)
+		rows, err := t.client.executeQuery(ctx, query)
 		if err != nil {
-			t.logger.Error(err, "Failed to marshal row")
-			continue
+			t.RecordError("read", "query_error")
+			return 0, err
 		}
 
-		msg := types.NewMessage(jsonData)
-		msg.Metadata["catalog"] = t.config.Catalog
-		msg.Metadata["schema"] = t.config.Schema
-		msg.Metadata["table"] = t.config.Table
-		SetSourceRowIDMetadata(msg, orderByVal)
+		rowCount := 0
+		for _, row := range rows {
+			changeTime, orderByVal := extractMapRowCheckpoint(row, changeCol, orderByCol)
 
-		if changeTime != nil {
-			ct := *changeTime
-			msg.Ack = t.cp.MakeAck(&ct, orderByVal, true)
-		} else if orderByVal != nil {
-			msg.Ack = t.cp.MakeAck(nil, orderByVal, false)
+			jsonData, err := json.Marshal(row)
+			if err != nil {
+				t.logger.Error(err, "Failed to marshal row")
+				continue
+			}
+
+			msg := types.NewMessage(jsonData)
+			msg.Metadata["catalog"] = t.config.Catalog
+			msg.Metadata["schema"] = t.config.Schema
+			msg.Metadata["table"] = t.config.Table
+			SetSourceRowIDMetadata(msg, orderByVal)
+
+			if changeTime != nil {
+				ct := *changeTime
+				msg.Ack = t.cp.MakeAck(&ct, orderByVal, true)
+			} else if orderByVal != nil {
+				msg.Ack = t.cp.MakeAck(nil, orderByVal, false)
+			}
+
+			select {
+			case msgChan <- msg:
+			case <-ctx.Done():
+				return rowCount, ctx.Err()
+			}
+			rowCount++
 		}
-
-		select {
-		case msgChan <- msg:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	return nil
+		return rowCount, nil
+	})
 }
 
-func (t *TrinoSourceConnector) getChangeTrackingColumn() string {
-	if t.config.ChangeTrackingColumn != "" {
-		return t.config.ChangeTrackingColumn
-	}
-	return "updated_at"
-}
-
-func (t *TrinoSourceConnector) changeTrackingOrderExpr() string {
-	return ResolveChangeTrackingExpr(trinoDialect{}, t.getChangeTrackingColumn(), false)
-}
-
-func (t *TrinoSourceConnector) incrementalSelectInput(fromExpr string) IncrementalSelectInput {
-	return IncrementalSelectInput{
-		FromExpr:           fromExpr,
-		ChangeTrackingExpr: t.changeTrackingOrderExpr(),
-		OrderByColumn:      t.config.OrderByColumn,
-		State:              t.cp.Snapshot(),
-		Dialect:            trinoDialect{},
+func (t *TrinoSourceConnector) incrementalConfig() IncrementalQueryConfig {
+	return IncrementalQueryConfig{
+		UserQuery:            t.config.Query,
+		ExplicitChangeColumn: t.config.ChangeTrackingColumn,
+		DefaultChangeColumn:  "updated_at",
+		OrderByColumn:        t.config.OrderByColumn,
+		LegacyWrap:           LegacyQueryOrderByOnly,
+		Dialect:              trinoDialect{},
+		FromTableExpr:        fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table),
+		State:                t.cp.Snapshot(),
 	}
 }
 
 func (t *TrinoSourceConnector) buildReadQuery() string {
-	from := fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
-	return BuildIncrementalSelect(t.incrementalSelectInput(from))
-}
-
-func (t *TrinoSourceConnector) buildIncrementalQueryWrapper() string {
-	return BuildIncrementalSelect(t.incrementalSelectInput("(" + strings.TrimSpace(t.config.Query) + ") AS " + stableOrderSubqueryAlias))
+	return t.incrementalConfig().ResolveReadQuery()
 }
 
 func (t *TrinoSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
-	col := ResolveOrderByColumn(t.config.OrderByColumn)
-	return WrapQueryStableOrder(userQuery, col)
+	cfg := t.incrementalConfig()
+	cfg.UserQuery = userQuery
+	cfg.ExplicitChangeColumn = ""
+	return cfg.ResolveReadQuery()
 }
 
 // Close closes the Trino connection

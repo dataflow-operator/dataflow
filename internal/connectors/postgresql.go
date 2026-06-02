@@ -166,34 +166,21 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		readBatchSize = int(*p.config.ReadBatchSize)
 	}
 
-	totalRows := 0
-	for {
-		var query string
-		if p.config.Query != "" {
-			if p.config.ChangeTrackingColumn != "" {
-				query = p.buildIncrementalQueryWrapper()
-			} else {
-				query = p.config.Query
-			}
-		} else {
-			query = p.buildReadQuery()
-		}
+	cfg := p.incrementalConfig()
+	changeCol := cfg.ChangeColumn()
+	orderByCol := ResolveOrderByColumn(p.config.OrderByColumn)
 
-		if readBatchSize > 0 {
-			query = fmt.Sprintf("%s LIMIT %d", query, readBatchSize)
-		}
-
+	return RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string) (int, error) {
 		p.logger.V(1).Info("Executing PostgreSQL query", "query", query, "table", p.config.Table)
 		rows, err := p.conn.Query(ctx, query)
 		if err != nil {
 			p.RecordError("read", "query_error")
-			return fmt.Errorf("postgresql query: %w", err)
+			return 0, fmt.Errorf("postgresql query: %w", err)
 		}
+		defer rows.Close()
 
 		fieldNames := rows.FieldDescriptions()
 		var idIndex, createdAtIndex, updatedAtIndex, changeTrackingIndex = -1, -1, -1, -1
-		changeCol := p.getChangeTrackingColumn()
-		orderByCol := ResolveOrderByColumn(p.config.OrderByColumn)
 		colNames := make([]string, len(fieldNames))
 		for i, field := range fieldNames {
 			colNames[i] = field.Name
@@ -220,8 +207,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			values, err := rows.Values()
 			if err != nil {
 				p.RecordError("read", "scan_error")
-				rows.Close()
-				return fmt.Errorf("postgresql scan row: %w", err)
+				return rowCount, fmt.Errorf("postgresql scan row: %w", err)
 			}
 
 			rowMap := make(map[string]interface{})
@@ -229,7 +215,6 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				rowMap[field.Name] = values[i]
 			}
 
-			// Determine operation for CDC (insert vs update)
 			operation := "insert"
 			if updatedAtIndex >= 0 && createdAtIndex >= 0 && len(values) > updatedAtIndex && len(values) > createdAtIndex {
 				var updatedAt, createdAt *time.Time
@@ -244,9 +229,8 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				}
 			}
 
-			// Extract change time for checkpoint; advance only on Ack (after sink write)
 			changeTime, orderByVal := ExtractRowCheckpoint(values, changeTrackingIndex, idIndex, &ChangeTimeFallback{
-				UseUpdatedAtCreatedAt: p.getChangeTrackingColumn() == "updated_at",
+				UseUpdatedAtCreatedAt: cfg.ChangeColumn() == "updated_at",
 				CreatedAtIndex:        createdAtIndex,
 				UpdatedAtIndex:        updatedAtIndex,
 			})
@@ -264,7 +248,6 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				SetSourceRowIDMetadata(msg, values[idIndex])
 			}
 			msg.Metadata["operation"] = operation
-			// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
 			if changeTime != nil {
 				ct := *changeTime
 				msg.Ack = p.cp.MakeAck(&ct, orderByVal, true)
@@ -274,55 +257,39 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			case msgChan <- msg:
 				p.RecordMessageRead()
 			case <-ctx.Done():
-				rows.Close()
-				return ctx.Err()
+				return rowCount, ctx.Err()
 			}
 			rowCount++
 		}
-		rows.Close()
-		totalRows += rowCount
-
-		// If we got fewer rows than batch size, no more data in this poll cycle
-		if readBatchSize == 0 || rowCount < readBatchSize {
-			if rowCount > 0 {
-				p.logger.Info("PostgreSQL poll completed", "table", p.config.Table, "rows", rowCount)
-			}
-			break
+		if rowCount > 0 {
+			p.logger.Info("PostgreSQL poll batch completed", "table", p.config.Table, "rows", rowCount)
 		}
-	}
-	if totalRows == 0 {
-		return ErrSourceExhausted
-	}
-	return nil
+		return rowCount, nil
+	})
 }
 
-func (p *PostgreSQLSourceConnector) getChangeTrackingColumn() string {
-	if p.config.ChangeTrackingColumn != "" {
-		return p.config.ChangeTrackingColumn
-	}
-	return "updated_at"
-}
-
-func (p *PostgreSQLSourceConnector) changeTrackingOrderExpr() string {
-	return ResolveChangeTrackingExpr(postgresDialect{}, p.getChangeTrackingColumn(), true)
-}
-
-func (p *PostgreSQLSourceConnector) incrementalSelectInput(fromExpr string) IncrementalSelectInput {
-	return IncrementalSelectInput{
-		FromExpr:           fromExpr,
-		ChangeTrackingExpr: p.changeTrackingOrderExpr(),
-		OrderByColumn:      p.config.OrderByColumn,
-		State:              p.cp.Snapshot(),
-		Dialect:            postgresDialect{},
+func (p *PostgreSQLSourceConnector) incrementalConfig() IncrementalQueryConfig {
+	return IncrementalQueryConfig{
+		UserQuery:            p.config.Query,
+		ExplicitChangeColumn: p.config.ChangeTrackingColumn,
+		DefaultChangeColumn:  "updated_at",
+		OrderByColumn:        p.config.OrderByColumn,
+		CoalesceUpdatedAt:    true,
+		LegacyWrap:           LegacyQueryAsIs,
+		Dialect:              postgresDialect{},
+		FromTableExpr:        QuotePostgreSQLTableRef(p.config.Table),
+		State:                p.cp.Snapshot(),
 	}
 }
 
 func (p *PostgreSQLSourceConnector) buildReadQuery() string {
-	return BuildIncrementalSelect(p.incrementalSelectInput(QuotePostgreSQLTableRef(p.config.Table)))
+	return p.incrementalConfig().ResolveReadQuery()
 }
 
 func (p *PostgreSQLSourceConnector) buildIncrementalQueryWrapper() string {
-	return BuildIncrementalSelect(p.incrementalSelectInput("(" + strings.TrimSpace(p.config.Query) + ") AS " + stableOrderSubqueryAlias))
+	cfg := p.incrementalConfig()
+	from := "(" + strings.TrimSpace(p.config.Query) + ") AS " + stableOrderSubqueryAlias
+	return BuildIncrementalSelect(cfg.incrementalSelectInput(from))
 }
 
 // formatPostgreSQLLiteral formats a Go value as a PostgreSQL SQL literal for inline queries.

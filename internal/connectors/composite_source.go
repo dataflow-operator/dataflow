@@ -33,6 +33,111 @@ type SQLDialect interface {
 	QuoteIdentifier(name string) string
 }
 
+// LegacyQueryWrap controls stable ORDER BY when UserQuery is set without ExplicitChangeColumn.
+type LegacyQueryWrap int
+
+const (
+	// LegacyQueryAsIs runs the user query unchanged (PostgreSQL legacy).
+	LegacyQueryAsIs LegacyQueryWrap = iota
+	// LegacyQueryOrderByOnly wraps the query with ORDER BY orderByColumn only (Trino legacy).
+	LegacyQueryOrderByOnly
+	// LegacyQueryChangeAndOrderBy wraps with ORDER BY changeColumn, orderByColumn (ClickHouse legacy).
+	LegacyQueryChangeAndOrderBy
+)
+
+// IncrementalQueryConfig builds read SQL for polling sources (table, incremental query, legacy query).
+type IncrementalQueryConfig struct {
+	UserQuery            string
+	ExplicitChangeColumn string // from spec; empty enables legacy query mode
+	DefaultChangeColumn  string // updated_at or created_at
+	OrderByColumn        string
+	CoalesceUpdatedAt    bool // PostgreSQL only
+	LegacyWrap           LegacyQueryWrap
+	Dialect              SQLDialect
+	FromTableExpr        string // formatted table reference for table mode
+	State                checkpoint.Composite
+}
+
+// ChangeColumn returns the effective change-tracking column name.
+func (c IncrementalQueryConfig) ChangeColumn() string {
+	if c.ExplicitChangeColumn != "" {
+		return c.ExplicitChangeColumn
+	}
+	return c.DefaultChangeColumn
+}
+
+func (c IncrementalQueryConfig) changeTrackingOrderExpr() string {
+	return ResolveChangeTrackingExpr(c.Dialect, c.ChangeColumn(), c.CoalesceUpdatedAt)
+}
+
+func (c IncrementalQueryConfig) incrementalSelectInput(fromExpr string) IncrementalSelectInput {
+	return IncrementalSelectInput{
+		FromExpr:           fromExpr,
+		ChangeTrackingExpr: c.changeTrackingOrderExpr(),
+		OrderByColumn:      c.OrderByColumn,
+		State:              c.State,
+		Dialect:            c.Dialect,
+	}
+}
+
+// ResolveReadQuery returns the SQL for the current poll (table, incremental subquery, or legacy query).
+func (c IncrementalQueryConfig) ResolveReadQuery() string {
+	if c.UserQuery != "" {
+		if c.ExplicitChangeColumn != "" {
+			from := "(" + strings.TrimSpace(c.UserQuery) + ") AS " + stableOrderSubqueryAlias
+			return BuildIncrementalSelect(c.incrementalSelectInput(from))
+		}
+		switch c.LegacyWrap {
+		case LegacyQueryAsIs:
+			return strings.TrimSpace(c.UserQuery)
+		case LegacyQueryOrderByOnly:
+			return WrapQueryStableOrder(c.UserQuery, ResolveOrderByColumn(c.OrderByColumn))
+		case LegacyQueryChangeAndOrderBy:
+			return WrapQueryStableOrder(c.UserQuery, c.ChangeColumn(), ResolveOrderByColumn(c.OrderByColumn))
+		default:
+			return strings.TrimSpace(c.UserQuery)
+		}
+	}
+	return BuildIncrementalSelect(c.incrementalSelectInput(c.FromTableExpr))
+}
+
+// AppendSQLLimit appends a LIMIT clause when limit > 0.
+func AppendSQLLimit(query string, limit int) string {
+	if limit <= 0 {
+		return query
+	}
+	return fmt.Sprintf("%s LIMIT %d", query, limit)
+}
+
+// RunIncrementalBatchPoll executes read queries in batches until fewer than limit rows are returned.
+// Returns ErrSourceExhausted when no rows were read in the poll cycle.
+func RunIncrementalBatchPoll(
+	ctx context.Context,
+	cfg IncrementalQueryConfig,
+	limit int,
+	execute func(ctx context.Context, query string) (rowCount int, err error),
+) error {
+	totalRows := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		query := AppendSQLLimit(cfg.ResolveReadQuery(), limit)
+		rowCount, err := execute(ctx, query)
+		if err != nil {
+			return err
+		}
+		totalRows += rowCount
+		if limit == 0 || rowCount < limit {
+			break
+		}
+	}
+	if totalRows == 0 {
+		return ErrSourceExhausted
+	}
+	return nil
+}
+
 // IncrementalSelectInput builds an incremental SELECT with composite tuple WHERE.
 type IncrementalSelectInput struct {
 	FromExpr           string
@@ -232,7 +337,7 @@ func (trinoDialect) FormatLiteral(v interface{}) string {
 type clickHouseDialect struct{}
 
 func (clickHouseDialect) QuoteIdentifier(name string) string {
-	return name
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 func (clickHouseDialect) FormatLiteral(v interface{}) string {

@@ -352,6 +352,10 @@ type TrinoSourceSpec struct {
 	// +optional
 	// +kubebuilder:default="updated_at"
 	ChangeTrackingColumn string `json:"changeTrackingColumn,omitempty"`
+
+	// ReadBatchSize limits rows per poll to reduce load (0 = no limit).
+	// +optional
+	ReadBatchSize *int32 `json:"readBatchSize,omitempty"`
 }
 
 // ClickHouseSourceSpec defines ClickHouse source configuration
@@ -387,6 +391,10 @@ type ClickHouseSourceSpec struct {
 	// +optional
 	// +kubebuilder:default="created_at"
 	ChangeTrackingColumn string `json:"changeTrackingColumn,omitempty"`
+
+	// ReadBatchSize limits rows per poll to reduce load (0 = no limit).
+	// +optional
+	ReadBatchSize *int32 `json:"readBatchSize,omitempty"`
 }
 
 // All catalog operations (load table, read) are performed in the context of the given branch.

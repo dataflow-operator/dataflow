@@ -118,7 +118,6 @@ func (c *ClickHouseSourceConnector) Read(ctx context.Context) (<-chan *types.Mes
 }
 
 func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *types.Message) error {
-	// Read conn and state under RLock; release before long-running query so Connect/Close are not blocked
 	c.RLock()
 	if c.Closed() {
 		c.RUnlock()
@@ -131,126 +130,109 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		return nil
 	}
 
-	var query string
-	if c.config.Query != "" {
-		if c.config.ChangeTrackingColumn != "" {
-			query = c.buildIncrementalQueryWrapper()
-		} else {
-			query = c.wrapQueryWithStableOrder(c.config.Query)
-		}
-	} else {
-		query = c.buildReadQuery()
+	readBatchSize := 0
+	if c.config.ReadBatchSize != nil && *c.config.ReadBatchSize > 0 {
+		readBatchSize = int(*c.config.ReadBatchSize)
 	}
 
-	c.logger.V(1).Info("Executing ClickHouse query", "query", query, "table", c.config.Table)
-	var rows *sql.Rows
-	err := retry.OnRetryableClickHouse(ctx, 3, 1*time.Second, func() error {
-		var qerr error
-		rows, qerr = conn.QueryContext(ctx, query)
-		return qerr
-	})
-	if err != nil {
-		c.RecordError("read", "query_error")
-		return fmt.Errorf("clickhouse query: %w", err)
-	}
-	defer rows.Close()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		c.RecordError("read", "columns_error")
-		return fmt.Errorf("clickhouse columns: %w", err)
-	}
-
+	cfg := c.incrementalConfig()
+	changeCol := cfg.ChangeColumn()
 	orderByCol := ResolveOrderByColumn(c.config.OrderByColumn)
-	idIndex := ColumnIndex(columns, orderByCol)
-	changeCol := c.getChangeTrackingColumn()
-	changeIndex := ColumnIndex(columns, changeCol)
 
-	rowCount := 0
-	for rows.Next() {
-		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
-		for i := range values {
-			valuePtrs[i] = &values[i]
-		}
-
-		if err := rows.Scan(valuePtrs...); err != nil {
-			c.logger.Error(err, "Failed to scan row", "table", c.config.Table)
-			continue
-		}
-
-		rowMap := make(map[string]interface{})
-		for i, col := range columns {
-			rowMap[col] = values[i]
-		}
-
-		changeTime, orderByVal := ExtractRowCheckpoint(values, changeIndex, idIndex, nil)
-
-		jsonData, err := json.Marshal(rowMap)
+	return RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string) (int, error) {
+		c.logger.V(1).Info("Executing ClickHouse query", "query", query, "table", c.config.Table)
+		var rows *sql.Rows
+		err := retry.OnRetryableClickHouse(ctx, 3, 1*time.Second, func() error {
+			var qerr error
+			rows, qerr = conn.QueryContext(ctx, query)
+			return qerr
+		})
 		if err != nil {
-			c.logger.Error(err, "Failed to marshal row to JSON", "table", c.config.Table)
-			continue
+			c.RecordError("read", "query_error")
+			return 0, fmt.Errorf("clickhouse query: %w", err)
+		}
+		defer rows.Close()
+
+		columns, err := rows.Columns()
+		if err != nil {
+			c.RecordError("read", "columns_error")
+			return 0, fmt.Errorf("clickhouse columns: %w", err)
 		}
 
-		msg := types.NewMessage(jsonData)
-		msg.Metadata["table"] = c.config.Table
-		if idIndex >= 0 && len(values) > idIndex {
-			SetSourceRowIDMetadata(msg, values[idIndex])
-		}
-		// Ack advances checkpoint only after sink successfully writes; prevents data loss on crash
-		if changeTime != nil {
-			ct := *changeTime
-			msg.Ack = c.cp.MakeAck(&ct, orderByVal, true)
-		} else if orderByVal != nil {
-			msg.Ack = c.cp.MakeAck(nil, orderByVal, false)
-		}
+		idIndex := ColumnIndex(columns, orderByCol)
+		changeIndex := ColumnIndex(columns, changeCol)
 
-		select {
-		case msgChan <- msg:
-		case <-ctx.Done():
-			return ctx.Err()
+		rowCount := 0
+		for rows.Next() {
+			values := make([]interface{}, len(columns))
+			valuePtrs := make([]interface{}, len(columns))
+			for i := range values {
+				valuePtrs[i] = &values[i]
+			}
+
+			if err := rows.Scan(valuePtrs...); err != nil {
+				c.logger.Error(err, "Failed to scan row", "table", c.config.Table)
+				continue
+			}
+
+			rowMap := make(map[string]interface{})
+			for i, col := range columns {
+				rowMap[col] = values[i]
+			}
+
+			changeTime, orderByVal := ExtractRowCheckpoint(values, changeIndex, idIndex, nil)
+
+			jsonData, err := json.Marshal(rowMap)
+			if err != nil {
+				c.logger.Error(err, "Failed to marshal row to JSON", "table", c.config.Table)
+				continue
+			}
+
+			msg := types.NewMessage(jsonData)
+			msg.Metadata["table"] = c.config.Table
+			if idIndex >= 0 && len(values) > idIndex {
+				SetSourceRowIDMetadata(msg, values[idIndex])
+			}
+			if changeTime != nil {
+				ct := *changeTime
+				msg.Ack = c.cp.MakeAck(&ct, orderByVal, true)
+			} else if orderByVal != nil {
+				msg.Ack = c.cp.MakeAck(nil, orderByVal, false)
+			}
+
+			select {
+			case msgChan <- msg:
+			case <-ctx.Done():
+				return rowCount, ctx.Err()
+			}
+			rowCount++
 		}
-		rowCount++
-	}
-	if rowCount == 0 {
-		return ErrSourceExhausted
-	}
-	return nil
+		return rowCount, nil
+	})
 }
 
-func (c *ClickHouseSourceConnector) getChangeTrackingColumn() string {
-	if c.config.ChangeTrackingColumn != "" {
-		return c.config.ChangeTrackingColumn
-	}
-	return "created_at"
-}
-
-func (c *ClickHouseSourceConnector) changeTrackingOrderExpr() string {
-	return ResolveChangeTrackingExpr(clickHouseDialect{}, c.getChangeTrackingColumn(), false)
-}
-
-func (c *ClickHouseSourceConnector) incrementalSelectInput(fromExpr string) IncrementalSelectInput {
-	return IncrementalSelectInput{
-		FromExpr:           fromExpr,
-		ChangeTrackingExpr: c.changeTrackingOrderExpr(),
-		OrderByColumn:      c.config.OrderByColumn,
-		State:              c.cp.Snapshot(),
-		Dialect:            clickHouseDialect{},
+func (c *ClickHouseSourceConnector) incrementalConfig() IncrementalQueryConfig {
+	return IncrementalQueryConfig{
+		UserQuery:            c.config.Query,
+		ExplicitChangeColumn: c.config.ChangeTrackingColumn,
+		DefaultChangeColumn:  "created_at",
+		OrderByColumn:        c.config.OrderByColumn,
+		LegacyWrap:           LegacyQueryChangeAndOrderBy,
+		Dialect:              clickHouseDialect{},
+		FromTableExpr:        c.config.Table,
+		State:                c.cp.Snapshot(),
 	}
 }
 
 func (c *ClickHouseSourceConnector) buildReadQuery() string {
-	return BuildIncrementalSelect(c.incrementalSelectInput(c.config.Table))
-}
-
-func (c *ClickHouseSourceConnector) buildIncrementalQueryWrapper() string {
-	return BuildIncrementalSelect(c.incrementalSelectInput("(" + strings.TrimSpace(c.config.Query) + ") AS " + stableOrderSubqueryAlias))
+	return c.incrementalConfig().ResolveReadQuery()
 }
 
 func (c *ClickHouseSourceConnector) wrapQueryWithStableOrder(userQuery string) string {
-	col := ResolveOrderByColumn(c.config.OrderByColumn)
-	changeCol := c.getChangeTrackingColumn()
-	return WrapQueryStableOrder(userQuery, changeCol, col)
+	cfg := c.incrementalConfig()
+	cfg.UserQuery = userQuery
+	cfg.ExplicitChangeColumn = ""
+	return cfg.ResolveReadQuery()
 }
 
 // Close closes the ClickHouse connection

@@ -254,22 +254,22 @@ func TestClickHouseSourceConnector_buildReadQuery(t *testing.T) {
 
 	t.Run("first read", func(t *testing.T) {
 		got := c.buildReadQuery()
-		assert.Contains(t, got, "ORDER BY created_at, id")
+		assert.Contains(t, got, "ORDER BY `created_at`, `id`")
 		assert.NotContains(t, got, "WHERE")
 	})
 	t.Run("composite checkpoint", func(t *testing.T) {
 		ts := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
 		c.cp.Advance(checkpoint.Composite{ChangeTime: &ts, OrderByValue: int64(100)}, true)
 		got := c.buildReadQuery()
-		assert.Contains(t, got, "WHERE (created_at, id) > ('2024-06-01 12:00:00', 100)")
-		assert.Contains(t, got, "ORDER BY created_at, id")
+		assert.Contains(t, got, "WHERE (`created_at`, `id`) > ('2024-06-01 12:00:00', 100)")
+		assert.Contains(t, got, "ORDER BY `created_at`, `id`")
 	})
 	t.Run("order only legacy", func(t *testing.T) {
 		c2 := NewClickHouseSourceConnector(spec)
 		c2.cp.ApplyInitial([]byte(`{"lastReadOrderByValue":50}`))
 		got := c2.buildReadQuery()
-		assert.Contains(t, got, "WHERE id > 50")
-		assert.Contains(t, got, "ORDER BY id")
+		assert.Contains(t, got, "WHERE `id` > 50")
+		assert.Contains(t, got, "ORDER BY `id`")
 	})
 	t.Run("custom orderByColumn", func(t *testing.T) {
 		spec := &v1.ClickHouseSourceSpec{
@@ -280,8 +280,8 @@ func TestClickHouseSourceConnector_buildReadQuery(t *testing.T) {
 		c := NewClickHouseSourceConnector(spec)
 		c.cp.ApplyInitial([]byte(`{"lastReadOrderByValue":50}`))
 		got := c.buildReadQuery()
-		assert.Contains(t, got, "WHERE price_id > 50")
-		assert.Contains(t, got, "ORDER BY price_id")
+		assert.Contains(t, got, "WHERE `price_id` > 50")
+		assert.Contains(t, got, "ORDER BY `price_id`")
 	})
 }
 
@@ -291,7 +291,7 @@ func TestClickHouseSourceConnector_applyInitialCheckpoint_legacy(t *testing.T) {
 	}
 	c := NewClickHouseSourceConnectorWithOptions(&v1.ClickHouseSourceSpec{Table: "events"}, opts)
 	got := c.buildReadQuery()
-	assert.Contains(t, got, "WHERE (created_at, id) > ('2024-06-01 12:00:00', 100)")
+	assert.Contains(t, got, "WHERE (`created_at`, `id`) > ('2024-06-01 12:00:00', 100)")
 }
 
 func TestClickHouseSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
