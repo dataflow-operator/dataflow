@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -939,5 +940,78 @@ func TestConsumeClaim_TimestampMetadataUTC(t *testing.T) {
 				t.Errorf("timestamp = %v, want %v", ts, tt.want)
 			}
 		})
+	}
+}
+
+func TestKafkaSetup_NotifiesProgress(t *testing.T) {
+	t.Parallel()
+
+	var progressCalls atomic.Int32
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.SetProgressCallback(func() {
+		progressCalls.Add(1)
+	})
+
+	handler := &kafkaConsumerGroupHandler{
+		connector: k,
+		msgChan:   make(chan *types.Message),
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.Setup(&mockConsumerGroupSession{ctx: ctx}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if progressCalls.Load() != 1 {
+		t.Fatalf("progressCalls = %d, want 1", progressCalls.Load())
+	}
+}
+
+func TestKafkaConsumeClaim_ProgressHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	var progressCalls atomic.Int32
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.progressHeartbeatInterval = 20 * time.Millisecond
+	k.SetProgressCallback(func() {
+		progressCalls.Add(1)
+	})
+
+	claim := &mockConsumerGroupClaim{ch: make(chan *sarama.ConsumerMessage)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handler := &kafkaConsumerGroupHandler{
+		connector: k,
+		msgChan:   make(chan *types.Message, 1),
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.ConsumeClaim(&mockConsumerGroupSession{ctx: ctx}, claim)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for progressCalls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ConsumeClaim: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for ConsumeClaim")
+	}
+
+	if progressCalls.Load() < 1 {
+		t.Fatalf("progressCalls = %d, want at least 1", progressCalls.Load())
 	}
 }

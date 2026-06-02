@@ -47,10 +47,14 @@ import (
 )
 
 // KafkaSourceConnector implements SourceConnector for Kafka
+// defaultKafkaSourceProgressHeartbeat is how often an active consumer group session updates liveness while idle.
+const defaultKafkaSourceProgressHeartbeat = 60 * time.Second
+
 type KafkaSourceConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	progressRecorder
 	config            *v1.KafkaSourceSpec
 	consumer          sarama.ConsumerGroup
 	channelBufferSize int
@@ -65,6 +69,8 @@ type KafkaSourceConnector struct {
 	testConsumeFunc func(ctx context.Context, topics []string, handler sarama.ConsumerGroupHandler) error
 	// readErrCh receives fatal errors from the consumer after Read returns; set during Read.
 	readErrCh chan error
+	// progressHeartbeatInterval overrides defaultKafkaSourceProgressHeartbeat when > 0 (tests only).
+	progressHeartbeatInterval time.Duration
 }
 
 // schemaCache caches Avro schemas by ID
@@ -792,6 +798,13 @@ type kafkaConsumerGroupHandler struct {
 	readyOnce sync.Once // Protects ready channel from being closed multiple times
 }
 
+func (k *KafkaSourceConnector) kafkaProgressHeartbeatInterval() time.Duration {
+	if k.progressHeartbeatInterval > 0 {
+		return k.progressHeartbeatInterval
+	}
+	return defaultKafkaSourceProgressHeartbeat
+}
+
 func (h *kafkaConsumerGroupHandler) Setup(sarama.ConsumerGroupSession) error {
 	// Use sync.Once to ensure channel is closed only once
 	// This protects against multiple Setup calls during rebalancing
@@ -811,6 +824,7 @@ func (h *kafkaConsumerGroupHandler) Setup(sarama.ConsumerGroupSession) error {
 		}()
 		close(h.ready)
 	})
+	h.connector.notifyProgress()
 	return nil
 }
 
@@ -823,6 +837,9 @@ func (h *kafkaConsumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
 const kafkaMarkChannelBuffer = 256
 
 func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	heartbeat := time.NewTicker(h.connector.kafkaProgressHeartbeatInterval())
+	defer heartbeat.Stop()
+
 	markChan := make(chan *sarama.ConsumerMessage, kafkaMarkChannelBuffer)
 
 	markPending := func(message *sarama.ConsumerMessage) {
@@ -845,6 +862,8 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 
 	for {
 		select {
+		case <-heartbeat.C:
+			h.connector.notifyProgress()
 		case message := <-claim.Messages():
 			if message == nil {
 				drainMarks()
@@ -907,6 +926,7 @@ type KafkaSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	progressRecorder
 	config   *v1.KafkaSinkSpec
 	producer sarama.SyncProducer
 }
@@ -1059,6 +1079,7 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 			if msg.Ack != nil {
 				msg.Ack()
 			}
+			k.notifyProgress()
 		}
 	}
 }

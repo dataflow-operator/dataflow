@@ -185,6 +185,21 @@ func (p *progressRecorder) notifyProgress() {
 	}
 }
 
+// AckMessages calls Ack on each message (commits source offsets when configured).
+func AckMessages(msgs []*types.Message) {
+	for _, m := range msgs {
+		if m.Ack != nil {
+			m.Ack()
+		}
+	}
+}
+
+// AckMessagesAndNotifyProgress commits offsets and updates liveness progress after a successful batch.
+func (p *progressRecorder) AckMessagesAndNotifyProgress(msgs []*types.Message) {
+	AckMessages(msgs)
+	p.notifyProgress()
+}
+
 // SetConnectorInfo sets the connector type and role for metrics.
 func (c *connectorMetadata) SetConnectorInfo(connectorType, role string) {
 	c.connectorType = connectorType

@@ -347,6 +347,7 @@ type PostgreSQLSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	progressRecorder
 	rawModeConfig
 	flattenMetadataSinkState
 	config            *v1.PostgreSQLSinkSpec
@@ -639,10 +640,8 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		}
 		for _, m := range batchMessages {
 			p.RecordMessageWritten(getRouteFromMessage(m))
-			if m.Ack != nil {
-				m.Ack()
-			}
 		}
+		p.AckMessagesAndNotifyProgress(batchMessages)
 		batch = &pgx.Batch{}
 		batchMessages = make([]*types.Message, 0, maxBatchSize)
 		count = 0

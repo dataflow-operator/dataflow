@@ -149,6 +149,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 	if options.CheckpointStore != nil {
 		p.checkpointStore = options.CheckpointStore
 	}
+	initConnectorWithProgress(source, logger.WithValues(logkeys.ConnectorType, spec.Source.Type+"-source"), namespace, name, p.RecordProgress)
 	initConnectorWithProgress(sink, logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink"), namespace, name, p.RecordProgress)
 	return p, nil
 }

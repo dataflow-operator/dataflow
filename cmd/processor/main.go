@@ -146,19 +146,7 @@ func main() {
 	})
 	progressTimeout := progressTimeoutFromEnv(os.Getenv("PROCESSOR_PROGRESS_TIMEOUT_SECONDS"))
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		if !proc.Ready() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("not ready\n"))
-			return
-		}
-		if proc.ProgressStale(progressTimeout) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("stale: no pipeline progress\n"))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
+		writeLivez(w, proc.Ready, proc.ProgressStale, progressTimeout)
 	})
 	metricsServer := &http.Server{Addr: metricsPort, Handler: mux}
 	go func() {
@@ -228,6 +216,23 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("Processor stopped successfully")
+}
+
+// writeLivez implements GET /livez for Kubernetes liveness probes.
+func writeLivez(w http.ResponseWriter, ready func() bool, progressStale func(time.Duration) bool, progressTimeout time.Duration) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if !ready() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready\n"))
+		return
+	}
+	if progressStale(progressTimeout) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("stale: no pipeline progress\n"))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 // processorLevelFromEnv returns zap LevelEnabler from LOG_LEVEL env if set, otherwise optsLevel.

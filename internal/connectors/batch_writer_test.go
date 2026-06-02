@@ -174,6 +174,37 @@ func TestRunBatchWriteLoop_InFlightCancel(t *testing.T) {
 	assert.True(t, gotDetached.Load())
 }
 
+func TestRunBatchWriteLoop_OnAck_NotifiesProgress(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	ch := make(chan *types.Message, 1)
+	ch <- types.NewMessage([]byte(`{}`))
+	close(ch)
+
+	var progressCalls int
+	sink := &progressRecorder{}
+	sink.SetProgressCallback(func() {
+		progressCalls++
+	})
+
+	err := RunBatchWriteLoop(ctx, ch, BatchWriteConfig{MaxBatchSize: 1, FlushInterval: 0}, BatchWriteOptions{
+		Logger: logr.Discard(),
+		OnFlush: func(_ context.Context, _ []*types.Message) error {
+			return nil
+		},
+		OnAck: func(msgs []*types.Message) {
+			sink.AckMessagesAndNotifyProgress(msgs)
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunBatchWriteLoop: %v", err)
+	}
+	if progressCalls != 1 {
+		t.Fatalf("progressCalls = %d, want 1", progressCalls)
+	}
+}
+
 func TestRunBatchWriteLoop_OnAck(t *testing.T) {
 	ctx := context.Background()
 	ch := make(chan *types.Message, 1)

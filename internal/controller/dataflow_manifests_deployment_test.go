@@ -24,8 +24,8 @@ import (
 
 func TestProcessorProgressTimeoutSeconds(t *testing.T) {
 	t.Setenv("PROCESSOR_PROGRESS_TIMEOUT_SECONDS", "")
-	if got := processorProgressTimeoutSeconds(); got != "600" {
-		t.Fatalf("default = %q, want 600", got)
+	if got := processorProgressTimeoutSeconds(); got != "3600" {
+		t.Fatalf("default = %q, want 3600", got)
 	}
 
 	t.Setenv("PROCESSOR_PROGRESS_TIMEOUT_SECONDS", "900")

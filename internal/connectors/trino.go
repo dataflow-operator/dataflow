@@ -512,14 +512,12 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 			}
 			t.logger.Info("Committing source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
 			for i, m := range msgs {
-				if m.Ack != nil {
-					m.Ack()
-				} else if i == 0 {
+				if m.Ack == nil && i == 0 {
 					t.logger.V(1).Info("Message has no Ack callback", logkeys.MessageID, types.MessageID(m))
 				}
 			}
+			t.AckMessagesAndNotifyProgress(msgs)
 			t.logger.Info("Committed source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
-			t.notifyProgress()
 		},
 		OnMessage: func(msg *types.Message) bool {
 			messageCount++

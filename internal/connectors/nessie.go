@@ -466,6 +466,7 @@ type NessieSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	progressRecorder
 	rawModeConfig
 	flattenMetadataSinkState
 	config *v1.NessieSinkSpec
@@ -623,11 +624,7 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		LogFields: []any{"table", c.config.Table},
 		OnFlush:   c.flushBatch,
 		OnAck: func(msgs []*types.Message) {
-			for _, m := range msgs {
-				if m.Ack != nil {
-					m.Ack()
-				}
-			}
+			c.AckMessagesAndNotifyProgress(msgs)
 		},
 	})
 }

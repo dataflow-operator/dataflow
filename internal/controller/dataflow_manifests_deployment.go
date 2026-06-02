@@ -53,12 +53,12 @@ func processorLogLevel() string {
 }
 
 // processorProgressTimeoutSeconds returns PROCESSOR_PROGRESS_TIMEOUT_SECONDS for processor pods
-// (from operator env PROCESSOR_PROGRESS_TIMEOUT_SECONDS or default "600").
+// (from operator env PROCESSOR_PROGRESS_TIMEOUT_SECONDS or default "3600").
 func processorProgressTimeoutSeconds() string {
 	if v := os.Getenv("PROCESSOR_PROGRESS_TIMEOUT_SECONDS"); v != "" {
 		return v
 	}
-	return "600"
+	return "3600"
 }
 
 // processorStartupProbe returns the startup probe for processor containers (/readyz).

@@ -254,6 +254,7 @@ type ClickHouseSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
+	progressRecorder
 	rawModeConfig
 	flattenMetadataSinkState
 	config         *v1.ClickHouseSinkSpec
@@ -733,6 +734,9 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			}
 			c.logger.V(1).Info("Received message for ClickHouse", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", c.config.Table, "fields", getKeys(data))
 			return true
+		},
+		OnAck: func(msgs []*types.Message) {
+			c.AckMessagesAndNotifyProgress(msgs)
 		},
 	})
 }
