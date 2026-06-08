@@ -83,7 +83,7 @@ func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
 	defer p.Unlock()
 
 	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
-	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
+	conn, err := pgx.Connect(ctx, normalizePostgreSQLConnectionString(p.config.ConnectionString))
 	if err != nil {
 		p.RecordError("connect", "connection_error")
 		p.logger.Error(err, "Failed to connect to PostgreSQL", "table", p.config.Table)
@@ -379,7 +379,7 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 	defer p.Unlock()
 
 	p.logger.Info("Connecting to PostgreSQL", "table", p.config.Table)
-	conn, err := pgx.Connect(ctx, p.config.ConnectionString)
+	conn, err := pgx.Connect(ctx, normalizePostgreSQLConnectionString(p.config.ConnectionString))
 	if err != nil {
 		p.RecordError("connect", "connection_error")
 		p.logger.Error(err, "Failed to connect to PostgreSQL", "table", p.config.Table)
