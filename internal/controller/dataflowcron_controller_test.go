@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -15,6 +16,8 @@ import (
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/pkg/k8snames"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDataFlowCronReconcile_CreatesConfigMapAndCronJob(t *testing.T) {
@@ -151,4 +154,75 @@ func TestDataFlowCronReconcile_CreatesFirstTriggerJobAfterProcessor(t *testing.T
 	if len(jobs.Items) < 2 {
 		t.Fatalf("expected first trigger job to be created after processor")
 	}
+}
+
+func TestDataFlowCronReconcile_ResolvesSecretsInConfigMap(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	const wantDSN = "postgres://user:pass@host:5432/db"
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db-env-vars", Namespace: "default"},
+		Data: map[string][]byte{
+			"pg-source": []byte(wantDSN),
+			"pg-sink":   []byte(wantDSN),
+		},
+	}
+
+	dfc := &dataflowv1.DataFlowCron{
+		ObjectMeta: metav1.ObjectMeta{Name: "cron-secrets", Namespace: "default"},
+		Spec: dataflowv1.DataFlowCronSpec{
+			Schedule: "0 0 * * *",
+			DataFlowSpec: dataflowv1.DataFlowSpec{
+				Source: dataflowv1.SourceSpec{
+					Type: "postgresql",
+					Config: mustConfig(dataflowv1.PostgreSQLSourceSpec{
+						Table: "price.price",
+						ConnectionStringSecretRef: &dataflowv1.SecretRef{
+							Name: "db-env-vars",
+							Key:  "pg-source",
+						},
+					}),
+				},
+				Sink: dataflowv1.SinkSpec{
+					Type: "postgresql",
+					Config: mustConfig(dataflowv1.PostgreSQLSinkSpec{
+						Table: "public.price_target",
+						ConnectionStringSecretRef: &dataflowv1.SecretRef{
+							Name: "db-env-vars",
+							Key:  "pg-sink",
+						},
+					}),
+				},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlowCron{}).
+		WithObjects(secret, dfc).
+		Build()
+	r := NewDataFlowCronReconciler(c, scheme)
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "cron-secrets", Namespace: "default"},
+	})
+	require.NoError(t, err)
+
+	var cm corev1.ConfigMap
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{
+		Name: k8snames.CronSpecConfigMap("cron-secrets"), Namespace: "default",
+	}, &cm))
+
+	var spec dataflowv1.DataFlowSpec
+	require.NoError(t, json.Unmarshal([]byte(cm.Data["spec.json"]), &spec))
+
+	sourceCfg, err := spec.Source.GetPostgreSQLConfig()
+	require.NoError(t, err)
+	assert.Equal(t, wantDSN, sourceCfg.ConnectionString)
+
+	sinkCfg, err := spec.Sink.GetPostgreSQLConfig()
+	require.NoError(t, err)
+	assert.Equal(t, wantDSN, sinkCfg.ConnectionString)
 }

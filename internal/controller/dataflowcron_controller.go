@@ -39,12 +39,14 @@ const (
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflowcrons/finalizers,verbs=update
 //+kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 type DataFlowCronReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
 	processorImage string
+	secretResolver *SecretResolver
 }
 
 func NewDataFlowCronReconciler(client client.Client, scheme *runtime.Scheme) *DataFlowCronReconciler {
@@ -52,6 +54,7 @@ func NewDataFlowCronReconciler(client client.Client, scheme *runtime.Scheme) *Da
 		Client:         client,
 		Scheme:         scheme,
 		processorImage: runtimeimage.ProcessorImage(),
+		secretResolver: NewSecretResolver(client),
 	}
 }
 
@@ -82,7 +85,11 @@ func (r *DataFlowCronReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc *dataflowv1.DataFlowCron) error {
-	specJSON, err := json.Marshal(dfc.Spec.DataFlowSpec)
+	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, dfc.Namespace, &dfc.Spec.DataFlowSpec)
+	if err != nil {
+		return fmt.Errorf("resolve secrets: %w", err)
+	}
+	specJSON, err := json.Marshal(resolvedSpec)
 	if err != nil {
 		return fmt.Errorf("marshal spec: %w", err)
 	}
