@@ -29,6 +29,7 @@ const (
 	DataFlowCronFinalizer           = "dataflow.dataflow.io/cron-finalizer"
 	dataFlowCronOwnerLabel          = "dataflow.dataflow.io/dataflow-cron"
 	dataFlowCronTriggerIndexLabel   = "dataflow.dataflow.io/trigger-index"
+	dataFlowCronProcessorStepLabel  = "processor"
 	dataFlowCronRunIDLabel          = "dataflow.dataflow.io/run-id"
 	dataFlowCronTemplateGeneratedBy = "dataflow.dataflow.io/generated-by"
 )
@@ -158,7 +159,7 @@ func (r *DataFlowCronReconciler) buildFirstStepJobTemplate(dfc *dataflowv1.DataF
 	labels := map[string]string{
 		dataFlowCronOwnerLabel:          dfc.Name,
 		dataFlowCronTemplateGeneratedBy: "dataflowcron-controller",
-		dataFlowCronTriggerIndexLabel:   "-1",
+		dataFlowCronTriggerIndexLabel:   dataFlowCronProcessorStepLabel,
 	}
 	return batchv1.JobTemplateSpec{
 		Spec: batchv1.JobSpec{
@@ -248,7 +249,7 @@ func (r *DataFlowCronReconciler) ensureStepJob(ctx context.Context, dfc *dataflo
 			Labels: map[string]string{
 				dataFlowCronOwnerLabel:        dfc.Name,
 				dataFlowCronRunIDLabel:        runID,
-				dataFlowCronTriggerIndexLabel: fmt.Sprintf("%d", idx),
+				dataFlowCronTriggerIndexLabel: triggerIndexLabel(idx),
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -256,7 +257,7 @@ func (r *DataFlowCronReconciler) ensureStepJob(ctx context.Context, dfc *dataflo
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
 					dataFlowCronOwnerLabel:        dfc.Name,
 					dataFlowCronRunIDLabel:        runID,
-					dataFlowCronTriggerIndexLabel: fmt.Sprintf("%d", idx),
+					dataFlowCronTriggerIndexLabel: triggerIndexLabel(idx),
 				}},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
@@ -287,7 +288,7 @@ func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *da
 			Labels: map[string]string{
 				dataFlowCronOwnerLabel:        dfc.Name,
 				dataFlowCronRunIDLabel:        runID,
-				dataFlowCronTriggerIndexLabel: "-1",
+				dataFlowCronTriggerIndexLabel: dataFlowCronProcessorStepLabel,
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -295,7 +296,7 @@ func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *da
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
 					dataFlowCronOwnerLabel:        dfc.Name,
 					dataFlowCronRunIDLabel:        runID,
-					dataFlowCronTriggerIndexLabel: "-1",
+					dataFlowCronTriggerIndexLabel: dataFlowCronProcessorStepLabel,
 				}},
 				Spec: r.processorPodSpec(dfc),
 			},
@@ -441,7 +442,17 @@ func isJobFailed(job *batchv1.Job) bool {
 	return false
 }
 
+func triggerIndexLabel(idx int) string {
+	if idx < 0 {
+		return dataFlowCronProcessorStepLabel
+	}
+	return fmt.Sprintf("%d", idx)
+}
+
 func parseTriggerIndex(s string) int {
+	if s == dataFlowCronProcessorStepLabel {
+		return -1
+	}
 	var i int
 	_, err := fmt.Sscanf(s, "%d", &i)
 	if err != nil {

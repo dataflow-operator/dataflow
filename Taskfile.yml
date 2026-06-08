@@ -1,5 +1,9 @@
 version: '3'
 
+# dataflow-cli in go.work depends on ../dataflow-processor, which may be absent locally.
+env:
+  GOWORK: off
+
 vars:
   IMG:
     sh: echo "${IMG:-controller:latest}"

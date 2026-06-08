@@ -57,6 +57,34 @@ func TestDataFlowCronReconcile_CreatesConfigMapAndCronJob(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: k8snames.CronJobName("cron"), Namespace: "default"}, &cj); err != nil {
 		t.Fatalf("cronjob not created: %v", err)
 	}
+	got := cj.Spec.JobTemplate.Spec.Template.Labels[dataFlowCronTriggerIndexLabel]
+	if got != dataFlowCronProcessorStepLabel {
+		t.Fatalf("processor trigger-index label = %q, want %q", got, dataFlowCronProcessorStepLabel)
+	}
+}
+
+func TestTriggerIndexLabelAndParse(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		idx  int
+		want string
+	}{
+		{-1, dataFlowCronProcessorStepLabel},
+		{0, "0"},
+		{3, "3"},
+	}
+	for _, tc := range cases {
+		label := triggerIndexLabel(tc.idx)
+		if label != tc.want {
+			t.Fatalf("triggerIndexLabel(%d) = %q, want %q", tc.idx, label, tc.want)
+		}
+		if parseTriggerIndex(label) != tc.idx {
+			t.Fatalf("parseTriggerIndex(%q) = %d, want %d", label, parseTriggerIndex(label), tc.idx)
+		}
+	}
+	if parseTriggerIndex("invalid") != -2 {
+		t.Fatalf("parseTriggerIndex(invalid) = %d, want -2", parseTriggerIndex("invalid"))
+	}
 }
 
 func TestDataFlowCronReconcile_CreatesFirstTriggerJobAfterProcessor(t *testing.T) {
@@ -85,7 +113,7 @@ func TestDataFlowCronReconcile_CreatesFirstTriggerJobAfterProcessor(t *testing.T
 			Namespace: "default",
 			Labels: map[string]string{
 				dataFlowCronOwnerLabel:        "cron2",
-				dataFlowCronTriggerIndexLabel: "-1",
+				dataFlowCronTriggerIndexLabel: dataFlowCronProcessorStepLabel,
 			},
 		},
 		Status: batchv1.JobStatus{
