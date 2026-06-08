@@ -101,32 +101,13 @@ func (r *DataFlowReconciler) createOrUpdateConfigMap(ctx context.Context, req ct
 
 // createOrUpdateCheckpointConfigMap creates an empty ConfigMap for checkpoint persistence.
 func (r *DataFlowReconciler) createOrUpdateCheckpointConfigMap(ctx context.Context, req ctrl.Request, dataflow *dataflowv1.DataFlow) error {
-	log := log.FromContext(ctx)
-	configMapName := k8snames.ProcessorCheckpointConfigMap(dataflow.Name)
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configMapName,
-			Namespace: req.Namespace,
-		},
-		Data: map[string]string{},
-	}
-	if err := ctrl.SetControllerReference(dataflow, configMap, r.Scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference: %w", err)
-	}
-	existing := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: req.Namespace}, existing)
-	if err != nil && apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, configMap); err != nil {
-			return fmt.Errorf("failed to create checkpoint ConfigMap: %w", err)
-		}
-		log.Info("Created checkpoint ConfigMap", "name", configMapName)
-		if r.Recorder != nil {
-			r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "CheckpointConfigMapCreated", "Created checkpoint ConfigMap %s", configMapName)
-		}
-		return nil
-	}
+	created, err := createOrUpdateCheckpointConfigMap(ctx, r.Client, r.Scheme, req.Namespace, dataflow.Name, dataflow)
 	if err != nil {
-		return fmt.Errorf("failed to get checkpoint ConfigMap: %w", err)
+		return err
+	}
+	if created && r.Recorder != nil {
+		r.Recorder.Eventf(dataflow, corev1.EventTypeNormal, "CheckpointConfigMapCreated",
+			"Created checkpoint ConfigMap %s", k8snames.ProcessorCheckpointConfigMap(dataflow.Name))
 	}
 	return nil
 }

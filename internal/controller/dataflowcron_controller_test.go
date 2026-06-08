@@ -7,6 +7,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,6 +20,59 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDataFlowCronReconcile_CreatesCheckpointAndRBAC(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = dataflowv1.AddToScheme(scheme)
+	_ = clientgoscheme.AddToScheme(scheme)
+
+	trueVal := true
+	dfc := &dataflowv1.DataFlowCron{
+		ObjectMeta: metav1.ObjectMeta{Name: "price-exported-migration", Namespace: "dataflow"},
+		Spec: dataflowv1.DataFlowCronSpec{
+			Schedule: "0 0 1 1 *",
+			DataFlowSpec: dataflowv1.DataFlowSpec{
+				CheckpointPersistence: &trueVal,
+				Source:                dataflowv1.SourceSpec{Type: "postgresql"},
+				Sink:                  dataflowv1.SinkSpec{Type: "postgresql"},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlowCron{}).
+		WithObjects(dfc).
+		Build()
+	r := NewDataFlowCronReconciler(c, scheme)
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "price-exported-migration", Namespace: "dataflow"},
+	})
+	require.NoError(t, err)
+
+	var checkpointCM corev1.ConfigMap
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{
+		Name: k8snames.ProcessorCheckpointConfigMap("price-exported-migration"), Namespace: "dataflow",
+	}, &checkpointCM))
+
+	var sa corev1.ServiceAccount
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{
+		Name: k8snames.ProcessorServiceAccount("price-exported-migration"), Namespace: "dataflow",
+	}, &sa))
+
+	var role rbacv1.Role
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{
+		Name: k8snames.ProcessorServiceAccount("price-exported-migration"), Namespace: "dataflow",
+	}, &role))
+	require.NotEmpty(t, role.Rules)
+
+	var cj batchv1.CronJob
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{
+		Name: k8snames.CronJobName("price-exported-migration"), Namespace: "dataflow",
+	}, &cj))
+	assert.Equal(t, k8snames.ProcessorServiceAccount("price-exported-migration"),
+		cj.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName)
+}
 
 func TestDataFlowCronReconcile_CreatesConfigMapAndCronJob(t *testing.T) {
 	scheme := runtime.NewScheme()

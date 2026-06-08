@@ -27,6 +27,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -166,16 +167,18 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		readBatchSize = int(*p.config.ReadBatchSize)
 	}
 
-	cfg := p.incrementalConfig()
-	changeCol := cfg.ChangeColumn()
+	baseCfg := p.incrementalConfig()
+	changeCol := baseCfg.ChangeColumn()
 	orderByCol := ResolveOrderByColumn(p.config.OrderByColumn)
 
-	return RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string) (int, error) {
-		p.logger.V(1).Info("Executing PostgreSQL query", "query", query, "table", p.config.Table)
+	pollStart := time.Now()
+	stats, err := RunIncrementalBatchPoll(ctx, baseCfg, readBatchSize, func(ctx context.Context, query string, info BatchPollInfo) (int, checkpoint.Composite, error) {
+		batchStart := time.Now()
+		p.logger.V(1).Info("Executing PostgreSQL query", "query", query, "table", p.config.Table, "batch", info.BatchNumber)
 		rows, err := p.conn.Query(ctx, query)
 		if err != nil {
 			p.RecordError("read", "query_error")
-			return 0, fmt.Errorf("postgresql query: %w", err)
+			return 0, checkpoint.Composite{}, fmt.Errorf("postgresql query: %w", err)
 		}
 		defer rows.Close()
 
@@ -203,11 +206,12 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 		}
 
 		rowCount := 0
+		var lastRow checkpoint.Composite
 		for rows.Next() {
 			values, err := rows.Values()
 			if err != nil {
 				p.RecordError("read", "scan_error")
-				return rowCount, fmt.Errorf("postgresql scan row: %w", err)
+				return rowCount, lastRow, fmt.Errorf("postgresql scan row: %w", err)
 			}
 
 			rowMap := make(map[string]interface{})
@@ -230,10 +234,13 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			}
 
 			changeTime, orderByVal := ExtractRowCheckpoint(values, changeTrackingIndex, idIndex, &ChangeTimeFallback{
-				UseUpdatedAtCreatedAt: cfg.ChangeColumn() == "updated_at",
+				UseUpdatedAtCreatedAt: baseCfg.ChangeColumn() == "updated_at",
 				CreatedAtIndex:        createdAtIndex,
 				UpdatedAtIndex:        updatedAtIndex,
 			})
+			if changeTime != nil || orderByVal != nil {
+				lastRow = RowCheckpoint(changeTime, orderByVal)
+			}
 
 			jsonData, err := json.Marshal(rowMap)
 			if err != nil {
@@ -257,15 +264,29 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			case msgChan <- msg:
 				p.RecordMessageRead()
 			case <-ctx.Done():
-				return rowCount, ctx.Err()
+				return rowCount, lastRow, ctx.Err()
 			}
 			rowCount++
 		}
 		if rowCount > 0 {
-			p.logger.Info("PostgreSQL poll batch completed", "table", p.config.Table, "rows", rowCount)
+			fields := BatchPollLogFields(info, rowCount, time.Since(batchStart), lastRow)
+			fields = append([]interface{}{"table", p.config.Table}, fields...)
+			p.logger.Info("PostgreSQL poll batch completed", fields...)
 		}
-		return rowCount, nil
+		return rowCount, lastRow, nil
 	})
+	if err != nil {
+		return err
+	}
+	if stats.Batches > 0 {
+		p.logger.Info("PostgreSQL poll cycle completed",
+			"table", p.config.Table,
+			"batches", stats.Batches,
+			"rows_total", stats.TotalRows,
+			"duration_ms", time.Since(pollStart).Milliseconds(),
+		)
+	}
+	return nil
 }
 
 func (p *PostgreSQLSourceConnector) incrementalConfig() IncrementalQueryConfig {
@@ -704,7 +725,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 
 				p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
 				if op, _ := msg.Metadata["operation"].(string); op == "update" {
-					p.logger.Info("Applying update (upsert)", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table)
+					p.logger.V(1).Info("Applying update (upsert)", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table)
 				}
 
 				query, values, err := p.buildInsertForMessage(ctx, data, msg)
@@ -769,7 +790,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 
 				p.logger.V(1).Info("Received message for PostgreSQL", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table, "fields", getKeys(data))
 				if op, _ := msg.Metadata["operation"].(string); op == "update" {
-					p.logger.Info("Applying update (upsert)", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table)
+					p.logger.V(1).Info("Applying update (upsert)", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", p.config.Table)
 				}
 
 				query, values, err := p.buildInsertForMessage(ctx, data, msg)
@@ -956,6 +977,7 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 }
 
 func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.Batch) error {
+	batchStart := time.Now()
 	p.logger.V(1).Info("Executing batch", "batchSize", batch.Len(), "table", p.config.Table)
 	br := p.conn.SendBatch(ctx, batch)
 	defer br.Close()
@@ -970,7 +992,7 @@ func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.B
 	p.firstWriteOnce.Do(func() {
 		p.logger.Info("First message written to sink", "table", p.config.Table)
 	})
-	p.logger.V(1).Info("Batch executed successfully", "count", batch.Len(), "table", p.config.Table)
+	p.logger.V(1).Info("Batch executed successfully", "count", batch.Len(), "table", p.config.Table, logkeys.DurationMS, time.Since(batchStart).Milliseconds())
 	return nil
 }
 

@@ -54,7 +54,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 	// Get the array field using JSONPath
 	result := gjson.GetBytes(message.Data, fieldPath)
 
-	f.logger.Info("Flatten transformer processing",
+	f.logger.V(1).Info("Flatten transformer processing",
 		"field", f.config.Field,
 		"normalizedField", fieldPath,
 		"exists", result.Exists(),
@@ -63,7 +63,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 
 	if !result.Exists() {
 		// Field doesn't exist, return original message
-		f.logger.Info("Field does not exist, returning original message",
+		f.logger.V(1).Info("Field does not exist, returning original message",
 			"field", fieldPath)
 		return []*types.Message{message}, nil
 	}
@@ -75,19 +75,19 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 		if result.IsObject() {
 			arrayField := result.Get("array")
 			if arrayField.Exists() && arrayField.IsArray() {
-				f.logger.Info("Found array wrapped in object with 'array' field (hamba/avro format)",
+				f.logger.V(1).Info("Found array wrapped in object with 'array' field (hamba/avro format)",
 					"field", fieldPath)
 				arrayResult = arrayField
 			} else {
 				// Field is not an array and not a wrapped array, return original message
-				f.logger.Info("Field is not an array, returning original message",
+				f.logger.V(1).Info("Field is not an array, returning original message",
 					"field", fieldPath,
 					"type", fmt.Sprintf("%T", result.Value()))
 				return []*types.Message{message}, nil
 			}
 		} else {
 			// Field is not an array, return original message
-			f.logger.Info("Field is not an array, returning original message",
+			f.logger.V(1).Info("Field is not an array, returning original message",
 				"field", fieldPath,
 				"type", fmt.Sprintf("%T", result.Value()))
 			return []*types.Message{message}, nil
@@ -106,7 +106,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 	array := arrayResult.Array()
 	if len(array) == 0 {
 		// Empty array, return original message without the array field
-		f.logger.Info("Empty array found, removing field and returning original message",
+		f.logger.V(1).Info("Empty array found, removing field and returning original message",
 			"field", fieldPath)
 		// Try to delete both normalized and original field names
 		delete(originalData, fieldPath)
@@ -116,7 +116,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 		return []*types.Message{newMsg}, nil
 	}
 
-	f.logger.Info("Flattening array",
+	f.logger.V(1).Info("Flattening array",
 		"field", fieldPath,
 		"arrayLength", len(array))
 
@@ -152,7 +152,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 		messages = append(messages, newMsg)
 	}
 
-	f.logger.Info("Flatten completed",
+	f.logger.V(1).Info("Flatten completed",
 		"field", fieldPath,
 		"inputMessages", 1,
 		"outputMessages", len(messages))
@@ -165,7 +165,7 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 			for k := range firstFlattened {
 				firstKeys = append(firstKeys, k)
 			}
-			f.logger.Info("First flattened message structure",
+			f.logger.V(1).Info("First flattened message structure",
 				"keys", firstKeys,
 				"messagePreview", string(messages[0].Data)[:min(300, len(messages[0].Data))])
 		}

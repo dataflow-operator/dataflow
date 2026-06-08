@@ -29,6 +29,7 @@ import (
 	_ "github.com/ClickHouse/clickhouse-go/v2" // register clickhouse driver for database/sql
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -139,8 +140,10 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 	changeCol := cfg.ChangeColumn()
 	orderByCol := ResolveOrderByColumn(c.config.OrderByColumn)
 
-	return RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string) (int, error) {
-		c.logger.V(1).Info("Executing ClickHouse query", "query", query, "table", c.config.Table)
+	pollStart := time.Now()
+	stats, err := RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string, info BatchPollInfo) (int, checkpoint.Composite, error) {
+		batchStart := time.Now()
+		c.logger.V(1).Info("Executing ClickHouse query", "query", query, "table", c.config.Table, "batch", info.BatchNumber)
 		var rows *sql.Rows
 		err := retry.OnRetryableClickHouse(ctx, 3, 1*time.Second, func() error {
 			var qerr error
@@ -149,20 +152,21 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 		})
 		if err != nil {
 			c.RecordError("read", "query_error")
-			return 0, fmt.Errorf("clickhouse query: %w", err)
+			return 0, checkpoint.Composite{}, fmt.Errorf("clickhouse query: %w", err)
 		}
 		defer rows.Close()
 
 		columns, err := rows.Columns()
 		if err != nil {
 			c.RecordError("read", "columns_error")
-			return 0, fmt.Errorf("clickhouse columns: %w", err)
+			return 0, checkpoint.Composite{}, fmt.Errorf("clickhouse columns: %w", err)
 		}
 
 		idIndex := ColumnIndex(columns, orderByCol)
 		changeIndex := ColumnIndex(columns, changeCol)
 
 		rowCount := 0
+		var lastRow checkpoint.Composite
 		for rows.Next() {
 			values := make([]interface{}, len(columns))
 			valuePtrs := make([]interface{}, len(columns))
@@ -181,6 +185,9 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 			}
 
 			changeTime, orderByVal := ExtractRowCheckpoint(values, changeIndex, idIndex, nil)
+			if changeTime != nil || orderByVal != nil {
+				lastRow = RowCheckpoint(changeTime, orderByVal)
+			}
 
 			jsonData, err := json.Marshal(rowMap)
 			if err != nil {
@@ -203,12 +210,29 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 			select {
 			case msgChan <- msg:
 			case <-ctx.Done():
-				return rowCount, ctx.Err()
+				return rowCount, lastRow, ctx.Err()
 			}
 			rowCount++
 		}
-		return rowCount, nil
+		if rowCount > 0 {
+			fields := BatchPollLogFields(info, rowCount, time.Since(batchStart), lastRow)
+			fields = append([]interface{}{"table", c.config.Table}, fields...)
+			c.logger.Info("ClickHouse poll batch completed", fields...)
+		}
+		return rowCount, lastRow, nil
 	})
+	if err != nil {
+		return err
+	}
+	if stats.Batches > 0 {
+		c.logger.Info("ClickHouse poll cycle completed",
+			"table", c.config.Table,
+			"batches", stats.Batches,
+			"rows_total", stats.TotalRows,
+			"duration_ms", time.Since(pollStart).Milliseconds(),
+		)
+	}
+	return nil
 }
 
 func (c *ClickHouseSourceConnector) incrementalConfig() IncrementalQueryConfig {

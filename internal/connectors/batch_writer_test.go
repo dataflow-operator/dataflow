@@ -76,6 +76,18 @@ func TestNewBatchWriteConfig(t *testing.T) {
 	assert.Equal(t, 10000, cfgTimerOnly.MaxBatchSize)
 }
 
+func TestBatchFlushLogFields(t *testing.T) {
+	fields := BatchFlushLogFields(100, 250*time.Millisecond, "size", 500)
+	fieldMap := make(map[string]any)
+	for i := 0; i < len(fields); i += 2 {
+		fieldMap[fields[i].(string)] = fields[i+1]
+	}
+	assert.Equal(t, 100, fieldMap["batchSize"])
+	assert.Equal(t, int64(250), fieldMap["duration_ms"])
+	assert.Equal(t, "size", fieldMap["flush_reason"])
+	assert.Equal(t, 500, fieldMap["messages_flushed_total"])
+}
+
 func TestRunBatchWriteLoop_BatchSizeFlush(t *testing.T) {
 	ctx := context.Background()
 	ch := make(chan *types.Message, 4)

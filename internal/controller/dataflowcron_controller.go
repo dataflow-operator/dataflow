@@ -10,6 +10,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -39,6 +40,8 @@ const (
 //+kubebuilder:rbac:groups=dataflow.dataflow.io,resources=dataflowcrons/finalizers,verbs=update
 //+kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -71,10 +74,17 @@ func (r *DataFlowCronReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.ensureFinalizer(ctx, &dfc); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.reconcileSpecConfigMap(ctx, &dfc); err != nil {
+	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, dfc.Namespace, &dfc.Spec.DataFlowSpec)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolve secrets: %w", err)
+	}
+	if err := r.reconcileSpecConfigMap(ctx, &dfc, resolvedSpec); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.reconcileCronJob(ctx, &dfc); err != nil {
+	if err := r.reconcileProcessorManifests(ctx, &dfc, resolvedSpec); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.reconcileCronJob(ctx, &dfc, resolvedSpec); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.reconcileTriggeredJobs(ctx, &dfc); err != nil {
@@ -84,11 +94,7 @@ func (r *DataFlowCronReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc *dataflowv1.DataFlowCron) error {
-	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, dfc.Namespace, &dfc.Spec.DataFlowSpec)
-	if err != nil {
-		return fmt.Errorf("resolve secrets: %w", err)
-	}
+func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	specJSON, err := json.Marshal(resolvedSpec)
 	if err != nil {
 		return fmt.Errorf("marshal spec: %w", err)
@@ -116,7 +122,23 @@ func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc
 	return r.Update(ctx, &existing)
 }
 
-func (r *DataFlowCronReconciler) reconcileCronJob(ctx context.Context, dfc *dataflowv1.DataFlowCron) error {
+func (r *DataFlowCronReconciler) reconcileProcessorManifests(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) error {
+	checkpointOn := checkpointPersistenceEnabled(resolvedSpec)
+	nessieLocalS3Secrets := nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, dfc.Namespace)
+	if checkpointOn {
+		if _, err := createOrUpdateCheckpointConfigMap(ctx, r.Client, r.Scheme, dfc.Namespace, dfc.Name, dfc); err != nil {
+			return fmt.Errorf("checkpoint ConfigMap: %w", err)
+		}
+	}
+	if checkpointOn || nessieLocalS3Secrets {
+		if err := createOrUpdateProcessorRBAC(ctx, r.Client, r.Scheme, dfc.Namespace, dfc.Name, dfc, resolvedSpec); err != nil {
+			return fmt.Errorf("processor RBAC: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *DataFlowCronReconciler) reconcileCronJob(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	name := k8snames.CronJobName(dfc.Name)
 	schedule := dfc.Spec.Schedule
 	successHistory := int32(3)
@@ -134,7 +156,7 @@ func (r *DataFlowCronReconciler) reconcileCronJob(ctx context.Context, dfc *data
 	case dataflowv1.DataFlowCronConcurrencyReplace:
 		concurrency = batchv1.ReplaceConcurrent
 	}
-	jobTemplate := r.buildFirstStepJobTemplate(dfc)
+	jobTemplate := r.buildFirstStepJobTemplate(dfc, resolvedSpec)
 	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: dfc.Namespace},
 		Spec: batchv1.CronJobSpec{
@@ -162,7 +184,7 @@ func (r *DataFlowCronReconciler) reconcileCronJob(ctx context.Context, dfc *data
 	return r.Update(ctx, &existing)
 }
 
-func (r *DataFlowCronReconciler) buildFirstStepJobTemplate(dfc *dataflowv1.DataFlowCron) batchv1.JobTemplateSpec {
+func (r *DataFlowCronReconciler) buildFirstStepJobTemplate(dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) batchv1.JobTemplateSpec {
 	labels := map[string]string{
 		dataFlowCronOwnerLabel:          dfc.Name,
 		dataFlowCronTemplateGeneratedBy: "dataflowcron-controller",
@@ -172,7 +194,7 @@ func (r *DataFlowCronReconciler) buildFirstStepJobTemplate(dfc *dataflowv1.DataF
 		Spec: batchv1.JobSpec{
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       r.processorPodSpec(dfc),
+				Spec:       r.processorPodSpec(dfc, resolvedSpec),
 			},
 		},
 	}
@@ -279,7 +301,7 @@ func (r *DataFlowCronReconciler) ensureStepJob(ctx context.Context, dfc *dataflo
 	return r.Create(ctx, job)
 }
 
-func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *dataflowv1.DataFlowCron, name, runID string) error {
+func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec, name, runID string) error {
 	var existing batchv1.Job
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: dfc.Namespace}, &existing)
 	if err == nil {
@@ -305,7 +327,7 @@ func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *da
 					dataFlowCronRunIDLabel:        runID,
 					dataFlowCronTriggerIndexLabel: dataFlowCronProcessorStepLabel,
 				}},
-				Spec: r.processorPodSpec(dfc),
+				Spec: r.processorPodSpec(dfc, resolvedSpec),
 			},
 		},
 	}
@@ -315,9 +337,10 @@ func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *da
 	return r.Create(ctx, job)
 }
 
-func (r *DataFlowCronReconciler) processorPodSpec(dfc *dataflowv1.DataFlowCron) corev1.PodSpec {
+func (r *DataFlowCronReconciler) processorPodSpec(dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) corev1.PodSpec {
 	return corev1.PodSpec{
-		RestartPolicy: corev1.RestartPolicyNever,
+		RestartPolicy:      corev1.RestartPolicyNever,
+		ServiceAccountName: processorServiceAccountName(dfc.Name, resolvedSpec, dfc.Namespace),
 		Containers: []corev1.Container{
 			{
 				Name:  "processor",
@@ -405,6 +428,9 @@ func (r *DataFlowCronReconciler) handleDeletion(ctx context.Context, dfc *datafl
 			return err
 		}
 	}
+	if err := deleteProcessorCheckpointAndRBAC(ctx, r.Client, dfc.Namespace, dfc.Name); err != nil {
+		return err
+	}
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(dfc.Namespace), client.MatchingLabels{dataFlowCronOwnerLabel: dfc.Name}); err == nil {
 		for i := range jobs.Items {
@@ -427,6 +453,9 @@ func (r *DataFlowCronReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.CronJob{}).
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles()}).
 		Complete(r)
 }

@@ -364,6 +364,9 @@ func runPollingRead(ctx context.Context, pollInterval time.Duration, readFn func
 			err := readFn(ctx, msgChan)
 			if err != nil {
 				if errors.Is(err, ErrSourceExhausted) {
+					if opts != nil {
+						opts.logger.V(1).Info("Source poll exhausted, stopping read loop")
+					}
 					if opts != nil && opts.meta != nil {
 						opts.meta.SetSourcePollHealthy(true)
 					}

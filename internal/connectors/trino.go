@@ -25,6 +25,7 @@ import (
 	"time"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
@@ -112,6 +113,12 @@ func (t *TrinoSourceConnector) Read(ctx context.Context) (<-chan *types.Message,
 	if t.config.PollInterval != nil {
 		pollInterval = time.Duration(*t.config.PollInterval) * time.Second
 	}
+	t.logger.Info("Starting to read from Trino",
+		"catalog", t.config.Catalog,
+		"schema", t.config.Schema,
+		"table", t.config.Table,
+		"poll_interval_sec", int(pollInterval.Seconds()),
+	)
 	return runPollingRead(ctx, pollInterval, t.readRows, t.channelBufferSize, &pollingReadOpts{
 		logger: t.logger,
 		meta:   &t.connectorMetadata,
@@ -128,17 +135,23 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 	changeCol := cfg.ChangeColumn()
 	orderByCol := ResolveOrderByColumn(t.config.OrderByColumn)
 
-	return RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string) (int, error) {
-		t.logger.V(1).Info("Executing Trino query", "query", query)
+	pollStart := time.Now()
+	stats, err := RunIncrementalBatchPoll(ctx, cfg, readBatchSize, func(ctx context.Context, query string, info BatchPollInfo) (int, checkpoint.Composite, error) {
+		batchStart := time.Now()
+		t.logger.V(1).Info("Executing Trino query", "query", query, "catalog", t.config.Catalog, "schema", t.config.Schema, "table", t.config.Table, "batch", info.BatchNumber)
 		rows, err := t.client.executeQuery(ctx, query)
 		if err != nil {
 			t.RecordError("read", "query_error")
-			return 0, err
+			return 0, checkpoint.Composite{}, err
 		}
 
 		rowCount := 0
+		var lastRow checkpoint.Composite
 		for _, row := range rows {
 			changeTime, orderByVal := extractMapRowCheckpoint(row, changeCol, orderByCol)
+			if changeTime != nil || orderByVal != nil {
+				lastRow = RowCheckpoint(changeTime, orderByVal)
+			}
 
 			jsonData, err := json.Marshal(row)
 			if err != nil {
@@ -162,12 +175,35 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 			select {
 			case msgChan <- msg:
 			case <-ctx.Done():
-				return rowCount, ctx.Err()
+				return rowCount, lastRow, ctx.Err()
 			}
 			rowCount++
 		}
-		return rowCount, nil
+		if rowCount > 0 {
+			fields := BatchPollLogFields(info, rowCount, time.Since(batchStart), lastRow)
+			fields = append([]interface{}{
+				"catalog", t.config.Catalog,
+				"schema", t.config.Schema,
+				"table", t.config.Table,
+			}, fields...)
+			t.logger.Info("Trino poll batch completed", fields...)
+		}
+		return rowCount, lastRow, nil
 	})
+	if err != nil {
+		return err
+	}
+	if stats.Batches > 0 {
+		t.logger.Info("Trino poll cycle completed",
+			"catalog", t.config.Catalog,
+			"schema", t.config.Schema,
+			"table", t.config.Table,
+			"batches", stats.Batches,
+			"rows_total", stats.TotalRows,
+			"duration_ms", time.Since(pollStart).Milliseconds(),
+		)
+	}
+	return nil
 }
 
 func (t *TrinoSourceConnector) incrementalConfig() IncrementalQueryConfig {
@@ -510,18 +546,18 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 			if len(msgs) > 0 {
 				firstMsgID = types.MessageID(msgs[0])
 			}
-			t.logger.Info("Committing source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
+			t.logger.V(1).Info("Committing source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
 			for i, m := range msgs {
 				if m.Ack == nil && i == 0 {
 					t.logger.V(1).Info("Message has no Ack callback", logkeys.MessageID, types.MessageID(m))
 				}
 			}
 			t.AckMessagesAndNotifyProgress(msgs)
-			t.logger.Info("Committed source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
+			t.logger.V(1).Info("Committed source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
 		},
 		OnMessage: func(msg *types.Message) bool {
 			messageCount++
-			t.logger.Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data))
+			t.logger.V(1).Info("Received message for Trino", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "messageSize", len(msg.Data))
 			return true
 		},
 	})

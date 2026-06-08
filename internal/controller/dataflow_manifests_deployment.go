@@ -112,16 +112,7 @@ func processorSentryEnvVars() []corev1.EnvVar {
 // processorServiceAccountFor returns the dedicated ServiceAccount for the processor when checkpoint persistence
 // is enabled or when the Nessie sink uses S3 Secrets in the DataFlow namespace (secretKeyRef requires Secret get).
 func (r *DataFlowReconciler) processorServiceAccountFor(dataflow *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) string {
-	if resolvedSpec == nil {
-		return ""
-	}
-	if resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence {
-		return k8snames.ProcessorServiceAccount(dataflow.Name)
-	}
-	if nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, dataflow.Namespace) {
-		return k8snames.ProcessorServiceAccount(dataflow.Name)
-	}
-	return ""
+	return processorServiceAccountName(dataflow.Name, resolvedSpec, dataflow.Namespace)
 }
 
 // processorImageFor returns the container image to use for the dataflow processor.

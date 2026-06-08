@@ -343,6 +343,7 @@ func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *type
 }
 
 func (c *NessieSourceConnector) readOnceFullScan(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
+	pollStart := time.Now()
 	arrowTbl, err := tbl.Scan().ToArrowTable(ctx)
 	if err != nil {
 		c.RecordError("read", "scan_error")
@@ -361,10 +362,18 @@ func (c *NessieSourceConnector) readOnceFullScan(ctx context.Context, msgChan ch
 			return ctx.Err()
 		}
 	}
+	c.logger.Info("Nessie poll cycle completed",
+		"namespace", c.config.Namespace,
+		"table", c.config.Table,
+		"mode", "full_scan",
+		"rows_total", len(msgs),
+		"duration_ms", time.Since(pollStart).Milliseconds(),
+	)
 	return nil
 }
 
 func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
+	pollStart := time.Now()
 	current := tbl.CurrentSnapshot()
 	if current == nil {
 		return ErrSourceExhausted
@@ -446,6 +455,19 @@ func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan
 	if total == 0 {
 		return ErrSourceExhausted
 	}
+	lastSnap := chain[len(chain)-1]
+	c.logger.Info("Nessie poll cycle completed",
+		"namespace", c.config.Namespace,
+		"table", c.config.Table,
+		"mode", "incremental",
+		"snapshots_read", len(chain),
+		"rows_total", total,
+		"duration_ms", time.Since(pollStart).Milliseconds(),
+		"from_snapshot_id", afterID,
+		"to_snapshot_id", lastSnap.SnapshotID,
+		"from_snapshot_sequence", afterSeq,
+		"to_snapshot_sequence", lastSnap.SequenceNumber,
+	)
 	return nil
 }
 

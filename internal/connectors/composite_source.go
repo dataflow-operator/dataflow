@@ -109,33 +109,109 @@ func AppendSQLLimit(query string, limit int) string {
 	return fmt.Sprintf("%s LIMIT %d", query, limit)
 }
 
+// BatchPollInfo describes one batch within an incremental poll cycle.
+type BatchPollInfo struct {
+	BatchNumber int
+	TotalRows   int // rows read in earlier batches of this poll cycle
+	Limit       int
+	StartState  checkpoint.Composite
+}
+
+// PollCycleStats summarizes a completed incremental poll cycle.
+type PollCycleStats struct {
+	TotalRows int
+	Batches   int
+}
+
+// RowCheckpoint builds a composite checkpoint from scanned row values.
+func RowCheckpoint(changeTime *time.Time, orderBy interface{}) checkpoint.Composite {
+	var c checkpoint.Composite
+	if orderBy != nil {
+		c.OrderByValue = orderBy
+	}
+	if changeTime != nil {
+		t := *changeTime
+		c.ChangeTime = &t
+	}
+	return c
+}
+
+func cloneComposite(c checkpoint.Composite) checkpoint.Composite {
+	out := checkpoint.Composite{OrderByValue: c.OrderByValue}
+	if c.ChangeTime != nil {
+		t := *c.ChangeTime
+		out.ChangeTime = &t
+	}
+	return out
+}
+
+// BatchPollLogFields returns structured log fields common to incremental source batch logs.
+func BatchPollLogFields(info BatchPollInfo, rowCount int, duration time.Duration, lastRow checkpoint.Composite) []interface{} {
+	fields := []interface{}{
+		"batch", info.BatchNumber,
+		"rows", rowCount,
+		"rows_in_poll", info.TotalRows + rowCount,
+		"read_batch_size", info.Limit,
+		"duration_ms", duration.Milliseconds(),
+		"has_more", info.Limit > 0 && rowCount >= info.Limit,
+	}
+	if info.StartState.ChangeTime != nil {
+		fields = append(fields, "from_change_time", info.StartState.ChangeTime.UTC().Format(time.RFC3339Nano))
+	}
+	if info.StartState.OrderByValue != nil {
+		fields = append(fields, "from_order_by", info.StartState.OrderByValue)
+	}
+	if lastRow.ChangeTime != nil {
+		fields = append(fields, "to_change_time", lastRow.ChangeTime.UTC().Format(time.RFC3339Nano))
+	}
+	if lastRow.OrderByValue != nil {
+		fields = append(fields, "to_order_by", lastRow.OrderByValue)
+	}
+	return fields
+}
+
 // RunIncrementalBatchPoll executes read queries in batches until fewer than limit rows are returned.
+// The in-poll cursor advances from the last row of each batch so subsequent batches do not re-read rows.
 // Returns ErrSourceExhausted when no rows were read in the poll cycle.
 func RunIncrementalBatchPoll(
 	ctx context.Context,
-	cfg IncrementalQueryConfig,
+	baseCfg IncrementalQueryConfig,
 	limit int,
-	execute func(ctx context.Context, query string) (rowCount int, err error),
-) error {
+	execute func(ctx context.Context, query string, info BatchPollInfo) (rowCount int, lastRow checkpoint.Composite, err error),
+) (PollCycleStats, error) {
+	cursor := cloneComposite(baseCfg.State)
 	totalRows := 0
+	batches := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return PollCycleStats{TotalRows: totalRows, Batches: batches}, err
 		}
+		batches++
+		cfg := baseCfg
+		cfg.State = cursor
+		startState := cloneComposite(cursor)
 		query := AppendSQLLimit(cfg.ResolveReadQuery(), limit)
-		rowCount, err := execute(ctx, query)
+		rowCount, lastRow, err := execute(ctx, query, BatchPollInfo{
+			BatchNumber: batches,
+			TotalRows:   totalRows,
+			Limit:       limit,
+			StartState:  startState,
+		})
 		if err != nil {
-			return err
+			return PollCycleStats{TotalRows: totalRows, Batches: batches}, err
 		}
 		totalRows += rowCount
+		if rowCount > 0 && checkpoint.ShouldAdvance(cursor, lastRow) {
+			cursor = cloneComposite(lastRow)
+		}
 		if limit == 0 || rowCount < limit {
 			break
 		}
 	}
 	if totalRows == 0 {
-		return ErrSourceExhausted
+		return PollCycleStats{}, ErrSourceExhausted
 	}
-	return nil
+	return PollCycleStats{TotalRows: totalRows, Batches: batches}, nil
 }
 
 // IncrementalSelectInput builds an incremental SELECT with composite tuple WHERE.

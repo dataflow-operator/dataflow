@@ -104,6 +104,16 @@ type BatchWriteOptions struct {
 	FlushTimeout time.Duration
 }
 
+// BatchFlushLogFields returns structured log fields for a successful sink batch flush.
+func BatchFlushLogFields(batchSize int, duration time.Duration, reason string, totalFlushed int) []any {
+	return []any{
+		"batchSize", batchSize,
+		logkeys.DurationMS, duration.Milliseconds(),
+		logkeys.FlushReason, reason,
+		"messages_flushed_total", totalFlushed,
+	}
+}
+
 // RunBatchWriteLoop reads messages, batches them, and flushes on size, timer, shutdown, or channel close.
 func RunBatchWriteLoop(
 	ctx context.Context,
@@ -114,6 +124,7 @@ func RunBatchWriteLoop(
 	useTimer := cfg.FlushInterval > 0
 	var batch []*types.Message
 	var flushTimer *time.Timer
+	var totalFlushed int
 
 	stopTimer := func() {
 		if flushTimer != nil {
@@ -122,11 +133,12 @@ func RunBatchWriteLoop(
 		}
 	}
 
-	doFlush := func(toFlush []*types.Message) error {
+	doFlush := func(toFlush []*types.Message, reason string) error {
 		stopTimer()
 		if len(toFlush) == 0 {
 			return nil
 		}
+		flushStart := time.Now()
 		batchCtx, cancel := BatchWriteContextWithTimeout(ctx, opts.FlushTimeout)
 		defer cancel()
 		if err := opts.OnFlush(batchCtx, toFlush); err != nil {
@@ -135,6 +147,10 @@ func RunBatchWriteLoop(
 		if opts.OnAck != nil {
 			opts.OnAck(toFlush)
 		}
+		totalFlushed += len(toFlush)
+		fields := append([]any{}, opts.LogFields...)
+		fields = append(fields, BatchFlushLogFields(len(toFlush), time.Since(flushStart), reason, totalFlushed)...)
+		opts.Logger.Info("Batch flushed", fields...)
 		return nil
 	}
 
@@ -160,7 +176,7 @@ func RunBatchWriteLoop(
 				stopTimer()
 				if len(batch) > 0 {
 					opts.Logger.Info("Context cancelled, flushing batch", append(opts.LogFields, "batchSize", len(batch))...)
-					if err := doFlush(batch); err != nil {
+					if err := doFlush(batch, "shutdown"); err != nil {
 						return err
 					}
 				}
@@ -172,7 +188,7 @@ func RunBatchWriteLoop(
 				}
 				toFlush := batch
 				batch = nil
-				if err := doFlush(toFlush); err != nil {
+				if err := doFlush(toFlush, "timer"); err != nil {
 					logFlushError(err, "Failed to write batch on timer", nil, len(toFlush))
 					return err
 				}
@@ -180,7 +196,7 @@ func RunBatchWriteLoop(
 				if !ok {
 					stopTimer()
 					if len(batch) > 0 {
-						if err := doFlush(batch); err != nil {
+						if err := doFlush(batch, "channel_closed"); err != nil {
 							return err
 						}
 					}
@@ -193,7 +209,7 @@ func RunBatchWriteLoop(
 				if len(batch) >= cfg.MaxBatchSize {
 					toFlush := batch
 					batch = nil
-					if err := doFlush(toFlush); err != nil {
+					if err := doFlush(toFlush, "size"); err != nil {
 						logFlushError(err, "Failed to write batch", msg, len(toFlush))
 						return err
 					}
@@ -205,7 +221,7 @@ func RunBatchWriteLoop(
 				stopTimer()
 				if len(batch) > 0 {
 					opts.Logger.Info("Context cancelled, flushing batch", append(opts.LogFields, "batchSize", len(batch))...)
-					if err := doFlush(batch); err != nil {
+					if err := doFlush(batch, "shutdown"); err != nil {
 						return err
 					}
 				}
@@ -214,7 +230,7 @@ func RunBatchWriteLoop(
 				if !ok {
 					stopTimer()
 					if len(batch) > 0 {
-						if err := doFlush(batch); err != nil {
+						if err := doFlush(batch, "channel_closed"); err != nil {
 							return err
 						}
 					}
@@ -227,7 +243,7 @@ func RunBatchWriteLoop(
 				if len(batch) >= cfg.MaxBatchSize {
 					toFlush := batch
 					batch = nil
-					if err := doFlush(toFlush); err != nil {
+					if err := doFlush(toFlush, "size"); err != nil {
 						logFlushError(err, "Failed to write batch", msg, len(toFlush))
 						return err
 					}

@@ -196,7 +196,6 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to source: %w", err)
 	}
 	defer p.source.Close()
-	p.logger.Info("Connected to source")
 
 	// Connect to main sink with retry on transient errors (connection refused, HTTP 500, etc.)
 	if err := connectWithRetry(ctx, p.sink, "sink", 0, 30*time.Second, p.logger); err != nil {
@@ -204,7 +203,6 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to sink: %w", err)
 	}
 	defer p.sink.Close()
-	p.logger.Info("Connected to sink")
 
 	// Connect to error sink if specified (with retry on transient errors)
 	if p.errorSink != nil {
@@ -213,7 +211,6 @@ func (p *Processor) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to connect to error sink: %w", err)
 		}
 		defer p.errorSink.Close()
-		p.logger.Info("Connected to error sink")
 	}
 
 	// Router sinks will be connected dynamically when needed
@@ -279,9 +276,15 @@ func connectWithRetry(ctx context.Context, connector Connectable, connectorName 
 	const maxBackoff = 5 * time.Minute
 	backoff := initialBackoff
 	attempt := 0
+	connectStart := time.Now()
 	for {
 		err := connector.Connect(ctx)
 		if err == nil {
+			fields := []any{"connector", connectorName, logkeys.DurationMS, time.Since(connectStart).Milliseconds()}
+			if attempt > 0 {
+				fields = append(fields, logkeys.Attempt, attempt+1)
+			}
+			logger.Info("Connected to connector", fields...)
 			return nil
 		}
 		if !retry.IsRetryableForConnect(err) {
@@ -293,6 +296,7 @@ func connectWithRetry(ctx context.Context, connector Connectable, connectorName 
 		}
 		logger.Info("Transient connection error, retrying later",
 			"connector", connectorName,
+			logkeys.Attempt, attempt,
 			"error", err.Error(),
 			"backoff", backoff.String())
 		select {
@@ -444,7 +448,7 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 
 						// Log routing metadata after router transformation
 						if routedCond, ok := tmsg.Metadata["routed_condition"].(string); ok {
-							p.logger.Info("Router set routed_condition",
+							p.logger.V(1).Info("Router set routed_condition",
 								logkeys.MessageID, types.MessageID(tmsg),
 								"condition", routedCond,
 								"message", string(tmsg.Data))
@@ -547,6 +551,15 @@ func (p *Processor) processMessages(ctx context.Context, input <-chan *types.Mes
 				}
 				p.mu.RUnlock()
 				metrics.SetTaskSuccessRate(p.namespace, p.name, successRate)
+				p.mu.RLock()
+				processed := p.processedCount
+				errors := p.errorCount
+				p.mu.RUnlock()
+				p.logger.Info("Pipeline progress",
+					logkeys.ProcessedCount, processed,
+					logkeys.ErrorCount, errors,
+					logkeys.Throughput, throughput,
+				)
 			}
 		}
 	}
@@ -696,7 +709,12 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 			p.logger.Error(err, "Failed to write messages to sink")
 			return err
 		}
-		p.logger.Info("Successfully completed writing messages to sink")
+		p.mu.RLock()
+		p.logger.Info("Successfully completed writing messages to sink",
+			logkeys.ProcessedCount, p.processedCount,
+			logkeys.ErrorCount, p.errorCount,
+		)
+		p.mu.RUnlock()
 		return nil
 	}
 
@@ -819,12 +837,22 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 	hasErrorsMu.Lock()
 	defer hasErrorsMu.Unlock()
 	if hasErrors {
-		p.logger.Info("Some messages were sent to error sink")
+		p.mu.RLock()
+		p.logger.Info("Some messages were sent to error sink",
+			logkeys.ProcessedCount, p.processedCount,
+			logkeys.ErrorCount, p.errorCount,
+		)
+		p.mu.RUnlock()
 		// Don't return error if error sink is configured - errors are handled
 		return nil
 	}
 
-	p.logger.Info("Successfully completed writing messages to sink")
+	p.mu.RLock()
+	p.logger.Info("Successfully completed writing messages to sink",
+		logkeys.ProcessedCount, p.processedCount,
+		logkeys.ErrorCount, p.errorCount,
+	)
+	p.mu.RUnlock()
 	return nil
 }
 

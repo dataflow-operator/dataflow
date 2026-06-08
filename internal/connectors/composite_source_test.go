@@ -196,39 +196,131 @@ func TestAppendSQLLimit(t *testing.T) {
 	assert.Equal(t, "SELECT 1 LIMIT 100", AppendSQLLimit("SELECT 1", 100))
 }
 
+func TestRunIncrementalBatchPoll_postgresUserQueryAdvancesCursor(t *testing.T) {
+	userQuery := `SELECT price_id, update_date
+FROM price.price
+WHERE price_status = 'EXPORTED'`
+	cfg := IncrementalQueryConfig{
+		UserQuery:            userQuery,
+		ExplicitChangeColumn: "update_date",
+		DefaultChangeColumn:  "updated_at",
+		OrderByColumn:        "price_id",
+		CoalesceUpdatedAt:    true,
+		LegacyWrap:           LegacyQueryAsIs,
+		Dialect:              postgresDialect{},
+	}
+	ctx := context.Background()
+	var queries []string
+	t1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	stats, err := RunIncrementalBatchPoll(ctx, cfg, 2, func(_ context.Context, query string, info BatchPollInfo) (int, checkpoint.Composite, error) {
+		queries = append(queries, query)
+		switch len(queries) {
+		case 1:
+			assert.Equal(t, 1, info.BatchNumber)
+			assert.Contains(t, query, "LIMIT 2")
+			assert.Contains(t, query, "price_status = 'EXPORTED'")
+			assert.NotContains(t, query, `WHERE ("update_date", "price_id") >`)
+			return 2, checkpoint.Composite{ChangeTime: &t1, OrderByValue: int64(2)}, nil
+		case 2:
+			assert.Equal(t, 2, info.BatchNumber)
+			assert.Equal(t, 2, info.TotalRows)
+			assert.Contains(t, query, `WHERE ("update_date", "price_id") > ('2024-01-01T00:00:00`, ", 2)")
+			assert.Contains(t, query, "LIMIT 2")
+			return 2, checkpoint.Composite{ChangeTime: &t1, OrderByValue: int64(4)}, nil
+		case 3:
+			assert.Equal(t, 3, info.BatchNumber)
+			assert.Equal(t, 4, info.TotalRows)
+			assert.Contains(t, query, ", 4)")
+			return 1, checkpoint.Composite{ChangeTime: &t2, OrderByValue: int64(5)}, nil
+		default:
+			return 0, checkpoint.Composite{}, nil
+		}
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 5, stats.TotalRows)
+	assert.Equal(t, 3, stats.Batches)
+	require.Len(t, queries, 3)
+}
+
 func TestRunIncrementalBatchPoll(t *testing.T) {
 	cfg := IncrementalQueryConfig{
 		FromTableExpr:       "t",
 		DefaultChangeColumn: "created_at",
+		OrderByColumn:       "id",
 		Dialect:             clickHouseDialect{},
 	}
 	ctx := context.Background()
 	var queries []string
+	t1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	err := RunIncrementalBatchPoll(ctx, cfg, 2, func(_ context.Context, query string) (int, error) {
+	stats, err := RunIncrementalBatchPoll(ctx, cfg, 2, func(_ context.Context, query string, info BatchPollInfo) (int, checkpoint.Composite, error) {
 		queries = append(queries, query)
 		switch len(queries) {
 		case 1:
-			return 2, nil
+			assert.Equal(t, 1, info.BatchNumber)
+			assert.Equal(t, 0, info.TotalRows)
+			return 2, checkpoint.Composite{ChangeTime: &t1, OrderByValue: int64(2)}, nil
 		case 2:
-			return 1, nil
+			assert.Equal(t, 2, info.BatchNumber)
+			assert.Equal(t, 2, info.TotalRows)
+			return 1, checkpoint.Composite{ChangeTime: &t1, OrderByValue: int64(3)}, nil
 		default:
-			return 0, nil
+			return 0, checkpoint.Composite{}, nil
 		}
 	})
 	require.NoError(t, err)
 	require.Len(t, queries, 2)
+	assert.Equal(t, 3, stats.TotalRows)
+	assert.Equal(t, 2, stats.Batches)
 	assert.Contains(t, queries[0], "LIMIT 2")
 	assert.Contains(t, queries[1], "LIMIT 2")
+	assert.Contains(t, queries[1], ", 2)")
 
 	queries = nil
-	err = RunIncrementalBatchPoll(ctx, cfg, 0, func(_ context.Context, query string) (int, error) {
+	stats, err = RunIncrementalBatchPoll(ctx, cfg, 0, func(_ context.Context, query string, _ BatchPollInfo) (int, checkpoint.Composite, error) {
 		queries = append(queries, query)
-		return 0, nil
+		return 0, checkpoint.Composite{}, nil
 	})
 	assert.ErrorIs(t, err, ErrSourceExhausted)
+	assert.Equal(t, 0, stats.TotalRows)
 	require.Len(t, queries, 1)
 	assert.NotContains(t, queries[0], "LIMIT")
+}
+
+func TestBatchPollLogFields(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	info := BatchPollInfo{
+		BatchNumber: 3,
+		TotalRows:   20000,
+		Limit:       10000,
+		StartState: checkpoint.Composite{
+			ChangeTime:   &start,
+			OrderByValue: int64(100),
+		},
+	}
+	lastRow := checkpoint.Composite{
+		ChangeTime:   &end,
+		OrderByValue: int64(5042),
+	}
+	fields := BatchPollLogFields(info, 10000, 850*time.Millisecond, lastRow)
+
+	fieldMap := make(map[string]interface{})
+	for i := 0; i < len(fields); i += 2 {
+		fieldMap[fields[i].(string)] = fields[i+1]
+	}
+	assert.Equal(t, 3, fieldMap["batch"])
+	assert.Equal(t, 10000, fieldMap["rows"])
+	assert.Equal(t, 30000, fieldMap["rows_in_poll"])
+	assert.Equal(t, 10000, fieldMap["read_batch_size"])
+	assert.Equal(t, int64(850), fieldMap["duration_ms"])
+	assert.Equal(t, true, fieldMap["has_more"])
+	assert.Equal(t, "2024-01-01T00:00:00Z", fieldMap["from_change_time"])
+	assert.Equal(t, int64(100), fieldMap["from_order_by"])
+	assert.Equal(t, "2024-06-01T12:00:00Z", fieldMap["to_change_time"])
+	assert.Equal(t, int64(5042), fieldMap["to_order_by"])
 }
 
 func TestCompositeCheckpointHolder_advance(t *testing.T) {

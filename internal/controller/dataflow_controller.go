@@ -391,10 +391,24 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if shouldRequeueAfterPhase(statusPhase) {
 		metrics.ObserveControllerReconcileDuration("success", time.Since(start).Seconds())
-		return ctrl.Result{RequeueAfter: pendingRequeueAfter()}, nil
+		result := ctrl.Result{RequeueAfter: pendingRequeueAfter()}
+		log.Info("Reconcile completed",
+			logkeys.Phase, statusPhase,
+			logkeys.DurationMS, time.Since(start).Milliseconds(),
+			logkeys.ProcessedCount, statusProcessedCount,
+			logkeys.ErrorCount, statusErrorCount,
+			"requeue_after", result.RequeueAfter.String(),
+		)
+		return result, nil
 	}
 
 	metrics.ObserveControllerReconcileDuration("success", time.Since(start).Seconds())
+	log.Info("Reconcile completed",
+		logkeys.Phase, statusPhase,
+		logkeys.DurationMS, time.Since(start).Milliseconds(),
+		logkeys.ProcessedCount, statusProcessedCount,
+		logkeys.ErrorCount, statusErrorCount,
+	)
 	return ctrl.Result{}, nil
 }
 
