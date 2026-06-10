@@ -173,6 +173,12 @@ type KafkaSourceSpec struct {
 	// +optional
 	SASL *SASLConfig `json:"sasl,omitempty"`
 
+	// SecurityProtocol maps to Kafka client property security.protocol.
+	// Supported: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL.
+	// If empty, TLS/SASL enable flags are inferred from tls/sasl sections (legacy behavior).
+	// +optional
+	SecurityProtocol string `json:"securityProtocol,omitempty"`
+
 	// BrokersSecretRef references a Kubernetes secret for brokers (comma-separated)
 	// +optional
 	BrokersSecretRef *SecretRef `json:"brokersSecretRef,omitempty"`
@@ -704,6 +710,12 @@ type KafkaSinkSpec struct {
 	// SASL configuration
 	// +optional
 	SASL *SASLConfig `json:"sasl,omitempty"`
+
+	// SecurityProtocol maps to Kafka client property security.protocol.
+	// Supported: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL.
+	// If empty, TLS/SASL enable flags are inferred from tls/sasl sections (legacy behavior).
+	// +optional
+	SecurityProtocol string `json:"securityProtocol,omitempty"`
 
 	// BrokersSecretRef references a Kubernetes secret for brokers (comma-separated)
 	// +optional

@@ -191,6 +191,83 @@ func TestKafkaRead_AuthorizationErrorRetriesThenReady(t *testing.T) {
 	cancel()
 }
 
+func TestApplyKafkaNetworkConfig_Implicit(t *testing.T) {
+	cfg := sarama.NewConfig()
+	sasl := &v1.SASLConfig{
+		Mechanism: "scram-sha-256",
+		Username:  "user",
+		Password:  "pass",
+	}
+	if err := applyKafkaNetworkConfig(nil, sasl, "", cfg, logr.Discard()); err != nil {
+		t.Fatalf("applyKafkaNetworkConfig: %v", err)
+	}
+	if !cfg.Net.SASL.Enable {
+		t.Error("expected SASL enabled")
+	}
+	if cfg.Net.TLS.Enable {
+		t.Error("expected TLS disabled")
+	}
+}
+
+func TestApplyKafkaNetworkConfig_ExplicitSASLPlaintext(t *testing.T) {
+	cfg := sarama.NewConfig()
+	sasl := &v1.SASLConfig{
+		Mechanism: "scram-sha-256",
+		Username:  "user",
+		Password:  "pass",
+	}
+	if err := applyKafkaNetworkConfig(nil, sasl, "SASL_PLAINTEXT", cfg, logr.Discard()); err != nil {
+		t.Fatalf("applyKafkaNetworkConfig: %v", err)
+	}
+	if !cfg.Net.SASL.Enable {
+		t.Error("expected SASL enabled")
+	}
+	if cfg.Net.TLS.Enable {
+		t.Error("expected TLS disabled")
+	}
+}
+
+func TestApplyKafkaNetworkConfig_ExplicitSASLSSL(t *testing.T) {
+	cfg := sarama.NewConfig()
+	tls := &v1.TLSConfig{InsecureSkipVerify: true}
+	sasl := &v1.SASLConfig{
+		Mechanism: "scram-sha-512",
+		Username:  "user",
+		Password:  "pass",
+	}
+	if err := applyKafkaNetworkConfig(tls, sasl, "SASL_SSL", cfg, logr.Discard()); err != nil {
+		t.Fatalf("applyKafkaNetworkConfig: %v", err)
+	}
+	if !cfg.Net.SASL.Enable {
+		t.Error("expected SASL enabled")
+	}
+	if !cfg.Net.TLS.Enable {
+		t.Error("expected TLS enabled")
+	}
+}
+
+func TestApplyKafkaNetworkConfig_UnknownProtocol(t *testing.T) {
+	cfg := sarama.NewConfig()
+	err := applyKafkaNetworkConfig(nil, nil, "WSS", cfg, logr.Discard())
+	if err == nil {
+		t.Fatal("expected error for unknown security protocol")
+	}
+}
+
+func TestApplyKafkaNetworkConfig_SASLPlaintextRejectsTLS(t *testing.T) {
+	cfg := sarama.NewConfig()
+	tls := &v1.TLSConfig{InsecureSkipVerify: true}
+	sasl := &v1.SASLConfig{
+		Mechanism: "scram-sha-256",
+		Username:  "user",
+		Password:  "pass",
+	}
+	err := applyKafkaNetworkConfig(tls, sasl, "SASL_PLAINTEXT", cfg, logr.Discard())
+	if err == nil {
+		t.Fatal("expected error when SASL_PLAINTEXT is combined with tls")
+	}
+}
+
 func TestApplyKafkaConsumerConfig(t *testing.T) {
 	t.Run("maps all fields", func(t *testing.T) {
 		minBytes := int32(1)

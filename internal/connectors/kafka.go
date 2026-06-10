@@ -127,10 +127,7 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 	saramaConfig.Metadata.Full = true           // Required for Yandex Cloud Kafka
 	saramaConfig.ClientID = "dataflow-operator" // Required for SASL authentication
 
-	if err := applyKafkaTLS(k.config.TLS, saramaConfig, k.logger); err != nil {
-		return err
-	}
-	if err := applyKafkaSASL(k.config.SASL, saramaConfig, k.logger); err != nil {
+	if err := applyKafkaNetworkConfig(k.config.TLS, k.config.SASL, k.config.SecurityProtocol, saramaConfig, k.logger); err != nil {
 		return err
 	}
 	if err := applyKafkaConsumerConfig(k.config, saramaConfig); err != nil {
@@ -955,10 +952,7 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 	saramaConfig.Net.MaxOpenRequests = 1        // Required for idempotent producer ordering
 	saramaConfig.ClientID = "dataflow-operator" // Required for SASL authentication
 
-	if err := applyKafkaTLS(k.config.TLS, saramaConfig, k.logger); err != nil {
-		return err
-	}
-	if err := applyKafkaSASL(k.config.SASL, saramaConfig, k.logger); err != nil {
+	if err := applyKafkaNetworkConfig(k.config.TLS, k.config.SASL, k.config.SecurityProtocol, saramaConfig, k.logger); err != nil {
 		return err
 	}
 
@@ -1102,6 +1096,94 @@ func getRouteFromMessage(msg *types.Message) string {
 		return route
 	}
 	return "default"
+}
+
+func applyKafkaNetworkConfig(tls *v1.TLSConfig, sasl *v1.SASLConfig, securityProtocol string, saramaConfig *sarama.Config, logger logr.Logger) error {
+	if err := applyKafkaTLS(tls, saramaConfig, logger); err != nil {
+		return err
+	}
+	if err := applyKafkaSASL(sasl, saramaConfig, logger); err != nil {
+		return err
+	}
+	return enforceKafkaSecurityProtocol(tls, sasl, securityProtocol, saramaConfig)
+}
+
+func normalizeKafkaSecurityProtocol(protocol string) (string, error) {
+	if protocol == "" {
+		return "", nil
+	}
+	normalized := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(protocol, "-", "_"), " ", "_"))
+	switch normalized {
+	case "PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported security protocol: %s (supported: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL)", protocol)
+	}
+}
+
+func kafkaHasTLSConfigured(tls *v1.TLSConfig) bool {
+	return tls != nil
+}
+
+func kafkaHasSASLConfigured(sasl *v1.SASLConfig) bool {
+	if sasl == nil {
+		return false
+	}
+	hasUser := sasl.Username != "" || sasl.UsernameSecretRef != nil
+	hasPass := sasl.Password != "" || sasl.PasswordSecretRef != nil
+	return hasUser && hasPass
+}
+
+func enforceKafkaSecurityProtocol(tls *v1.TLSConfig, sasl *v1.SASLConfig, securityProtocol string, saramaConfig *sarama.Config) error {
+	if securityProtocol == "" {
+		return nil
+	}
+	protocol, err := normalizeKafkaSecurityProtocol(securityProtocol)
+	if err != nil {
+		return err
+	}
+	hasTLS := kafkaHasTLSConfigured(tls)
+	hasSASL := kafkaHasSASLConfigured(sasl)
+
+	switch protocol {
+	case "PLAINTEXT":
+		if hasSASL {
+			return fmt.Errorf("securityProtocol PLAINTEXT cannot be used with sasl configuration")
+		}
+		if hasTLS {
+			return fmt.Errorf("securityProtocol PLAINTEXT cannot be used with tls configuration")
+		}
+		saramaConfig.Net.TLS.Enable = false
+		saramaConfig.Net.SASL.Enable = false
+	case "SSL":
+		if hasSASL {
+			return fmt.Errorf("securityProtocol SSL cannot be used with sasl configuration")
+		}
+		if !hasTLS {
+			return fmt.Errorf("securityProtocol SSL requires tls configuration")
+		}
+		saramaConfig.Net.TLS.Enable = true
+		saramaConfig.Net.SASL.Enable = false
+	case "SASL_PLAINTEXT":
+		if hasTLS {
+			return fmt.Errorf("securityProtocol SASL_PLAINTEXT cannot be used with tls configuration")
+		}
+		if !hasSASL {
+			return fmt.Errorf("securityProtocol SASL_PLAINTEXT requires sasl configuration")
+		}
+		saramaConfig.Net.TLS.Enable = false
+		saramaConfig.Net.SASL.Enable = true
+	case "SASL_SSL":
+		if !hasTLS {
+			return fmt.Errorf("securityProtocol SASL_SSL requires tls configuration")
+		}
+		if !hasSASL {
+			return fmt.Errorf("securityProtocol SASL_SSL requires sasl configuration")
+		}
+		saramaConfig.Net.TLS.Enable = true
+		saramaConfig.Net.SASL.Enable = true
+	}
+	return nil
 }
 
 // applyKafkaTLS configures TLS on sarama config from TLSConfig.

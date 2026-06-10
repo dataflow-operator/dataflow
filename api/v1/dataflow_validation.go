@@ -151,6 +151,7 @@ func validateKafkaSource(k *KafkaSourceSpec, f *field.Path) field.ErrorList {
 	if k.TopicSecretRef != nil {
 		all = append(all, validateSecretRef(k.TopicSecretRef, f.Child("topicSecretRef"))...)
 	}
+	all = append(all, validateKafkaSecurityProtocol(k.SecurityProtocol, k.TLS, k.SASL, f.Child("securityProtocol"))...)
 	all = append(all, validateKafkaConsumerTiming(k, f)...)
 	return all
 }
@@ -460,7 +461,76 @@ func validateKafkaSink(k *KafkaSinkSpec, f *field.Path) field.ErrorList {
 	if k.TopicSecretRef != nil {
 		all = append(all, validateSecretRef(k.TopicSecretRef, f.Child("topicSecretRef"))...)
 	}
+	all = append(all, validateKafkaSecurityProtocol(k.SecurityProtocol, k.TLS, k.SASL, f.Child("securityProtocol"))...)
 	return all
+}
+
+func validateKafkaSecurityProtocol(protocol string, tls *TLSConfig, sasl *SASLConfig, f *field.Path) field.ErrorList {
+	if protocol == "" {
+		return nil
+	}
+	var all field.ErrorList
+	normalized, err := normalizeKafkaSecurityProtocol(protocol)
+	if err != nil {
+		all = append(all, field.NotSupported(f, protocol, []string{"PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"}))
+		return all
+	}
+	hasTLS := tls != nil
+	hasSASL := kafkaSASLConfigured(sasl)
+
+	switch normalized {
+	case "PLAINTEXT":
+		if hasSASL {
+			all = append(all, field.Forbidden(f, fmt.Sprintf("%s cannot be used with sasl configuration", protocol)))
+		}
+		if hasTLS {
+			all = append(all, field.Forbidden(f, fmt.Sprintf("%s cannot be used with tls configuration", protocol)))
+		}
+	case "SSL":
+		if hasSASL {
+			all = append(all, field.Forbidden(f, fmt.Sprintf("%s cannot be used with sasl configuration", protocol)))
+		}
+		if !hasTLS {
+			all = append(all, field.Required(f, "tls configuration is required for securityProtocol SSL"))
+		}
+	case "SASL_PLAINTEXT":
+		if hasTLS {
+			all = append(all, field.Forbidden(f, fmt.Sprintf("%s cannot be used with tls configuration", protocol)))
+		}
+		if !hasSASL {
+			all = append(all, field.Required(f, "sasl configuration is required for securityProtocol SASL_PLAINTEXT"))
+		}
+	case "SASL_SSL":
+		if !hasTLS {
+			all = append(all, field.Required(f, "tls configuration is required for securityProtocol SASL_SSL"))
+		}
+		if !hasSASL {
+			all = append(all, field.Required(f, "sasl configuration is required for securityProtocol SASL_SSL"))
+		}
+	}
+	return all
+}
+
+func normalizeKafkaSecurityProtocol(protocol string) (string, error) {
+	if protocol == "" {
+		return "", nil
+	}
+	normalized := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(protocol, "-", "_"), " ", "_"))
+	switch normalized {
+	case "PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported security protocol: %s", protocol)
+	}
+}
+
+func kafkaSASLConfigured(sasl *SASLConfig) bool {
+	if sasl == nil {
+		return false
+	}
+	hasUser := sasl.Username != "" || sasl.UsernameSecretRef != nil
+	hasPass := sasl.Password != "" || sasl.PasswordSecretRef != nil
+	return hasUser && hasPass
 }
 
 func validatePostgreSQLSink(p *PostgreSQLSinkSpec, f *field.Path) field.ErrorList {
