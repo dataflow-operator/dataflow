@@ -84,6 +84,26 @@ func (in *ClickHouseSinkSpec) DeepCopyInto(out *ClickHouseSinkSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.UpsertMode != nil {
+		in, out := &in.UpsertMode, &out.UpsertMode
+		*out = new(bool)
+		**out = **in
+	}
+	if in.ConflictKey != nil {
+		in, out := &in.ConflictKey, &out.ConflictKey
+		*out = new(string)
+		**out = **in
+	}
+	if in.TableEngine != nil {
+		in, out := &in.TableEngine, &out.TableEngine
+		*out = new(string)
+		**out = **in
+	}
+	if in.ReplacingVersionColumn != nil {
+		in, out := &in.ReplacingVersionColumn, &out.ReplacingVersionColumn
+		*out = new(string)
+		**out = **in
+	}
 	if in.RawMode != nil {
 		in, out := &in.RawMode, &out.RawMode
 		*out = new(bool)
@@ -285,6 +305,16 @@ func (in *DataFlowSpec) DeepCopyInto(out *DataFlowSpec) {
 	if in.CheckpointPersistence != nil {
 		in, out := &in.CheckpointPersistence, &out.CheckpointPersistence
 		*out = new(bool)
+		**out = **in
+	}
+	if in.CheckpointSyncOnAck != nil {
+		in, out := &in.CheckpointSyncOnAck, &out.CheckpointSyncOnAck
+		*out = new(bool)
+		**out = **in
+	}
+	if in.CheckpointSaveInterval != nil {
+		in, out := &in.CheckpointSaveInterval, &out.CheckpointSaveInterval
+		*out = new(metav1.Duration)
 		**out = **in
 	}
 	if in.ChannelBufferSize != nil {
@@ -749,6 +779,16 @@ func (in *PostgreSQLSinkSpec) DeepCopyInto(out *PostgreSQLSinkSpec) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.UpsertVersionColumn != nil {
+		in, out := &in.UpsertVersionColumn, &out.UpsertVersionColumn
+		*out = new(string)
+		**out = **in
+	}
+	if in.UpsertStrategy != nil {
+		in, out := &in.UpsertStrategy, &out.UpsertStrategy
+		*out = new(string)
+		**out = **in
+	}
 	if in.SoftDeleteColumn != nil {
 		in, out := &in.SoftDeleteColumn, &out.SoftDeleteColumn
 		*out = new(string)
@@ -1111,6 +1151,16 @@ func (in *TrinoSinkSpec) DeepCopyInto(out *TrinoSinkSpec) {
 	if in.AutoCreateTable != nil {
 		in, out := &in.AutoCreateTable, &out.AutoCreateTable
 		*out = new(bool)
+		**out = **in
+	}
+	if in.UpsertMode != nil {
+		in, out := &in.UpsertMode, &out.UpsertMode
+		*out = new(bool)
+		**out = **in
+	}
+	if in.ConflictKey != nil {
+		in, out := &in.ConflictKey, &out.ConflictKey
+		*out = new(string)
 		**out = **in
 	}
 	if in.RawMode != nil {

@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
 	"github.com/dataflow-operator/dataflow/internal/types"
@@ -171,12 +172,18 @@ func (c *connectorMetadata) SetMetadata(namespace, name string) {
 
 // progressRecorder is an optional callback invoked after successful pipeline progress (e.g. sink flush + ack).
 type progressRecorder struct {
-	onProgress func()
+	onProgress     func()
+	batchAckSyncer checkpoint.BatchAckSyncer
 }
 
 // SetProgressCallback registers a callback for liveness/progress probes.
 func (p *progressRecorder) SetProgressCallback(fn func()) {
 	p.onProgress = fn
+}
+
+// SetCheckpointBatchAckSyncer registers a callback to flush checkpoint after sink batch ack.
+func (p *progressRecorder) SetCheckpointBatchAckSyncer(syncer checkpoint.BatchAckSyncer) {
+	p.batchAckSyncer = syncer
 }
 
 func (p *progressRecorder) notifyProgress() {
@@ -194,10 +201,26 @@ func AckMessages(msgs []*types.Message) {
 	}
 }
 
+// AckMessageAndNotifyProgress commits one message and updates liveness progress after a successful write.
+func (p *progressRecorder) AckMessageAndNotifyProgress(msg *types.Message) {
+	if msg != nil && msg.Ack != nil {
+		msg.Ack()
+	}
+	p.flushCheckpointAfterBatchAck()
+	p.notifyProgress()
+}
+
 // AckMessagesAndNotifyProgress commits offsets and updates liveness progress after a successful batch.
 func (p *progressRecorder) AckMessagesAndNotifyProgress(msgs []*types.Message) {
 	AckMessages(msgs)
+	p.flushCheckpointAfterBatchAck()
 	p.notifyProgress()
+}
+
+func (p *progressRecorder) flushCheckpointAfterBatchAck() {
+	if p.batchAckSyncer != nil {
+		_ = p.batchAckSyncer.FlushAfterBatchAck(context.Background())
+	}
 }
 
 // SetConnectorInfo sets the connector type and role for metrics.

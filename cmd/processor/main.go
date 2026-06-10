@@ -95,17 +95,22 @@ func main() {
 
 	// Setup checkpoint store if persistence is enabled
 	var procOpts []processor.ProcessorOption
-	// CheckpointPersistence defaults to true when nil
-	if (spec.CheckpointPersistence == nil || *spec.CheckpointPersistence) && name != "" && namespace != "" {
+	if dataflowv1.CheckpointPersistenceEnabled(&spec) && name != "" && namespace != "" {
 		configMapName := k8snames.ProcessorCheckpointConfigMap(name)
-		store, err := checkpoint.NewConfigMapStore(namespace, configMapName)
+		saveInterval := dataflowv1.CheckpointSaveIntervalDuration(&spec)
+		store, err := checkpoint.NewConfigMapStore(namespace, configMapName, checkpoint.WithSaveInterval(saveInterval))
 		if err != nil {
 			logger.Error(err, "Failed to create checkpoint store, continuing without persistence")
 		} else {
 			ctx := context.Background()
 			store.Start(ctx)
 			defer store.Stop()
-			procOpts = append(procOpts, processor.WithCheckpointStore(store))
+			checkpointStore := checkpoint.NewSyncStore(
+				store,
+				dataflowv1.CheckpointSyncOnAckEnabled(&spec),
+				saveInterval,
+			)
+			procOpts = append(procOpts, processor.WithCheckpointStore(checkpointStore))
 		}
 	}
 

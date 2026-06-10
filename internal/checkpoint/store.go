@@ -96,7 +96,14 @@ func NewConfigMapStore(namespace, configMapName string, opts ...ConfigMapStoreOp
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
+	return NewConfigMapStoreWithClient(client, namespace, configMapName, opts...)
+}
 
+// NewConfigMapStoreWithClient creates a checkpoint store backed by the given Kubernetes client.
+func NewConfigMapStoreWithClient(client kubernetes.Interface, namespace, configMapName string, opts ...ConfigMapStoreOption) (*ConfigMapStore, error) {
+	if client == nil {
+		return nil, fmt.Errorf("kubernetes client is required")
+	}
 	s := &ConfigMapStore{
 		client:       client,
 		namespace:    namespace,

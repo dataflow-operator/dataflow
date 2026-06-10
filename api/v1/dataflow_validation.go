@@ -479,6 +479,26 @@ func validatePostgreSQLSink(p *PostgreSQLSinkSpec, f *field.Path) field.ErrorLis
 	if p.TableSecretRef != nil {
 		all = append(all, validateSecretRef(p.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
+	if p.UpsertMode != nil && *p.UpsertMode {
+		if err := validateSQLIdentifier(resolveConflictKeyForValidation(p.ConflictKey), f.Child("conflictKey")); err != nil {
+			all = append(all, err)
+		}
+	}
+	if p.UpsertStrategy != nil && *p.UpsertStrategy == "ifNewer" {
+		if p.UpsertVersionColumn == nil || strings.TrimSpace(*p.UpsertVersionColumn) == "" {
+			all = append(all, field.Required(f.Child("upsertVersionColumn"), "upsertVersionColumn is required when upsertStrategy is ifNewer"))
+		} else if err := validateSQLIdentifier(*p.UpsertVersionColumn, f.Child("upsertVersionColumn")); err != nil {
+			all = append(all, err)
+		}
+	}
+	if p.UpsertVersionColumn != nil && strings.TrimSpace(*p.UpsertVersionColumn) != "" {
+		if err := validateSQLIdentifier(*p.UpsertVersionColumn, f.Child("upsertVersionColumn")); err != nil {
+			all = append(all, err)
+		}
+	}
+	if p.UpsertStrategy != nil && *p.UpsertStrategy != "" && *p.UpsertStrategy != "always" && *p.UpsertStrategy != "ifNewer" {
+		all = append(all, field.Invalid(f.Child("upsertStrategy"), *p.UpsertStrategy, "must be always or ifNewer"))
+	}
 	all = append(all, validateFlattenMetadataSpec(p.RawMode, p.FlattenMetadataColumns, p.FlattenMetadataColumnsPrefix, f)...)
 	return all
 }
@@ -512,6 +532,19 @@ func validateTrinoSink(t *TrinoSinkSpec, f *field.Path) field.ErrorList {
 	}
 	if t.TableSecretRef != nil {
 		all = append(all, validateSecretRef(t.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	if t.UpsertMode != nil && *t.UpsertMode {
+		conflictKey := resolveConflictKeyForValidation(t.ConflictKey)
+		if conflictKey == "" {
+			all = append(all, field.Required(f.Child("conflictKey"), "conflictKey is required when upsertMode is enabled"))
+		} else if err := validateSQLIdentifier(conflictKey, f.Child("conflictKey")); err != nil {
+			all = append(all, err)
+		}
+		catalog := strings.ToLower(t.Catalog)
+		if catalog != "" && !strings.Contains(catalog, "iceberg") {
+			all = append(all, field.Invalid(f.Child("catalog"), t.Catalog,
+				"upsertMode requires an Iceberg catalog (catalog name should contain \"iceberg\")"))
+		}
 	}
 	all = append(all, validateFlattenMetadataSpec(t.RawMode, t.FlattenMetadataColumns, t.FlattenMetadataColumnsPrefix, f)...)
 	return all
@@ -558,8 +591,30 @@ func validateClickHouseSink(c *ClickHouseSinkSpec, f *field.Path) field.ErrorLis
 	if c.TableSecretRef != nil {
 		all = append(all, validateSecretRef(c.TableSecretRef, f.Child("tableSecretRef"))...)
 	}
+	if c.UpsertMode != nil && *c.UpsertMode {
+		if c.ConflictKey != nil && strings.TrimSpace(*c.ConflictKey) != "" {
+			if err := validateSQLIdentifier(*c.ConflictKey, f.Child("conflictKey")); err != nil {
+				all = append(all, err)
+			}
+		}
+	}
+	if c.TableEngine != nil && *c.TableEngine != "" && *c.TableEngine != "MergeTree" && *c.TableEngine != "ReplacingMergeTree" {
+		all = append(all, field.Invalid(f.Child("tableEngine"), *c.TableEngine, "must be MergeTree or ReplacingMergeTree"))
+	}
+	if c.ReplacingVersionColumn != nil && strings.TrimSpace(*c.ReplacingVersionColumn) != "" {
+		if err := validateSQLIdentifier(*c.ReplacingVersionColumn, f.Child("replacingVersionColumn")); err != nil {
+			all = append(all, err)
+		}
+	}
 	all = append(all, validateFlattenMetadataSpec(c.RawMode, c.FlattenMetadataColumns, c.FlattenMetadataColumnsPrefix, f)...)
 	return all
+}
+
+func resolveConflictKeyForValidation(conflictKey *string) string {
+	if conflictKey == nil {
+		return ""
+	}
+	return strings.TrimSpace(*conflictKey)
 }
 
 func validateSecretRef(r *SecretRef, f *field.Path) field.ErrorList {

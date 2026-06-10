@@ -356,14 +356,16 @@ func (c *ClickHouseSinkConnector) ensureTable(ctx context.Context) error {
 		return nil
 	}
 
-	c.logger.Info("Creating table (raw mode)", "table", c.config.Table)
+	orderByCols := resolveClickHouseOrderByColumns(c.config, nil)
+	engineClause, orderByClause := buildClickHouseCreateEngineClause(c.config, orderByCols)
+	c.logger.Info("Creating table (raw mode)", "table", c.config.Table, "engine", engineClause, "orderBy", orderByCols)
 	createQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			data String,
 			created_at DateTime DEFAULT now()
-		) ENGINE = MergeTree()
-		ORDER BY created_at
-	`, c.config.Table)
+		) %s
+		%s
+	`, c.config.Table, engineClause, orderByClause)
 
 	if _, err := c.conn.ExecContext(ctx, createQuery); err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
@@ -416,11 +418,11 @@ func (c *ClickHouseSinkConnector) ensureTableFromMessage(ctx context.Context, da
 		colDefs = append(colDefs, "created_at DateTime DEFAULT now()")
 	}
 
-	// ORDER BY: use first column (MergeTree requires ORDER BY)
-	orderBy := fmt.Sprintf("`%s`", columns[0])
+	orderByCols := resolveClickHouseOrderByColumns(c.config, columns)
+	engineClause, orderByClause := buildClickHouseCreateEngineClause(c.config, orderByCols)
 
-	c.logger.Info("Creating table from message structure", "table", c.config.Table, "columns", columns, "orderBy", orderBy)
-	createQuery := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (%s) ENGINE = MergeTree() ORDER BY %s`, c.config.Table, strings.Join(colDefs, ", "), orderBy)
+	c.logger.Info("Creating table from message structure", "table", c.config.Table, "columns", columns, "orderBy", orderByCols, "engine", engineClause)
+	createQuery := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (%s) %s %s`, c.config.Table, strings.Join(colDefs, ", "), engineClause, orderByClause)
 	if _, err := c.conn.ExecContext(ctx, createQuery); err != nil {
 		return fmt.Errorf("failed to create table from message: %w", err)
 	}

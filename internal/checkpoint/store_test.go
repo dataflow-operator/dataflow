@@ -21,6 +21,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,4 +83,55 @@ func TestMergeCheckpointData(t *testing.T) {
 	assert.Len(t, m, 2)
 	assert.Contains(t, m, "postgresql")
 	assert.Contains(t, m, "clickhouse")
+}
+
+func TestConfigMapStore_Flush_PersistsPendingCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "df-test-checkpoint", Namespace: "default"},
+		Data:       map[string]string{},
+	}
+	client := fake.NewSimpleClientset(cm)
+	store, err := NewConfigMapStoreWithClient(client, "default", "df-test-checkpoint")
+	require.NoError(t, err)
+
+	checkpointData := []byte(`{"lastReadChangeTime":"2024-01-15T10:00:00Z","lastReadOrderByValue":5042}`)
+	require.NoError(t, store.Save(ctx, "postgresql", checkpointData))
+
+	got, err := client.CoreV1().ConfigMaps("default").Get(ctx, "df-test-checkpoint", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, got.Data[checkpointKey])
+
+	require.NoError(t, store.Flush(ctx))
+
+	got, err = client.CoreV1().ConfigMaps("default").Get(ctx, "df-test-checkpoint", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, got.Data[checkpointKey], "postgresql")
+
+	loaded, err := store.Load(ctx, "postgresql")
+	require.NoError(t, err)
+	assert.JSONEq(t, string(checkpointData), string(loaded))
+}
+
+func TestConfigMapStore_FlushAfterBatchAck_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "df-sync-checkpoint", Namespace: "default"},
+		Data:       map[string]string{},
+	}
+	client := fake.NewSimpleClientset(cm)
+	inner, err := NewConfigMapStoreWithClient(client, "default", "df-sync-checkpoint")
+	require.NoError(t, err)
+	syncStore := NewSyncStore(inner, true, 0)
+
+	require.NoError(t, syncStore.Save(ctx, "postgresql", []byte(`{"lastReadChangeTime":"2024-01-15T10:00:00Z"}`)))
+	require.NoError(t, syncStore.FlushAfterBatchAck(ctx))
+
+	loaded, err := syncStore.Load(ctx, "postgresql")
+	require.NoError(t, err)
+	assert.Contains(t, string(loaded), "2024-01-15T10:00:00Z")
 }

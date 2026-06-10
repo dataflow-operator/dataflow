@@ -950,25 +950,9 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 	}
 	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 	if upsertMode {
-		conflictKey := "id"
-		if p.config.ConflictKey != nil && *p.config.ConflictKey != "" {
-			conflictKey = *p.config.ConflictKey
-		}
-		updateClauses := make([]string, 0)
-		for _, col := range columns {
-			if col != conflictKey {
-				updateClauses = append(updateClauses, fmt.Sprintf(`%s = EXCLUDED.%s`, quotePostgreSQLIdentifier(col), quotePostgreSQLIdentifier(col)))
-			}
-		}
-		if len(updateClauses) == 0 {
-			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING", quotedTable, columnList, placeholderList, quotePostgreSQLIdentifier(conflictKey))
-		} else {
-			updateClause := updateClauses[0]
-			for i := 1; i < len(updateClauses); i++ {
-				updateClause += ", " + updateClauses[i]
-			}
-			query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s", quotedTable, columnList, placeholderList, quotePostgreSQLIdentifier(conflictKey), updateClause)
-		}
+		conflictKey := resolvePostgreSQLConflictKey(p.config)
+		onConflict := buildPostgreSQLOnConflictClause(quotedTable, conflictKey, columns, p.config)
+		query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) %s", quotedTable, columnList, placeholderList, onConflict)
 	} else {
 		query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", quotedTable, columnList, placeholderList)
 	}

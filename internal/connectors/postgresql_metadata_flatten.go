@@ -136,13 +136,18 @@ func (p *PostgreSQLSinkConnector) buildFlattenInsertForMessage(ctx context.Conte
 	}
 	upsertMode := p.config.UpsertMode != nil && *p.config.UpsertMode
 	if upsertMode {
+		conflictKey := resolvePostgreSQLConflictKey(p.config)
+		updateCols := []string{p.pgFlattenPayloadColumn()}
+		for _, col := range p.metaColumnNames {
+			updateCols = append(updateCols, col)
+		}
+		onConflict := buildPostgreSQLOnConflictClause(quotedTable, conflictKey, updateCols, p.config)
 		query = fmt.Sprintf(
-			"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (id) DO UPDATE SET %s = EXCLUDED.%s",
+			"INSERT INTO %s (%s) VALUES (%s) %s",
 			quotedTable,
 			strings.Join(quotedCols, ", "),
 			strings.Join(placeholders, ", "),
-			quotePostgreSQLIdentifier(p.pgFlattenPayloadColumn()),
-			quotePostgreSQLIdentifier(p.pgFlattenPayloadColumn()),
+			onConflict,
 		)
 	} else {
 		query = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quotedTable, strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))

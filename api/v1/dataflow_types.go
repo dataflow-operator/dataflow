@@ -76,6 +76,18 @@ type DataFlowSpec struct {
 	// +optional
 	CheckpointPersistence *bool `json:"checkpointPersistence,omitempty"`
 
+	// CheckpointSyncOnAck persists checkpoint to the ConfigMap immediately after each sink batch ack.
+	// Shrinks the duplicate window on pod crash from the debounce interval to roughly one batch.
+	// Default: false (debounced save only). Recommended for migration and cron workloads.
+	// +optional
+	CheckpointSyncOnAck *bool `json:"checkpointSyncOnAck,omitempty"`
+
+	// CheckpointSaveInterval controls how often pending checkpoints are flushed to the ConfigMap.
+	// Also used as the minimum coalesce interval when checkpointSyncOnAck is true.
+	// Default: 30s.
+	// +optional
+	CheckpointSaveInterval *metav1.Duration `json:"checkpointSaveInterval,omitempty"`
+
 	// ChannelBufferSize is the buffer size for message channels between source, processor, and sink.
 	// Larger values reduce blocking when sink is slower than source (e.g. high Kafka throughput).
 	// Default: 100. Recommended for high throughput: 500–1000.
@@ -733,6 +745,17 @@ type PostgreSQLSinkSpec struct {
 	// +optional
 	ConflictKey *string `json:"conflictKey,omitempty"`
 
+	// UpsertVersionColumn is the column used to compare row versions when UpsertStrategy is ifNewer.
+	// On conflict, the existing row is updated only when EXCLUDED.<column> > target.<column>.
+	// +optional
+	UpsertVersionColumn *string `json:"upsertVersionColumn,omitempty"`
+
+	// UpsertStrategy controls conflict resolution: always (default) updates on every conflict;
+	// ifNewer updates only when the incoming version is newer (requires upsertVersionColumn).
+	// +optional
+	// +kubebuilder:validation:Enum=always;ifNewer
+	UpsertStrategy *string `json:"upsertStrategy,omitempty"`
+
 	// SoftDeleteColumn specifies column for soft delete (e.g. "deleted_at"). If set, DELETE operations will UPDATE this column instead of physical delete.
 	// +optional
 	SoftDeleteColumn *string `json:"softDeleteColumn,omitempty"`
@@ -785,6 +808,16 @@ type TrinoSinkSpec struct {
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
 
+	// UpsertMode enables idempotent writes via MERGE (Iceberg catalog).
+	// Requires conflictKey. Retries and replays update existing rows instead of creating duplicates.
+	// +optional
+	UpsertMode *bool `json:"upsertMode,omitempty"`
+
+	// ConflictKey specifies the column used to match rows in MERGE ON clause.
+	// Required when upsertMode is true.
+	// +optional
+	ConflictKey *string `json:"conflictKey,omitempty"`
+
 	// RawMode when true, creates table with data VARCHAR column (JSON storage).
 	// When false (default), uses columnar format matching message keys to table columns.
 	// +optional
@@ -832,6 +865,27 @@ type ClickHouseSinkSpec struct {
 	// AutoCreateTable automatically creates the table if it doesn't exist
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
+
+	// UpsertMode enables idempotent writes via ReplacingMergeTree deduplication.
+	// Inserts remain INSERT; duplicates are resolved on merge using conflictKey ORDER BY.
+	// +optional
+	UpsertMode *bool `json:"upsertMode,omitempty"`
+
+	// ConflictKey specifies the deduplication key column for ORDER BY when upsertMode is true.
+	// If not set, the first message column (or created_at in raw mode) is used.
+	// +optional
+	ConflictKey *string `json:"conflictKey,omitempty"`
+
+	// TableEngine selects the MergeTree engine variant (default: MergeTree).
+	// When upsertMode is true and tableEngine is unset, ReplacingMergeTree is used for auto-created tables.
+	// +optional
+	// +kubebuilder:validation:Enum=MergeTree;ReplacingMergeTree
+	TableEngine *string `json:"tableEngine,omitempty"`
+
+	// ReplacingVersionColumn is the version column for ReplacingMergeTree(engine).
+	// Rows with the highest version value are kept during background merges.
+	// +optional
+	ReplacingVersionColumn *string `json:"replacingVersionColumn,omitempty"`
 
 	// RawMode when true, creates table with data String and created_at columns (JSON storage).
 	// When false (default), creates table from message structure (columnar, replicates source schema).

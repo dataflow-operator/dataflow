@@ -21,6 +21,10 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -341,6 +345,33 @@ func TestCompositeCheckpointHolder_advance(t *testing.T) {
 	h.Advance(checkpoint.Composite{ChangeTime: &t1, OrderByValue: int64(1)}, true)
 	snap = h.Snapshot()
 	assert.True(t, snap.ChangeTime.Equal(t2))
+}
+
+func TestCompositeCheckpointHolder_AdvanceAndSyncFlush(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "df-cp-test", Namespace: "default"},
+		Data:       map[string]string{},
+	}
+	client := fake.NewSimpleClientset(cm)
+	store, err := checkpoint.NewConfigMapStoreWithClient(client, "default", "df-cp-test")
+	require.NoError(t, err)
+	syncStore := checkpoint.NewSyncStore(store, true, 0)
+
+	h := &CompositeCheckpointHolder{}
+	h.InitCompositeCheckpoint(syncStore, "postgresql", nil)
+
+	t1 := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	ack := h.MakeAck(&t1, int64(5042), true)
+	ack()
+	require.NoError(t, syncStore.FlushAfterBatchAck(ctx))
+
+	loaded, err := syncStore.Load(ctx, "postgresql")
+	require.NoError(t, err)
+	assert.Contains(t, string(loaded), "2024-01-15T10:00:00Z")
+	assert.Contains(t, string(loaded), "5042")
 }
 
 func TestCompositeCheckpointHolder_orderOnlyLegacy(t *testing.T) {

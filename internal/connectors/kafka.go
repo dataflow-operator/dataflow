@@ -1076,10 +1076,7 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 			msg.Metadata["partition"] = partition
 			msg.Metadata["offset"] = offset
 
-			if msg.Ack != nil {
-				msg.Ack()
-			}
-			k.notifyProgress()
+			k.AckMessageAndNotifyProgress(msg)
 		}
 	}
 }

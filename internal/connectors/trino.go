@@ -761,16 +761,25 @@ func (t *TrinoSinkConnector) executeBatch(ctx context.Context, batch []*types.Me
 		valueRows = append(valueRows, fmt.Sprintf("(%s)", strings.Join(values, ", ")))
 	}
 
-	query := fmt.Sprintf(
-		"INSERT INTO %s.%s.%s (%s) VALUES %s",
-		t.config.Catalog,
-		t.config.Schema,
-		t.config.Table,
-		columnsStr,
-		strings.Join(valueRows, ", "),
-	)
-
-	t.logger.Info("Executing batch insert", "batchSize", len(batch), "table", fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table), "columns", columnsToUse)
+	tableRef := fmt.Sprintf("%s.%s.%s", t.config.Catalog, t.config.Schema, t.config.Table)
+	var query string
+	if trinoUpsertEnabled(t.config) {
+		conflictKey := resolveTrinoConflictKey(t.config)
+		var buildErr error
+		query, buildErr = buildTrinoMergeQuery(t.config.Catalog, t.config.Schema, t.config.Table, conflictKey, columnsToUse, valueRows)
+		if buildErr != nil {
+			return buildErr
+		}
+		t.logger.Info("Executing batch merge (upsert mode)", "batchSize", len(batch), "table", tableRef, "conflictKey", conflictKey, "columns", columnsToUse)
+	} else {
+		query = fmt.Sprintf(
+			"INSERT INTO %s (%s) VALUES %s",
+			tableRef,
+			columnsStr,
+			strings.Join(valueRows, ", "),
+		)
+		t.logger.Info("Executing batch insert", "batchSize", len(batch), "table", tableRef, "columns", columnsToUse)
+	}
 
 	_, err := t.client.executeQuery(ctx, query)
 	if err != nil {

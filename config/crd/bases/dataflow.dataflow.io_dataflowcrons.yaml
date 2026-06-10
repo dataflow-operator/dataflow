@@ -962,6 +962,18 @@ spec:
                   When enabled, polling sources (PostgreSQL, ClickHouse, Trino) resume from the last committed position after restart, reducing duplicates.
                   Default: true. Set to false to disable.
                 type: boolean
+              checkpointSaveInterval:
+                description: |-
+                  CheckpointSaveInterval controls how often pending checkpoints are flushed to the ConfigMap.
+                  Also used as the minimum coalesce interval when checkpointSyncOnAck is true.
+                  Default: 30s.
+                type: string
+              checkpointSyncOnAck:
+                description: |-
+                  CheckpointSyncOnAck persists checkpoint to the ConfigMap immediately after each sink batch ack.
+                  Shrinks the duplicate window on pod crash from the debounce interval to roughly one batch.
+                  Default: false (debounced save only). Recommended for migration and cron workloads.
+                type: boolean
               concurrencyPolicy:
                 type: string
               errors:

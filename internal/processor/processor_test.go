@@ -546,8 +546,8 @@ type mockPlainConnector struct{}
 
 func TestInitConnector_SetsLoggerAndMetadata(t *testing.T) {
 	mc := &mockLoggableConnector{}
-	logger := logr.Discard()
-	initConnector(mc, logger, "ns1", "pipeline1")
+	proc := &Processor{namespace: "ns1", name: "pipeline1"}
+	proc.initConnector(mc, logr.Discard())
 
 	assert.True(t, mc.loggerSet)
 	assert.Equal(t, "ns1", mc.ns)
@@ -556,8 +556,9 @@ func TestInitConnector_SetsLoggerAndMetadata(t *testing.T) {
 
 func TestInitConnector_NoopForPlainConnector(t *testing.T) {
 	mc := &mockPlainConnector{}
+	proc := &Processor{namespace: "ns", name: "name"}
 	assert.NotPanics(t, func() {
-		initConnector(mc, logr.Discard(), "ns", "name")
+		proc.initConnector(mc, logr.Discard())
 	})
 }
 
@@ -570,7 +571,8 @@ func (m *mockLoggerOnlyConnector) SetLogger(_ logr.Logger) { m.loggerSet = true 
 
 func TestInitConnector_PartialInterface(t *testing.T) {
 	mc := &mockLoggerOnlyConnector{}
-	initConnector(mc, logr.Discard(), "ns", "name")
+	proc := &Processor{namespace: "ns", name: "name"}
+	proc.initConnector(mc, logr.Discard())
 	assert.True(t, mc.loggerSet)
 }
 

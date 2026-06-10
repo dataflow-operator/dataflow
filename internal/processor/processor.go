@@ -89,15 +89,11 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 		return nil, fmt.Errorf("failed to create source connector: %w", err)
 	}
 
-	initConnector(source, logger.WithValues(logkeys.ConnectorType, spec.Source.Type+"-source"), namespace, name)
-
 	// Create sink connector
 	sink, err := connectors.CreateSinkConnector(&spec.Sink)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sink connector: %w", err)
 	}
-
-	// progress callback wired after Processor is constructed (see below)
 
 	// Create error sink connector if specified
 	var errorSink connectors.SinkConnector
@@ -106,8 +102,6 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 		if err != nil {
 			return nil, fmt.Errorf("failed to create error sink connector: %w", err)
 		}
-
-		initConnector(errorSink, logger.WithValues(logkeys.ConnectorType, spec.Errors.Type+"-sink"), namespace, name)
 	}
 
 	// Create transformers
@@ -119,8 +113,6 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 		if err != nil {
 			return nil, fmt.Errorf("failed to create transformer %s: %w", t.Type, err)
 		}
-
-		initConnector(transformer, logger, "", "")
 
 		// Check if this is a router transformer
 		if t.Type == "router" {
@@ -149,8 +141,14 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 	if options.CheckpointStore != nil {
 		p.checkpointStore = options.CheckpointStore
 	}
-	initConnectorWithProgress(source, logger.WithValues(logkeys.ConnectorType, spec.Source.Type+"-source"), namespace, name, p.RecordProgress)
-	initConnectorWithProgress(sink, logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink"), namespace, name, p.RecordProgress)
+	p.initConnector(source, logger.WithValues(logkeys.ConnectorType, spec.Source.Type+"-source"))
+	p.initConnector(sink, logger.WithValues(logkeys.ConnectorType, spec.Sink.Type+"-sink"))
+	if errorSink != nil {
+		p.initConnector(errorSink, logger.WithValues(logkeys.ConnectorType, spec.Errors.Type+"-sink"))
+	}
+	for _, transformer := range transformerList {
+		p.initConnector(transformer, logger)
+	}
 	return p, nil
 }
 
@@ -321,22 +319,22 @@ func (p *Processor) channelBufferSize() int {
 	return constants.DefaultChannelBufferSize
 }
 
-// initConnector sets logger and metadata on a connector if it supports the respective interfaces.
-func initConnector(connector interface{}, logger logr.Logger, namespace, name string) {
-	initConnectorWithProgress(connector, logger, namespace, name, nil)
-}
-
-// initConnectorWithProgress sets logger, metadata, and optional progress callback on a connector.
-func initConnectorWithProgress(connector interface{}, logger logr.Logger, namespace, name string, onProgress func()) {
+// initConnector sets logger, metadata, progress, and checkpoint sync on a connector.
+func (p *Processor) initConnector(connector interface{}, logger logr.Logger) {
 	if lc, ok := connector.(interface{ SetLogger(logr.Logger) }); ok {
 		lc.SetLogger(logger)
 	}
 	if mc, ok := connector.(interface{ SetMetadata(string, string) }); ok {
-		mc.SetMetadata(namespace, name)
+		mc.SetMetadata(p.namespace, p.name)
 	}
-	if onProgress != nil {
-		if pc, ok := connector.(interface{ SetProgressCallback(func()) }); ok {
-			pc.SetProgressCallback(onProgress)
+	if pc, ok := connector.(interface{ SetProgressCallback(func()) }); ok {
+		pc.SetProgressCallback(p.RecordProgress)
+	}
+	if syncer, ok := p.checkpointStore.(checkpoint.BatchAckSyncer); ok {
+		if sc, ok := connector.(interface {
+			SetCheckpointBatchAckSyncer(checkpoint.BatchAckSyncer)
+		}); ok {
+			sc.SetCheckpointBatchAckSyncer(syncer)
 		}
 	}
 }
@@ -656,7 +654,7 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 						return
 					}
 
-					initConnector(routeSink, p.logger.WithValues(logkeys.ConnectorType, spec.Type+"-sink"), p.namespace, p.name)
+					p.initConnector(routeSink, p.logger.WithValues(logkeys.ConnectorType, spec.Type+"-sink"))
 
 					if err := connectWithRetry(ctx, routeSink, "route-sink-"+cond, 0, 30*time.Second, p.logger); err != nil {
 						p.logger.Error(err, "Failed to connect to route sink", "condition", cond)
