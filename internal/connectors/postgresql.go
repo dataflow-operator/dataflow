@@ -255,12 +255,7 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 				SetSourceRowIDMetadata(msg, values[idIndex])
 			}
 			msg.Metadata["operation"] = operation
-			if changeTime != nil {
-				ct := *changeTime
-				msg.Ack = p.cp.MakeAck(&ct, orderByVal, true)
-			} else if orderByVal != nil {
-				msg.Ack = p.cp.MakeAck(nil, orderByVal, false)
-			}
+			AssignCompositeSourceAck(msg, &p.cp, changeTime, orderByVal)
 
 			select {
 			case msgChan <- msg:

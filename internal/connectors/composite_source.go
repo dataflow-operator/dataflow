@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
+	"github.com/dataflow-operator/dataflow/internal/types"
 )
 
 // SQLDialect formats SQL literals and identifiers for a database engine.
@@ -289,6 +290,20 @@ func (h *CompositeCheckpointHolder) Advance(next checkpoint.Composite, requireTi
 
 	if h.store != nil && (h.state.ChangeTime != nil || h.state.OrderByValue != nil) {
 		_ = h.store.Save(context.Background(), h.sourceType, h.state.Marshal())
+	}
+}
+
+// AssignCompositeSourceAck sets msg.Ack so the composite checkpoint advances after a successful sink write.
+// When changeTime is nil but orderByVal is set (e.g. non-timestamp changeTrackingColumn), orderBy-only ack is used.
+func AssignCompositeSourceAck(msg *types.Message, cp *CompositeCheckpointHolder, changeTime *time.Time, orderByVal interface{}) {
+	if msg == nil || cp == nil {
+		return
+	}
+	if changeTime != nil {
+		ct := *changeTime
+		msg.Ack = cp.MakeAck(&ct, orderByVal, true)
+	} else if orderByVal != nil {
+		msg.Ack = cp.MakeAck(nil, orderByVal, false)
 	}
 }
 

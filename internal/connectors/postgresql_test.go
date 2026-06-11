@@ -176,8 +176,7 @@ func TestPostgreSQLSourceConnector_orderByOnlyCheckpointAck(t *testing.T) {
 		OrderByColumn:        "material_id",
 	})
 	msg := types.NewMessage([]byte(`{"material_id":200019}`))
-	orderByVal := int64(200019)
-	msg.Ack = p.cp.MakeAck(nil, orderByVal, false)
+	AssignCompositeSourceAck(msg, &p.cp, nil, int64(200019))
 	require.NotNil(t, msg.Ack)
 	msg.Ack()
 	snap := p.cp.Snapshot()

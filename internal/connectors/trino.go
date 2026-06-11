@@ -165,12 +165,7 @@ func (t *TrinoSourceConnector) readRows(ctx context.Context, msgChan chan *types
 			msg.Metadata["table"] = t.config.Table
 			SetSourceRowIDMetadata(msg, orderByVal)
 
-			if changeTime != nil {
-				ct := *changeTime
-				msg.Ack = t.cp.MakeAck(&ct, orderByVal, true)
-			} else if orderByVal != nil {
-				msg.Ack = t.cp.MakeAck(nil, orderByVal, false)
-			}
+			AssignCompositeSourceAck(msg, &t.cp, changeTime, orderByVal)
 
 			select {
 			case msgChan <- msg:

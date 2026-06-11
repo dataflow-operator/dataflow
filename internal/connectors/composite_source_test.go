@@ -26,6 +26,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
+	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -372,6 +373,17 @@ func TestCompositeCheckpointHolder_AdvanceAndSyncFlush(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(loaded), "2024-01-15T10:00:00Z")
 	assert.Contains(t, string(loaded), "5042")
+}
+
+func TestAssignCompositeSourceAck_orderByOnly(t *testing.T) {
+	h := &CompositeCheckpointHolder{}
+	msg := types.NewMessage([]byte(`{}`))
+	AssignCompositeSourceAck(msg, h, nil, int64(200019))
+	require.NotNil(t, msg.Ack)
+	msg.Ack()
+	snap := h.Snapshot()
+	require.Equal(t, int64(200019), snap.OrderByValue)
+	assert.Nil(t, snap.ChangeTime)
 }
 
 func TestCompositeCheckpointHolder_orderOnlyLegacy(t *testing.T) {

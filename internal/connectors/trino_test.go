@@ -611,6 +611,26 @@ func TestTrinoSourceConnector_buildReadQuery(t *testing.T) {
 	})
 }
 
+func TestTrinoSourceConnector_orderByOnlyCheckpointAck(t *testing.T) {
+	c := NewTrinoSourceConnector(&v1.TrinoSourceSpec{
+		Catalog:              "cat",
+		Schema:               "sch",
+		Table:                "mv_one_p_prices_migration",
+		ChangeTrackingColumn: "material_id",
+		OrderByColumn:        "material_id",
+	})
+	msg := types.NewMessage([]byte(`{"material_id":200019}`))
+	AssignCompositeSourceAck(msg, &c.cp, nil, int64(200019))
+	require.NotNil(t, msg.Ack)
+	msg.Ack()
+	snap := c.cp.Snapshot()
+	require.Equal(t, int64(200019), snap.OrderByValue)
+	assert.Nil(t, snap.ChangeTime)
+
+	got := c.buildReadQuery()
+	assert.Contains(t, got, "WHERE material_id > 200019")
+}
+
 func TestTrinoSourceConnector_wrapQueryWithStableOrder(t *testing.T) {
 	c := NewTrinoSourceConnector(&v1.TrinoSourceSpec{
 		Catalog:       "c",

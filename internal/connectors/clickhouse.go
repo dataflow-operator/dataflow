@@ -200,12 +200,7 @@ func (c *ClickHouseSourceConnector) readRows(ctx context.Context, msgChan chan *
 			if idIndex >= 0 && len(values) > idIndex {
 				SetSourceRowIDMetadata(msg, values[idIndex])
 			}
-			if changeTime != nil {
-				ct := *changeTime
-				msg.Ack = c.cp.MakeAck(&ct, orderByVal, true)
-			} else if orderByVal != nil {
-				msg.Ack = c.cp.MakeAck(nil, orderByVal, false)
-			}
+			AssignCompositeSourceAck(msg, &c.cp, changeTime, orderByVal)
 
 			select {
 			case msgChan <- msg:

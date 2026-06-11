@@ -24,6 +24,7 @@ import (
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
+	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -283,6 +284,25 @@ func TestClickHouseSourceConnector_buildReadQuery(t *testing.T) {
 		assert.Contains(t, got, "WHERE `price_id` > 50")
 		assert.Contains(t, got, "ORDER BY `price_id`")
 	})
+}
+
+func TestClickHouseSourceConnector_orderByOnlyCheckpointAck(t *testing.T) {
+	c := NewClickHouseSourceConnector(&v1.ClickHouseSourceSpec{
+		ConnectionString:     "clickhouse://localhost:9000",
+		Table:                "mv_one_p_prices_migration",
+		ChangeTrackingColumn: "material_id",
+		OrderByColumn:        "material_id",
+	})
+	msg := types.NewMessage([]byte(`{"material_id":200019}`))
+	AssignCompositeSourceAck(msg, &c.cp, nil, int64(200019))
+	require.NotNil(t, msg.Ack)
+	msg.Ack()
+	snap := c.cp.Snapshot()
+	require.Equal(t, int64(200019), snap.OrderByValue)
+	assert.Nil(t, snap.ChangeTime)
+
+	got := c.buildReadQuery()
+	assert.Contains(t, got, "WHERE `material_id` > 200019")
 }
 
 func TestClickHouseSourceConnector_applyInitialCheckpoint_legacy(t *testing.T) {
