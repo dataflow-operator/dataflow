@@ -258,6 +258,8 @@ func (p *PostgreSQLSourceConnector) readRows(ctx context.Context, msgChan chan *
 			if changeTime != nil {
 				ct := *changeTime
 				msg.Ack = p.cp.MakeAck(&ct, orderByVal, true)
+			} else if orderByVal != nil {
+				msg.Ack = p.cp.MakeAck(nil, orderByVal, false)
 			}
 
 			select {

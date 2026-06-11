@@ -101,6 +101,16 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 			},
 			wantContains: []string{`"public"."kafka-to-postgres-raw-events"`, "ORDER BY"},
 		},
+		{
+			name: "non-timestamp changeTrackingColumn orderBy only checkpoint",
+			config: &v1.PostgreSQLSourceSpec{
+				Table:                "price_calendar.mv_one_p_prices_migration",
+				ChangeTrackingColumn: "material_id",
+				OrderByColumn:        "material_id",
+			},
+			lastReadOrderBy: int64(200019),
+			wantContains:    []string{`WHERE "material_id" > 200019`, `ORDER BY "material_id"`},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -110,6 +120,10 @@ func TestPostgreSQLSourceConnector_buildReadQuery(t *testing.T) {
 					ChangeTime:   tt.lastReadChangeTime,
 					OrderByValue: tt.lastReadOrderBy,
 				}, true)
+			} else if tt.lastReadOrderBy != nil {
+				p.cp.Advance(checkpoint.Composite{
+					OrderByValue: tt.lastReadOrderBy,
+				}, false)
 			}
 			got := p.buildReadQuery()
 			for _, s := range tt.wantContains {
@@ -153,6 +167,25 @@ FROM price.price WHERE price_status = 'EXPORTED'`
 		assert.Contains(t, got, `WHERE ("update_date", "price_id") > ('2024-06-01T12:00:00.123456789Z', 5042)`)
 		assert.Contains(t, got, `ORDER BY "update_date", "price_id"`)
 	})
+}
+
+func TestPostgreSQLSourceConnector_orderByOnlyCheckpointAck(t *testing.T) {
+	p := NewPostgreSQLSourceConnector(&v1.PostgreSQLSourceSpec{
+		Table:                "price_calendar.mv_one_p_prices_migration",
+		ChangeTrackingColumn: "material_id",
+		OrderByColumn:        "material_id",
+	})
+	msg := types.NewMessage([]byte(`{"material_id":200019}`))
+	orderByVal := int64(200019)
+	msg.Ack = p.cp.MakeAck(nil, orderByVal, false)
+	require.NotNil(t, msg.Ack)
+	msg.Ack()
+	snap := p.cp.Snapshot()
+	require.Equal(t, int64(200019), snap.OrderByValue)
+	assert.Nil(t, snap.ChangeTime)
+
+	got := p.buildReadQuery()
+	assert.Contains(t, got, `WHERE "material_id" > 200019`)
 }
 
 func TestPostgreSQLSourceConnector_advanceCheckpoint(t *testing.T) {
