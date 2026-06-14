@@ -1,5 +1,9 @@
 ## Commits
 
+- 612add5 docs: add Agent Skills section to README with links to GitHub and documentation
+
+## Commits
+
 - 0ee68d9 chore: update release notes generator path in .releaserc.json
 
 ## [1.0.45](https://github.com/dataflow-operator/dataflow/compare/v1.0.44...v1.0.45) (2026-06-14)
