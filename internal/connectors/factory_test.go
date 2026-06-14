@@ -88,6 +88,32 @@ func TestCreateSourceConnector_PostgreSQL(t *testing.T) {
 	})
 }
 
+func TestCreateSourceConnector_PostgreSQLCDC(t *testing.T) {
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
+		{
+			name: "valid postgresql-cdc source",
+			source: func() *v1.SourceSpec {
+				cfg := v1.PostgreSQLCDCSourceSpec{
+					ConnectionString: "postgres://user:pass@localhost/db",
+					SlotName:         "slot1",
+					PublicationName:  "pub1",
+					Tables:           []string{"public.orders"},
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "postgresql-cdc", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
+		},
+		{
+			name: "postgresql-cdc source without config",
+			source: &v1.SourceSpec{
+				Type: "postgresql-cdc",
+			},
+			wantErr:     true,
+			errContains: "postgresql-cdc source configuration is required",
+		},
+	})
+}
+
 func TestCreateSourceConnector_Nessie(t *testing.T) {
 	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
 		{

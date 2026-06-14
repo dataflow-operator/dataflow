@@ -9,6 +9,9 @@ func init() {
 	registerSourceConnector("postgresql", createSourceConnectorWithOptions[v1.PostgreSQLSourceSpec]("postgresql source", func(cfg *v1.PostgreSQLSourceSpec, opts *SourceConnectorOptions) SourceConnector {
 		return NewPostgreSQLSourceConnectorWithOptions(cfg, opts)
 	}), true)
+	registerSourceConnector("postgresql-cdc", createSourceConnectorWithOptions[v1.PostgreSQLCDCSourceSpec]("postgresql-cdc source", func(cfg *v1.PostgreSQLCDCSourceSpec, opts *SourceConnectorOptions) SourceConnector {
+		return NewPostgreSQLCDCSourceConnectorWithOptions(cfg, opts)
+	}), true)
 	registerSourceConnector("trino", createSourceConnectorWithOptions[v1.TrinoSourceSpec]("trino source", func(cfg *v1.TrinoSourceSpec, opts *SourceConnectorOptions) SourceConnector {
 		return NewTrinoSourceConnectorWithOptions(cfg, opts)
 	}), true)

@@ -228,6 +228,78 @@ func validatePostgreSQLSource(p *PostgreSQLSourceSpec, f *field.Path) field.Erro
 	return all
 }
 
+var postgresTableRefRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$`)
+
+func validatePostgreSQLCDCSource(p *PostgreSQLCDCSourceSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	hasConn := p.ConnectionString != "" || p.ConnectionStringSecretRef != nil
+	if !hasConn {
+		all = append(all, field.Required(f.Child("connectionString"), "connectionString or connectionStringSecretRef is required"))
+	}
+	hasSlot := p.SlotName != "" || p.SlotNameSecretRef != nil
+	if !hasSlot {
+		all = append(all, field.Required(f.Child("slotName"), "slotName or slotNameSecretRef is required"))
+	}
+	hasPub := p.PublicationName != "" || p.PublicationNameSecretRef != nil
+	if !hasPub {
+		all = append(all, field.Required(f.Child("publicationName"), "publicationName or publicationNameSecretRef is required"))
+	}
+	if len(p.Tables) == 0 {
+		all = append(all, field.Required(f.Child("tables"), "at least one table is required"))
+	}
+	for i, table := range p.Tables {
+		if err := validatePostgreSQLTableRef(table, f.Child("tables").Index(i)); err != nil {
+			all = append(all, err)
+		}
+	}
+	if p.SnapshotMode != "" && p.SnapshotMode != "initial" && p.SnapshotMode != "never" && p.SnapshotMode != "always" {
+		all = append(all, field.NotSupported(f.Child("snapshotMode"), p.SnapshotMode, []string{"initial", "never", "always"}))
+	}
+	if p.Plugin != "" && p.Plugin != "pgoutput" {
+		all = append(all, field.NotSupported(f.Child("plugin"), p.Plugin, []string{"pgoutput"}))
+	}
+	if p.EnvelopeFormat != "" && p.EnvelopeFormat != "row" && p.EnvelopeFormat != "debezium" {
+		all = append(all, field.NotSupported(f.Child("envelopeFormat"), p.EnvelopeFormat, []string{"row", "debezium"}))
+	}
+	if p.ConnectionStringSecretRef != nil {
+		all = append(all, validateSecretRef(p.ConnectionStringSecretRef, f.Child("connectionStringSecretRef"))...)
+	}
+	if p.SlotNameSecretRef != nil {
+		all = append(all, validateSecretRef(p.SlotNameSecretRef, f.Child("slotNameSecretRef"))...)
+	}
+	if p.PublicationNameSecretRef != nil {
+		all = append(all, validateSecretRef(p.PublicationNameSecretRef, f.Child("publicationNameSecretRef"))...)
+	}
+	if err := validateSQLIdentifier(p.PrimaryKeyColumn, f.Child("primaryKeyColumn")); err != nil {
+		all = append(all, err)
+	}
+	for i, col := range p.IncludeColumns {
+		if err := validateSQLIdentifier(col, f.Child("includeColumns").Index(i)); err != nil {
+			all = append(all, err)
+		}
+	}
+	for i, col := range p.ExcludeColumns {
+		if err := validateSQLIdentifier(col, f.Child("excludeColumns").Index(i)); err != nil {
+			all = append(all, err)
+		}
+	}
+	if p.HeartbeatIntervalSeconds != nil && *p.HeartbeatIntervalSeconds < 0 {
+		all = append(all, field.Invalid(f.Child("heartbeatIntervalSeconds"), *p.HeartbeatIntervalSeconds, "must be >= 0"))
+	}
+	return all
+}
+
+func validatePostgreSQLTableRef(table string, f *field.Path) *field.Error {
+	table = strings.TrimSpace(table)
+	if table == "" {
+		return field.Required(f, "table reference is required")
+	}
+	if !postgresTableRefRe.MatchString(table) {
+		return field.Invalid(f, table, "must be schema.table or table (letters, digits, underscore)")
+	}
+	return nil
+}
+
 var sqlIdentifierRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func validateSQLIdentifier(col string, f *field.Path) *field.Error {

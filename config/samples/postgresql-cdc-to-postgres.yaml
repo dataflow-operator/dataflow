@@ -1,0 +1,27 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: postgresql-cdc-to-postgres
+spec:
+  ackGranularity: message
+  checkpointPersistence: true
+  source:
+    type: postgresql-cdc
+    config:
+      connectionString: "postgres://repl_user:repl_pass@postgres:5432/dataflow?sslmode=disable"
+      slotName: dataflow_orders_slot
+      publicationName: dataflow_orders_pub
+      tables:
+        - public.orders
+      snapshotMode: initial
+      createSlotIfNotExists: true
+      createPublicationIfNotExists: true
+      heartbeatIntervalSeconds: 10
+  sink:
+    type: postgresql
+    config:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: orders_replica
+      upsertMode: true
+      conflictKey: id
+      softDeleteColumn: deleted_at

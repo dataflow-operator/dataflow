@@ -22,6 +22,12 @@ func init() {
 		},
 	})
 	providers.RegisterSource(providers.SourceDefinition{
+		Type: "postgresql-cdc",
+		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
+			return validateSourceConfig(raw, "postgresql-cdc", path, validatePostgreSQLCDCSource)
+		},
+	})
+	providers.RegisterSource(providers.SourceDefinition{
 		Type: "trino",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "trino", path, validateTrinoSource)

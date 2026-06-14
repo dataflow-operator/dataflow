@@ -156,6 +156,11 @@ func (s *SourceSpec) GetPostgreSQLConfig() (*PostgreSQLSourceSpec, error) {
 	return getTypedConfig[PostgreSQLSourceSpec](s.Config)
 }
 
+// GetPostgreSQLCDCConfig returns PostgreSQL logical replication (CDC) source config.
+func (s *SourceSpec) GetPostgreSQLCDCConfig() (*PostgreSQLCDCSourceSpec, error) {
+	return getTypedConfig[PostgreSQLCDCSourceSpec](s.Config)
+}
+
 // GetTrinoConfig returns Trino config.
 func (s *SourceSpec) GetTrinoConfig() (*TrinoSourceSpec, error) {
 	return getTypedConfig[TrinoSourceSpec](s.Config)
@@ -340,6 +345,73 @@ type PostgreSQLSourceSpec struct {
 	// AutoCreateTable creates the table if it doesn't exist before reading
 	// +optional
 	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
+}
+
+// PostgreSQLCDCSourceSpec defines PostgreSQL logical replication (pgoutput) source configuration.
+type PostgreSQLCDCSourceSpec struct {
+	// ConnectionString for PostgreSQL database (replication user with REPLICATION privilege).
+	ConnectionString string `json:"connectionString"`
+
+	// SlotName is the logical replication slot name.
+	SlotName string `json:"slotName"`
+
+	// PublicationName is the PostgreSQL publication to consume.
+	PublicationName string `json:"publicationName"`
+
+	// Tables lists schema.table entries included in the publication (required, at least one).
+	Tables []string `json:"tables"`
+
+	// SnapshotMode controls initial data copy: initial (default), never, or always.
+	// +optional
+	// +kubebuilder:validation:Enum=initial;never;always
+	// +kubebuilder:default="initial"
+	SnapshotMode string `json:"snapshotMode,omitempty"`
+
+	// CreateSlotIfNotExists creates the replication slot when missing (default: true).
+	// +optional
+	CreateSlotIfNotExists *bool `json:"createSlotIfNotExists,omitempty"`
+
+	// CreatePublicationIfNotExists creates the publication for configured tables when missing (default: true).
+	// +optional
+	CreatePublicationIfNotExists *bool `json:"createPublicationIfNotExists,omitempty"`
+
+	// Plugin is the logical decoding plugin (default: pgoutput).
+	// +optional
+	// +kubebuilder:default="pgoutput"
+	Plugin string `json:"plugin,omitempty"`
+
+	// HeartbeatIntervalSeconds sends standby status updates when idle (default: 10; 0 disables).
+	// +optional
+	HeartbeatIntervalSeconds *int32 `json:"heartbeatIntervalSeconds,omitempty"`
+
+	// PrimaryKeyColumn names the column used for Metadata["id"] when present (default: id).
+	// +optional
+	PrimaryKeyColumn string `json:"primaryKeyColumn,omitempty"`
+
+	// IncludeColumns limits emitted columns (empty = all).
+	// +optional
+	IncludeColumns []string `json:"includeColumns,omitempty"`
+
+	// ExcludeColumns omits columns from emitted rows.
+	// +optional
+	ExcludeColumns []string `json:"excludeColumns,omitempty"`
+
+	// EnvelopeFormat controls message shape: row (default) or debezium-compatible envelope.
+	// +optional
+	// +kubebuilder:validation:Enum=row;debezium
+	EnvelopeFormat string `json:"envelopeFormat,omitempty"`
+
+	// ConnectionStringSecretRef references a Kubernetes secret for connection string.
+	// +optional
+	ConnectionStringSecretRef *SecretRef `json:"connectionStringSecretRef,omitempty"`
+
+	// SlotNameSecretRef references a Kubernetes secret for slot name.
+	// +optional
+	SlotNameSecretRef *SecretRef `json:"slotNameSecretRef,omitempty"`
+
+	// PublicationNameSecretRef references a Kubernetes secret for publication name.
+	// +optional
+	PublicationNameSecretRef *SecretRef `json:"publicationNameSecretRef,omitempty"`
 }
 
 // TrinoSourceSpec defines Trino source configuration

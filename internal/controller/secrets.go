@@ -206,6 +206,15 @@ func (r *SecretResolver) resolveSourceSpec(ctx context.Context, namespace string
 				return err
 			}
 			return marshalConfig(source.Config, &cfg)
+		case "postgresql-cdc":
+			var cfg dataflowv1.PostgreSQLCDCSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolvePostgreSQLCDCSourceSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(source.Config, &cfg)
 		case "trino":
 			var cfg dataflowv1.TrinoSourceSpec
 			if err := unmarshalConfig(source.Config, &cfg); err != nil {
@@ -609,6 +618,31 @@ func (r *SecretResolver) resolvePostgreSQLSourceSpec(ctx context.Context, namesp
 		spec.Table = value
 	}
 
+	return nil
+}
+
+func (r *SecretResolver) resolvePostgreSQLCDCSourceSpec(ctx context.Context, namespace string, spec *dataflowv1.PostgreSQLCDCSourceSpec) error {
+	if spec.ConnectionStringSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.ConnectionStringSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.ConnectionString = value
+	}
+	if spec.SlotNameSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.SlotNameSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.SlotName = value
+	}
+	if spec.PublicationNameSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.PublicationNameSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.PublicationName = value
+	}
 	return nil
 }
 
