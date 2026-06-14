@@ -122,14 +122,31 @@ func (h *postgresCDCCheckpointHolder) setPhase(phase string) {
 }
 
 func (h *postgresCDCCheckpointHolder) markSnapshotTableDone(table string) {
+	h.persistSnapshotProgress([]string{table}, 0, false)
+}
+
+// persistSnapshotProgress records snapshot table completion and optional LSN after the
+// snapshot transaction commits. Phase transitions to streaming only when allTablesDone.
+func (h *postgresCDCCheckpointHolder) persistSnapshotProgress(completedTables []string, lsn pglogrepl.LSN, allTablesDone bool) {
 	h.mu.Lock()
-	for _, t := range h.snapshotDone {
-		if t == table {
-			h.mu.Unlock()
-			return
+	for _, table := range completedTables {
+		duplicate := false
+		for _, t := range h.snapshotDone {
+			if t == table {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			h.snapshotDone = append(h.snapshotDone, table)
 		}
 	}
-	h.snapshotDone = append(h.snapshotDone, table)
+	if lsn != 0 {
+		h.snapshotLSN = lsn
+	}
+	if allTablesDone {
+		h.phase = postgresCDCPhaseStreaming
+	}
 	data := h.marshalLocked()
 	h.mu.Unlock()
 	h.persist(data)
@@ -182,9 +199,6 @@ func (h *postgresCDCCheckpointHolder) advance(lsn pglogrepl.LSN) {
 		return
 	}
 	h.lastAckedLSN = lsn
-	if h.phase == postgresCDCPhaseSnapshot {
-		h.phase = postgresCDCPhaseStreaming
-	}
 	data := h.marshalLocked()
 	onAdvance := h.onAdvance
 	h.mu.Unlock()

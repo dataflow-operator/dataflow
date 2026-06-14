@@ -84,6 +84,7 @@ func (c *PostgreSQLCDCSourceConnector) runInitialSnapshot(ctx context.Context, m
 
 	pkCol := postgresCDCPrimaryKeyColumn(c.config)
 	filter := newPostgresCDCColumnFilter(c.config)
+	var completedThisRun []string
 
 	for _, table := range tables {
 		if _, ok := doneSet[table]; ok {
@@ -133,17 +134,15 @@ func (c *PostgreSQLCDCSourceConnector) runInitialSnapshot(ctx context.Context, m
 			return fmt.Errorf("snapshot rows %s: %w", table, err)
 		}
 		rows.Close()
-		c.cp.markSnapshotTableDone(table)
+		completedThisRun = append(completedThisRun, table)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit snapshot transaction: %w", err)
 	}
 
-	if snapshotLSN != 0 {
-		c.cp.setSnapshotLSN(snapshotLSN)
-	}
-	c.cp.setPhase(postgresCDCPhaseStreaming)
+	allTablesDone := len(completedThisRun)+len(doneSet) >= len(tables)
+	c.cp.persistSnapshotProgress(completedThisRun, snapshotLSN, allTablesDone)
 	return nil
 }
 

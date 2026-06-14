@@ -83,3 +83,37 @@ func TestPostgresCDCCheckpointHolder_makeAck(t *testing.T) {
 	h.makeAck(lsn)()
 	assert.Equal(t, "0/500", h.startLSN().String())
 }
+
+func TestPostgresCDCCheckpointHolder_advanceKeepsSnapshotPhase(t *testing.T) {
+	t.Parallel()
+	var h postgresCDCCheckpointHolder
+	h.init(nil, "postgresql-cdc", "slot1", "pub1", nil)
+	h.setPhase(postgresCDCPhaseSnapshot)
+
+	lsn, err := pglogrepl.ParseLSN("0/200")
+	require.NoError(t, err)
+	h.advance(lsn)
+
+	assert.True(t, h.phaseSnapshot())
+	assert.Equal(t, "0/200", h.startLSN().String())
+}
+
+func TestPostgresCDCCheckpointHolder_persistSnapshotProgress(t *testing.T) {
+	t.Parallel()
+	var h postgresCDCCheckpointHolder
+	h.init(nil, "postgresql-cdc", "slot1", "pub1", nil)
+	h.setPhase(postgresCDCPhaseSnapshot)
+
+	lsn, err := pglogrepl.ParseLSN("0/400")
+	require.NoError(t, err)
+	h.persistSnapshotProgress([]string{"public.a"}, lsn, false)
+
+	assert.True(t, h.phaseSnapshot())
+	assert.True(t, h.allSnapshotTablesDone([]string{"public.a"}))
+	assert.False(t, h.allSnapshotTablesDone([]string{"public.a", "public.b"}))
+	assert.Equal(t, "0/400", h.startLSN().String())
+
+	h.persistSnapshotProgress([]string{"public.b"}, 0, true)
+	assert.False(t, h.phaseSnapshot())
+	assert.True(t, h.allSnapshotTablesDone([]string{"public.a", "public.b"}))
+}

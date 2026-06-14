@@ -68,9 +68,11 @@ func TestShouldRunSnapshot(t *testing.T) {
 		t.Parallel()
 		cfg := &v1.PostgreSQLCDCSourceSpec{SnapshotMode: "initial", Tables: []string{"public.a", "public.b"}}
 		c := NewPostgreSQLCDCSourceConnector(cfg)
+		c.cp.setPhase(postgresCDCPhaseSnapshot)
 		lsn, err := pglogrepl.ParseLSN("0/100")
 		require.NoError(t, err)
 		c.cp.advance(lsn)
+		assert.True(t, c.cp.phaseSnapshot())
 		c.cp.markSnapshotTableDone("public.a")
 		assert.True(t, c.shouldRunSnapshot())
 	})
