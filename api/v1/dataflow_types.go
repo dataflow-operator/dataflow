@@ -38,7 +38,7 @@ type DataFlowSpec struct {
 
 	// Errors defines the error sink for messages that failed to be written to the main sink
 	// +optional
-	Errors *SinkSpec `json:"errors,omitempty"`
+	Errors *ErrorSinkSpec `json:"errors,omitempty"`
 
 	// Resources defines the resource requirements for the processor pod
 	// +optional
@@ -95,6 +95,16 @@ type DataFlowSpec struct {
 	// +kubebuilder:default:=batch
 	// +optional
 	AckGranularity string `json:"ackGranularity,omitempty"`
+
+	// CheckpointReset clears persisted source checkpoint on the next processor start (one-shot).
+	// Alternatively set annotation dataflow.dataflow.io/reset-checkpoint: "true" on the DataFlow.
+	// +optional
+	CheckpointReset *bool `json:"checkpointReset,omitempty"`
+
+	// StrictIdempotency rejects polling sources paired with non-idempotent main sinks at admission.
+	// When false (default), a warning is emitted instead.
+	// +optional
+	StrictIdempotency *bool `json:"strictIdempotency,omitempty"`
 
 	// ChannelBufferSize is the buffer size for message channels between source, processor, and sink.
 	// Larger values reduce blocking when sink is slower than source (e.g. high Kafka throughput).

@@ -314,9 +314,11 @@ func TestNewProcessor_WithErrorSink(t *testing.T) {
 					Type:   "postgresql",
 					Config: mustConfig(v1.PostgreSQLSinkSpec{ConnectionString: "postgres://user:pass@localhost:5432/db", Table: "output_table"}),
 				},
-				Errors: &v1.SinkSpec{
-					Type:   "kafka",
-					Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "error-topic"}),
+				Errors: &v1.ErrorSinkSpec{
+					SinkSpec: v1.SinkSpec{
+						Type:   "kafka",
+						Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "error-topic"}),
+					},
 				},
 			},
 			wantErr: false,
@@ -332,8 +334,10 @@ func TestNewProcessor_WithErrorSink(t *testing.T) {
 					Type:   "kafka",
 					Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "output-topic"}),
 				},
-				Errors: &v1.SinkSpec{
-					Type: "invalid",
+				Errors: &v1.ErrorSinkSpec{
+					SinkSpec: v1.SinkSpec{
+						Type: "invalid",
+					},
 				},
 			},
 			wantErr: true,
@@ -364,9 +368,11 @@ func TestProcessor_ErrorSinkConfiguration(t *testing.T) {
 			Type:   "postgresql",
 			Config: mustConfig(v1.PostgreSQLSinkSpec{ConnectionString: "postgres://user:pass@localhost:5432/db", Table: "output_table"}),
 		},
-		Errors: &v1.SinkSpec{
-			Type:   "kafka",
-			Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "error-topic"}),
+		Errors: &v1.ErrorSinkSpec{
+			SinkSpec: v1.SinkSpec{
+				Type:   "kafka",
+				Config: mustConfig(v1.KafkaSinkSpec{Brokers: []string{"localhost:9092"}, Topic: "error-topic"}),
+			},
 		},
 	}
 

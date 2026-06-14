@@ -30,10 +30,10 @@ func (r *DataFlow) ValidateCreate(ctx context.Context, obj runtime.Object) (admi
 		return nil, nil
 	}
 	errs := ValidateDataFlowSpec(&df.Spec)
-	if len(errs) == 0 {
-		return nil, nil
+	if len(errs) > 0 {
+		return nil, errs.ToAggregate()
 	}
-	return nil, errs.ToAggregate()
+	return WarnDataFlowSpec(&df.Spec), nil
 }
 
 // ValidateUpdate implements admission.CustomValidator.
@@ -43,10 +43,10 @@ func (r *DataFlow) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Ob
 		return nil, nil
 	}
 	errs := ValidateDataFlowSpec(&df.Spec)
-	if len(errs) == 0 {
-		return nil, nil
+	if len(errs) > 0 {
+		return nil, errs.ToAggregate()
 	}
-	return nil, errs.ToAggregate()
+	return WarnDataFlowSpec(&df.Spec), nil
 }
 
 // ValidateDelete implements admission.CustomValidator.

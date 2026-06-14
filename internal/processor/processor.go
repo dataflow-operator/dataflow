@@ -98,7 +98,7 @@ func NewProcessorWithOptions(spec *v1.DataFlowSpec, logger logr.Logger, namespac
 	// Create error sink connector if specified
 	var errorSink connectors.SinkConnector
 	if spec.Errors != nil {
-		errorSink, err = connectors.CreateSinkConnector(spec.Errors)
+		errorSink, err = connectors.CreateSinkConnector(&spec.Errors.SinkSpec)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create error sink connector: %w", err)
 		}
@@ -808,8 +808,9 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 
 						// Send to error sink
 						errorSinkStart := time.Now()
-						// Propagate Ack so offset is committed only after error sink has written
-						errorMsg.Ack = msg.Ack
+						if v1.ShouldAckOnErrorSink(p.spec.Errors) {
+							errorMsg.Ack = msg.Ack
+						}
 						select {
 						case errorChan <- errorMsg:
 							errorSinkDuration := time.Since(errorSinkStart).Seconds()

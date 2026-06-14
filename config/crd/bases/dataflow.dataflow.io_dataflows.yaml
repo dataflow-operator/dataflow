@@ -974,6 +974,11 @@ spec:
                   When enabled, polling sources (PostgreSQL, ClickHouse, Trino) resume from the last committed position after restart, reducing duplicates.
                   Default: true. Set to false to disable.
                 type: boolean
+              checkpointReset:
+                description: |-
+                  CheckpointReset clears persisted source checkpoint on the next processor start (one-shot).
+                  Alternatively set annotation dataflow.dataflow.io/reset-checkpoint: "true" on the DataFlow.
+                type: boolean
               checkpointSaveInterval:
                 description: |-
                   CheckpointSaveInterval controls how often pending checkpoints are flushed to the ConfigMap.
@@ -990,6 +995,18 @@ spec:
                 description: Errors defines the error sink for messages that failed
                   to be written to the main sink
                 properties:
+                  ackPolicy:
+                    default: afterWrite
+                    description: |-
+                      AckPolicy controls when source offsets/checkpoints are committed for messages routed to the error sink.
+                      afterWrite (default): ack after error sink write.
+                      never: do not ack failed messages (they may be re-read on restart).
+                      afterMainSinkSuccess: ack only after main sink success (failed messages are not acked).
+                    enum:
+                    - afterWrite
+                    - never
+                    - afterMainSinkSuccess
+                    type: string
                   config:
                     description: Config holds connector configuration. Structure depends
                       on type.
@@ -1142,6 +1159,11 @@ spec:
                 - type
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              strictIdempotency:
+                description: |-
+                  StrictIdempotency rejects polling sources paired with non-idempotent main sinks at admission.
+                  When false (default), a warning is emitted instead.
+                type: boolean
               tolerations:
                 description: Tolerations are attached to tolerate any taint that matches
                   the triple <key,value,effect>

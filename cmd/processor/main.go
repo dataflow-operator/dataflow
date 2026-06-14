@@ -105,6 +105,12 @@ func main() {
 			ctx := context.Background()
 			store.Start(ctx)
 			defer store.Stop()
+			if dataflowv1.CheckpointResetRequested(&spec) {
+				logger.Info("Checkpoint reset requested, clearing persisted checkpoint", "sourceType", spec.Source.Type)
+				if err := store.Clear(ctx, spec.Source.Type); err != nil {
+					logger.Error(err, "Failed to clear checkpoint on reset")
+				}
+			}
 			checkpointStore := checkpoint.NewSyncStore(
 				store,
 				dataflowv1.CheckpointSyncOnAckEnabled(&spec),

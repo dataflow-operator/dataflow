@@ -478,6 +478,8 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 		return err
 	}
 
+	resetRequested := applyCheckpointResetIntent(dataflow, resolvedSpec)
+
 	if err := validateNessieSinkObjectStorageRefs(&resolvedSpec.Sink); err != nil {
 		log.Error(err, "invalid Nessie sink object storage configuration")
 		if r.Recorder != nil {
@@ -565,6 +567,13 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 			log.Error(updateErr, "unable to update DataFlow status")
 		}
 		return err
+	}
+
+	if resetRequested {
+		if err := r.consumeCheckpointResetFlags(ctx, req.NamespacedName); err != nil {
+			log.Error(err, "failed to clear checkpoint reset flags")
+			return err
+		}
 	}
 
 	return nil

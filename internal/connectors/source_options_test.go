@@ -44,3 +44,4 @@ func (s *normalizeTestStore) Load(_ context.Context, sourceType string) ([]byte,
 
 func (s *normalizeTestStore) Save(context.Context, string, []byte) error { return nil }
 func (s *normalizeTestStore) Flush(context.Context) error                { return nil }
+func (s *normalizeTestStore) Clear(context.Context, string) error        { return nil }

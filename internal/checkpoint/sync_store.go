@@ -58,6 +58,10 @@ func (s *SyncStore) Flush(ctx context.Context) error {
 	return s.inner.Flush(ctx)
 }
 
+func (s *SyncStore) Clear(ctx context.Context, sourceType string) error {
+	return s.inner.Clear(ctx, sourceType)
+}
+
 // FlushAfterBatchAck persists pending checkpoint when sync-on-ack is enabled.
 func (s *SyncStore) FlushAfterBatchAck(ctx context.Context) error {
 	if !s.syncOnAck {

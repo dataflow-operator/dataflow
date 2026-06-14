@@ -135,3 +135,49 @@ func TestConfigMapStore_FlushAfterBatchAck_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(loaded), "2024-01-15T10:00:00Z")
 }
+
+func TestConfigMapStore_Clear(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "df-checkpoint", Namespace: "default"},
+		Data: map[string]string{
+			checkpointKey: `{"postgresql":{"lastReadChangeTime":"2024-01-15T10:00:00Z"},"clickhouse":{"lastReadOrderByValue":1}}`,
+		},
+	}
+	client := fake.NewSimpleClientset(cm)
+	store, err := NewConfigMapStoreWithClient(client, "default", "df-checkpoint")
+	require.NoError(t, err)
+
+	require.NoError(t, store.Clear(ctx, "postgresql"))
+	loaded, err := store.Load(ctx, "postgresql")
+	require.NoError(t, err)
+	assert.Nil(t, loaded)
+
+	chLoaded, err := store.Load(ctx, "clickhouse")
+	require.NoError(t, err)
+	assert.NotNil(t, chLoaded)
+}
+
+func TestSyncStore_pendingNotPersistedUntilFlush_simulatesCrashWindow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "df-crash", Namespace: "default"},
+		Data: map[string]string{
+			checkpointKey: `{"postgresql":{"lastReadChangeTime":"2024-01-15T09:00:00Z"}}`,
+		},
+	}
+	client := fake.NewSimpleClientset(cm)
+	inner, err := NewConfigMapStoreWithClient(client, "default", "df-crash")
+	require.NoError(t, err)
+	syncStore := NewSyncStore(inner, false, 0)
+
+	require.NoError(t, syncStore.Save(ctx, "postgresql", []byte(`{"lastReadChangeTime":"2024-01-15T10:00:00Z"}`)))
+	// Simulate crash after ack pending save but before flush: Load still returns old checkpoint.
+	loaded, err := syncStore.Load(ctx, "postgresql")
+	require.NoError(t, err)
+	assert.Contains(t, string(loaded), "2024-01-15T09:00:00Z")
+}

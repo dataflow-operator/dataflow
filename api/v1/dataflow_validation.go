@@ -40,12 +40,13 @@ func ValidateDataFlowSpec(spec *DataFlowSpec) field.ErrorList {
 	all = append(all, validateSource(&spec.Source, f.Child("source"))...)
 	all = append(all, validateSink(&spec.Sink, f.Child("sink"))...)
 	if spec.Errors != nil {
-		all = append(all, validateSink(spec.Errors, f.Child("errors"))...)
+		all = append(all, validateErrors(spec.Errors, f.Child("errors"))...)
 	}
 	all = append(all, validateTransformations(spec.Transformations, f.Child("transformations"))...)
 	all = append(all, validateResources(spec.Resources, f.Child("resources"))...)
 	all = append(all, validateReplicas(spec, f)...)
 	all = append(all, validateAckGranularity(spec, f)...)
+	all = append(all, validateIdempotency(spec, f)...)
 	return all
 }
 

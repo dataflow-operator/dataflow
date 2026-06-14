@@ -44,6 +44,7 @@ type NoopStore struct{}
 func (NoopStore) Load(context.Context, string) ([]byte, error) { return nil, nil }
 func (NoopStore) Save(context.Context, string, []byte) error   { return nil }
 func (NoopStore) Flush(context.Context) error                  { return nil }
+func (NoopStore) Clear(context.Context, string) error          { return nil }
 
 // Store manages loading and saving of source checkpoints.
 // Implementations may debounce or batch saves.
@@ -54,6 +55,8 @@ type Store interface {
 	Save(ctx context.Context, sourceType string, data []byte) error
 	// Flush forces an immediate write of any pending checkpoint (e.g. on shutdown).
 	Flush(ctx context.Context) error
+	// Clear removes persisted checkpoint for the given source type.
+	Clear(ctx context.Context, sourceType string) error
 }
 
 // ConfigMapStore persists checkpoints to a Kubernetes ConfigMap.
@@ -217,6 +220,51 @@ func (s *ConfigMapStore) Flush(ctx context.Context) error {
 	s.pending = make(map[string][]byte) // clear after successful write
 	s.pendingMu.Unlock()
 
+	return nil
+}
+
+// Clear removes checkpoint data for the given source type from the ConfigMap.
+func (s *ConfigMapStore) Clear(ctx context.Context, sourceType string) error {
+	s.pendingMu.Lock()
+	delete(s.pending, sourceType)
+	s.pendingMu.Unlock()
+
+	cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to get ConfigMap for clear: %w", err)
+	}
+	if cm.Data == nil {
+		return nil
+	}
+	raw, ok := cm.Data[checkpointKey]
+	if !ok || raw == "" {
+		return nil
+	}
+	var combined map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &combined); err != nil {
+		return fmt.Errorf("failed to parse checkpoint JSON: %w", err)
+	}
+	if _, exists := combined[sourceType]; !exists {
+		return nil
+	}
+	delete(combined, sourceType)
+	out, err := json.Marshal(combined)
+	if err != nil {
+		return fmt.Errorf("failed to marshal checkpoint JSON: %w", err)
+	}
+	patchBytes, err := json.Marshal(map[string]interface{}{
+		"data": map[string]string{checkpointKey: string(out)},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal patch: %w", err)
+	}
+	_, err = s.client.CoreV1().ConfigMaps(s.namespace).Patch(ctx, s.name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to patch ConfigMap on clear: %w", err)
+	}
 	return nil
 }
 

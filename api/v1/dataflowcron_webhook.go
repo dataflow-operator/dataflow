@@ -30,10 +30,10 @@ func (r *DataFlowCron) ValidateCreate(ctx context.Context, obj runtime.Object) (
 		return nil, nil
 	}
 	errs := ValidateDataFlowCronSpec(&dfc.Spec)
-	if len(errs) == 0 {
-		return nil, nil
+	if len(errs) > 0 {
+		return nil, errs.ToAggregate()
 	}
-	return nil, errs.ToAggregate()
+	return WarnDataFlowSpec(&dfc.Spec.DataFlowSpec), nil
 }
 
 // ValidateUpdate implements admission.CustomValidator.
@@ -43,10 +43,10 @@ func (r *DataFlowCron) ValidateUpdate(ctx context.Context, oldObj, newObj runtim
 		return nil, nil
 	}
 	errs := ValidateDataFlowCronSpec(&dfc.Spec)
-	if len(errs) == 0 {
-		return nil, nil
+	if len(errs) > 0 {
+		return nil, errs.ToAggregate()
 	}
-	return nil, errs.ToAggregate()
+	return WarnDataFlowSpec(&dfc.Spec.DataFlowSpec), nil
 }
 
 // ValidateDelete implements admission.CustomValidator.

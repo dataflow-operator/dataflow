@@ -203,7 +203,7 @@ func TestValidateDataFlowSpec_ErrorsSinkInvalid(t *testing.T) {
 	spec := &dataflowv1.DataFlowSpec{
 		Source: kafkaSource(dataflowv1.KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
 		Sink:   kafkaSink(dataflowv1.KafkaSinkSpec{Brokers: []string{"b"}, Topic: "t"}),
-		Errors: &dataflowv1.SinkSpec{Type: "kafka"}, // Config nil
+		Errors: &dataflowv1.ErrorSinkSpec{SinkSpec: dataflowv1.SinkSpec{Type: "kafka"}}, // Config nil
 	}
 	errs := ValidateDataFlowSpec(spec)
 	if len(errs) == 0 {

@@ -111,7 +111,7 @@ func (r *SecretResolver) ResolveDataFlowSpec(ctx context.Context, namespace stri
 
 	// Resolve errors sink secrets if specified
 	if resolved.Errors != nil {
-		if err := r.resolveSinkSpecRecursive(ctx, namespace, resolved.Errors); err != nil {
+		if err := r.resolveSinkSpecRecursive(ctx, namespace, &resolved.Errors.SinkSpec); err != nil {
 			return nil, fmt.Errorf("failed to resolve errors sink secrets: %w", err)
 		}
 	}
