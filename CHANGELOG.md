@@ -1,3 +1,5 @@
+## [1.0.42](https://github.com/dataflow-operator/dataflow/compare/v1.0.41...v1.0.42) (2026-06-14)
+
 ## [1.0.41](https://github.com/dataflow-operator/dataflow/compare/v1.0.40...v1.0.41) (2026-06-11)
 
 ## [1.0.40](https://github.com/dataflow-operator/dataflow/compare/v1.0.39...v1.0.40) (2026-06-11)
