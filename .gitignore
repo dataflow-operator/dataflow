@@ -47,3 +47,6 @@ temp/
 # Go workspace file
 go.work
 go.work.sum
+
+# Docker BuildKit local cache
+.docker-cache/

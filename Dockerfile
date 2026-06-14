@@ -4,7 +4,7 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /workspace
 
-RUN apk add --no-cache git make
+RUN apk add --no-cache git
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \

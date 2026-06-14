@@ -95,6 +95,32 @@ tasks:
     cmds:
       - go build -o bin/manager main.go
 
+  docker:
+    desc: Build operator image with local BuildKit cache
+    cmds:
+      - |
+        docker buildx create --use --name dataflow 2>/dev/null || docker buildx use dataflow
+        docker buildx build \
+          --cache-from type=local,src=.docker-cache \
+          --cache-to type=local,dest=.docker-cache,mode=max \
+          -t {{.IMG}} \
+          --load \
+          .
+
+  docker:push:
+    desc: Build and push with registry cache (CI-like)
+    cmds:
+      - |
+        docker buildx create --use --name dataflow 2>/dev/null || docker buildx use dataflow
+        REGISTRY="${REGISTRY:?set REGISTRY}"
+        IMAGE="${IMAGE:?set IMAGE}"
+        docker buildx build \
+          --cache-from type=registry,ref="${REGISTRY}/${IMAGE}:buildcache-amd64" \
+          --cache-to type=registry,ref="${REGISTRY}/${IMAGE}:buildcache-amd64",mode=max \
+          -t {{.IMG}} \
+          --push \
+          .
+
   run:
     desc: Run a controller from your host
     deps: [manifests, generate, fmt, vet]
