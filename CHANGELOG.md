@@ -1,5 +1,9 @@
 ## Commits
 
+- 4575757 feat: enhance Docker build process with caching and multi-architecture support
+
+## Commits
+
 - 6f85f38 feat: enhance PostgreSQL CDC source with error handling
 - 016ff6e feat: implement checkpoint reset handling in DataFlow reconciler
 - 023d6ea feat: enhance PostgreSQL CDC checkpoint handling with new tests
