@@ -1,5 +1,9 @@
 ## Commits
 
+- fce8f4b Fix: refactor DataFlowCron reconciler for improved job handling and status updates
+
+## Commits
+
 - 4575757 feat: enhance Docker build process with caching and multi-architecture support
 
 ## Commits
