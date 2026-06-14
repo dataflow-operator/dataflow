@@ -16,6 +16,7 @@ DataFlow Operator automates the deployment and management of data streaming pipe
 - **Rich Transformations**: Filter, Select, Remove, Mask, Flatten, Timestamp, SnakeCase, Router, Chain.
 - **Web GUI**: Built-in browser-based interface to manage manifests, stream logs, and monitor metrics without `kubectl`.
 - **MCP Server**: Model Context Protocol server for AI agents to validate, generate, and migrate DataFlow manifests.
+- **Agent Skills**: Portable AI guides ([github.com/dataflow-operator/skills](https://github.com/dataflow-operator/skills), [docs](https://dataflow-operator.github.io/docs/agent-skills/)).
 - **Error Handling**: Route failed messages to a dedicated error sink (e.g., Dead Letter Queue) with full error context and original payloads to prevent data loss.
 - **Fault Tolerance**: At-least-once delivery semantics with checkpoint persistence, graceful shutdown, and support for idempotent sinks (e.g., UPSERT, ReplacingMergeTree) to safely handle duplicates.
 - **Scheduled Pipelines**: `DataFlowCron` for time-based pipeline execution with triggers.
