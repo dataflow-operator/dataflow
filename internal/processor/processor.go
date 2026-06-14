@@ -327,6 +327,7 @@ func (p *Processor) initConnector(connector interface{}, logger logr.Logger) {
 	if mc, ok := connector.(interface{ SetMetadata(string, string) }); ok {
 		mc.SetMetadata(p.namespace, p.name)
 	}
+	connectors.WireCheckpointSaveReporting(connector, logger)
 	if pc, ok := connector.(interface{ SetProgressCallback(func()) }); ok {
 		pc.SetProgressCallback(p.RecordProgress)
 	}

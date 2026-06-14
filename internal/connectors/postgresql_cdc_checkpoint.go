@@ -51,6 +51,11 @@ type postgresCDCCheckpointHolder struct {
 	phase           string
 	snapshotDone    []string
 	onAdvance       func(lsn pglogrepl.LSN)
+	reporter        checkpointSaveReporter
+}
+
+func (h *postgresCDCCheckpointHolder) setReporter(r checkpointSaveReporter) {
+	h.reporter = r
 }
 
 func (h *postgresCDCCheckpointHolder) init(store checkpoint.Store, sourceType string, slotName, publicationName string, initial []byte) {
@@ -234,5 +239,6 @@ func (h *postgresCDCCheckpointHolder) persist(data []byte) {
 	if sourceType == "" {
 		sourceType = "postgresql-cdc"
 	}
-	_ = h.store.Save(context.Background(), sourceType, data)
+	err := h.store.Save(context.Background(), sourceType, data)
+	h.reporter.report(err, checkpointOpSave)
 }

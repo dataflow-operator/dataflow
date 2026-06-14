@@ -89,6 +89,7 @@ func (c *IcebergSourceConnector) advanceCheckpoint(snapshotID int64, sequence in
 		if sourceType == "" {
 			sourceType = "iceberg"
 		}
-		_ = c.checkpointStore.Save(context.Background(), sourceType, data)
+		err := c.checkpointStore.Save(context.Background(), sourceType, data)
+		reportCheckpointSaveError(c.logger, &c.connectorMetadata, sourceType, err)
 	}
 }

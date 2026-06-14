@@ -230,6 +230,11 @@ type CompositeCheckpointHolder struct {
 	state      checkpoint.Composite
 	store      checkpoint.Store
 	sourceType string
+	reporter   checkpointSaveReporter
+}
+
+func (h *CompositeCheckpointHolder) setReporter(r checkpointSaveReporter) {
+	h.reporter = r
 }
 
 // InitCompositeCheckpoint configures the holder for a source connector.
@@ -289,7 +294,8 @@ func (h *CompositeCheckpointHolder) Advance(next checkpoint.Composite, requireTi
 	}
 
 	if h.store != nil && (h.state.ChangeTime != nil || h.state.OrderByValue != nil) {
-		_ = h.store.Save(context.Background(), h.sourceType, h.state.Marshal())
+		err := h.store.Save(context.Background(), h.sourceType, h.state.Marshal())
+		h.reporter.report(err, checkpointOpSave)
 	}
 }
 

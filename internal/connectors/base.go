@@ -173,9 +173,14 @@ func (c *connectorMetadata) SetMetadata(namespace, name string) {
 
 // progressRecorder is an optional callback invoked after successful pipeline progress (e.g. sink flush + ack).
 type progressRecorder struct {
-	onProgress     func()
-	batchAckSyncer checkpoint.BatchAckSyncer
-	ackGranularity string
+	onProgress         func()
+	batchAckSyncer     checkpoint.BatchAckSyncer
+	ackGranularity     string
+	checkpointReporter checkpointSaveReporter
+}
+
+func (p *progressRecorder) setReporter(r checkpointSaveReporter) {
+	p.checkpointReporter = r
 }
 
 // SetProgressCallback registers a callback for liveness/progress probes.
@@ -248,7 +253,8 @@ func (p *progressRecorder) AckAfterSuccessfulWrite(msgs []*types.Message) {
 
 func (p *progressRecorder) flushCheckpointAfterBatchAck() {
 	if p.batchAckSyncer != nil {
-		_ = p.batchAckSyncer.FlushAfterBatchAck(context.Background())
+		err := p.batchAckSyncer.FlushAfterBatchAck(context.Background())
+		p.checkpointReporter.report(err, checkpointOpFlush)
 	}
 }
 

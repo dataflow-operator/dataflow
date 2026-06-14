@@ -117,7 +117,8 @@ func (c *NessieSourceConnector) advanceCheckpoint(snapshotID int64, sequence int
 		if sourceType == "" {
 			sourceType = "nessie"
 		}
-		_ = c.checkpointStore.Save(context.Background(), sourceType, data)
+		err := c.checkpointStore.Save(context.Background(), sourceType, data)
+		reportCheckpointSaveError(c.logger, &c.connectorMetadata, sourceType, err)
 	}
 }
 
