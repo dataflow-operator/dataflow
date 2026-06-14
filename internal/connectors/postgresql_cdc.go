@@ -52,6 +52,11 @@ type PostgreSQLCDCSourceConnector struct {
 	systemIdent *pglogrepl.IdentifySystemResult
 
 	replMu sync.Mutex
+
+	// readErrCh receives fatal errors from the read goroutine after Read returns; set during Read.
+	readErrCh chan error
+	// testReadLoop, if set, replaces readLoop in Read (unit tests only).
+	testReadLoop func(ctx context.Context, msgChan chan *types.Message) error
 }
 
 // NewPostgreSQLCDCSourceConnector creates a PostgreSQL CDC source connector.
@@ -193,14 +198,33 @@ func (c *PostgreSQLCDCSourceConnector) Read(ctx context.Context) (<-chan *types.
 	}
 
 	msgChan := make(chan *types.Message, c.channelBufferSize)
+	errCh := make(chan error, constants.DefaultSingleValueChannelBufferSize)
+	c.readErrCh = errCh
+
+	readLoopFn := c.readLoop
+	if c.testReadLoop != nil {
+		readLoopFn = c.testReadLoop
+	}
+
 	go func() {
 		defer close(msgChan)
-		if err := c.readLoop(ctx, msgChan); err != nil && ctx.Err() == nil {
-			c.logger.Error(err, "PostgreSQL CDC read loop failed")
+		if err := readLoopFn(ctx, msgChan); err != nil && ctx.Err() == nil {
+			errWrap := fmt.Errorf("postgres CDC read error: %w", err)
+			c.logger.Error(errWrap, "PostgreSQL CDC read loop failed")
 			c.RecordError("read", "stream_error")
+			select {
+			case errCh <- errWrap:
+			default:
+				c.logger.Error(errWrap, "PostgreSQL CDC read error dropped (error channel full)")
+			}
 		}
 	}()
 	return msgChan, nil
+}
+
+// ReadErrors implements SourceReadErrors. Returns the error channel created by the last Read call.
+func (c *PostgreSQLCDCSourceConnector) ReadErrors() <-chan error {
+	return c.readErrCh
 }
 
 func (c *PostgreSQLCDCSourceConnector) readLoop(ctx context.Context, msgChan chan *types.Message) error {
