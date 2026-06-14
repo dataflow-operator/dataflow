@@ -45,7 +45,7 @@ func processorNeedsDedicatedServiceAccount(resolvedSpec *dataflowv1.DataFlowSpec
 	if checkpointPersistenceEnabled(resolvedSpec) {
 		return true
 	}
-	return nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, namespace)
+	return catalogSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, namespace)
 }
 
 func processorServiceAccountName(workflowName string, resolvedSpec *dataflowv1.DataFlowSpec, namespace string) string {
@@ -112,8 +112,8 @@ func createOrUpdateProcessorRBAC(
 		})
 	}
 	if resolvedSpec != nil {
-		if cfg, err := resolvedSpec.Sink.GetNessieConfig(); err == nil && cfg != nil {
-			if secretNames := nessieSinkObjectStorageSecretNames(cfg, namespace); len(secretNames) > 0 {
+		if cfg, _, ok := catalogSinkObjectStorageFromSink(&resolvedSpec.Sink); ok {
+			if secretNames := catalogSinkObjectStorageSecretNames(cfg, namespace); len(secretNames) > 0 {
 				rules = append(rules, rbacv1.PolicyRule{
 					APIGroups:     []string{""},
 					Resources:     []string{"secrets"},

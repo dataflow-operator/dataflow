@@ -39,6 +39,12 @@ func init() {
 			return validateSourceConfig(raw, "nessie", path, validateNessieSource)
 		},
 	})
+	providers.RegisterSource(providers.SourceDefinition{
+		Type: "iceberg",
+		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
+			return validateSourceConfig(raw, "iceberg", path, validateIcebergSource)
+		},
+	})
 
 	providers.RegisterSink(providers.SinkDefinition{
 		Type: "kafka",
@@ -68,6 +74,12 @@ func init() {
 		Type: "nessie",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSinkConfig(raw, "nessie", path, validateNessieSink)
+		},
+	})
+	providers.RegisterSink(providers.SinkDefinition{
+		Type: "iceberg",
+		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
+			return validateSinkConfig(raw, "iceberg", path, validateIcebergSink)
 		},
 	})
 }

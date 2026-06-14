@@ -401,6 +401,121 @@ func validateNessieSink(n *NessieSinkSpec, f *field.Path) field.ErrorList {
 	return all
 }
 
+func validateIcebergSource(i *IcebergSourceSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	hasCatalogURI := i.CatalogURI != "" || i.CatalogURISecretRef != nil
+	if !hasCatalogURI {
+		all = append(all, field.Required(f.Child("catalogURI"), "catalogURI or catalogURISecretRef is required"))
+	}
+	hasNamespace := i.Namespace != "" || i.NamespaceSecretRef != nil
+	if !hasNamespace {
+		all = append(all, field.Required(f.Child("namespace"), "namespace or namespaceSecretRef is required"))
+	}
+	hasTable := i.Table != "" || i.TableSecretRef != nil
+	if !hasTable {
+		all = append(all, field.Required(f.Child("table"), "table or tableSecretRef is required"))
+	}
+	if i.CatalogURISecretRef != nil {
+		all = append(all, validateSecretRef(i.CatalogURISecretRef, f.Child("catalogURISecretRef"))...)
+	}
+	if i.NamespaceSecretRef != nil {
+		all = append(all, validateSecretRef(i.NamespaceSecretRef, f.Child("namespaceSecretRef"))...)
+	}
+	if i.TableSecretRef != nil {
+		all = append(all, validateSecretRef(i.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	if i.TokenSecretRef != nil {
+		all = append(all, validateSecretRef(i.TokenSecretRef, f.Child("tokenSecretRef"))...)
+	}
+	if i.OAuth2ServerURISecretRef != nil {
+		all = append(all, validateSecretRef(i.OAuth2ServerURISecretRef, f.Child("oauth2ServerURISecretRef"))...)
+	}
+	if i.OAuth2ClientIDSecretRef != nil {
+		all = append(all, validateSecretRef(i.OAuth2ClientIDSecretRef, f.Child("oauth2ClientIDSecretRef"))...)
+	}
+	if i.OAuth2ClientSecretSecretRef != nil {
+		all = append(all, validateSecretRef(i.OAuth2ClientSecretSecretRef, f.Child("oauth2ClientSecretSecretRef"))...)
+	}
+	all = append(all, validateIcebergRESTAuthConfig(string(i.AuthenticationType), i.BearerToken, i.TokenSecretRef, i.BasicAuth, i.OAuth2ClientID, i.OAuth2ClientIDSecretRef, i.OAuth2ClientSecret, i.OAuth2ClientSecretSecretRef, f)...)
+	if i.IncrementalBySnapshot != nil && *i.IncrementalBySnapshot {
+		if strings.TrimSpace(i.Query) != "" {
+			all = append(all, field.Invalid(f.Child("query"), i.Query,
+				"query is not supported when incrementalBySnapshot is true"))
+		}
+	}
+	if id := strings.TrimSpace(i.StartSnapshotID); id != "" {
+		if _, err := parseNessieSnapshotID(id); err != nil {
+			all = append(all, field.Invalid(f.Child("startSnapshotID"), id, err.Error()))
+		}
+	}
+	return all
+}
+
+func validateIcebergSink(i *IcebergSinkSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	hasCatalogURI := i.CatalogURI != "" || i.CatalogURISecretRef != nil
+	if !hasCatalogURI {
+		all = append(all, field.Required(f.Child("catalogURI"), "catalogURI or catalogURISecretRef is required"))
+	}
+	hasNamespace := i.Namespace != "" || i.NamespaceSecretRef != nil
+	if !hasNamespace {
+		all = append(all, field.Required(f.Child("namespace"), "namespace or namespaceSecretRef is required"))
+	}
+	hasTable := i.Table != "" || i.TableSecretRef != nil
+	if !hasTable {
+		all = append(all, field.Required(f.Child("table"), "table or tableSecretRef is required"))
+	}
+	if i.CatalogURISecretRef != nil {
+		all = append(all, validateSecretRef(i.CatalogURISecretRef, f.Child("catalogURISecretRef"))...)
+	}
+	if i.NamespaceSecretRef != nil {
+		all = append(all, validateSecretRef(i.NamespaceSecretRef, f.Child("namespaceSecretRef"))...)
+	}
+	if i.TableSecretRef != nil {
+		all = append(all, validateSecretRef(i.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	if i.TokenSecretRef != nil {
+		all = append(all, validateSecretRef(i.TokenSecretRef, f.Child("tokenSecretRef"))...)
+	}
+	if i.OAuth2ServerURISecretRef != nil {
+		all = append(all, validateSecretRef(i.OAuth2ServerURISecretRef, f.Child("oauth2ServerURISecretRef"))...)
+	}
+	if i.OAuth2ClientIDSecretRef != nil {
+		all = append(all, validateSecretRef(i.OAuth2ClientIDSecretRef, f.Child("oauth2ClientIDSecretRef"))...)
+	}
+	if i.OAuth2ClientSecretSecretRef != nil {
+		all = append(all, validateSecretRef(i.OAuth2ClientSecretSecretRef, f.Child("oauth2ClientSecretSecretRef"))...)
+	}
+	hasAK := i.AccessKeySecretRef != nil
+	hasSK := i.SecretAccessKeySecretRef != nil
+	if hasAK != hasSK {
+		all = append(all, field.Invalid(f.Child("accessKeySecretRef"), i.AccessKeySecretRef, "accessKeySecretRef and secretAccessKeySecretRef must both be set or both omitted"))
+	}
+	if i.AccessKeySecretRef != nil {
+		all = append(all, validateSecretRef(i.AccessKeySecretRef, f.Child("accessKeySecretRef"))...)
+	}
+	if i.SecretAccessKeySecretRef != nil {
+		all = append(all, validateSecretRef(i.SecretAccessKeySecretRef, f.Child("secretAccessKeySecretRef"))...)
+	}
+	all = append(all, validateIcebergRESTAuthConfig(string(i.AuthenticationType), i.BearerToken, i.TokenSecretRef, i.BasicAuth, i.OAuth2ClientID, i.OAuth2ClientIDSecretRef, i.OAuth2ClientSecret, i.OAuth2ClientSecretSecretRef, f)...)
+	all = append(all, validateFlattenMetadataSpec(i.RawMode, i.FlattenMetadataColumns, i.FlattenMetadataColumnsPrefix, f)...)
+	return all
+}
+
+func validateIcebergRESTAuthConfig(authType, bearerToken string, tokenSecretRef *SecretRef, basicAuth *BasicAuthConfig, oauth2ClientID string, oauth2ClientIDSecretRef *SecretRef, oauth2ClientSecret string, oauth2ClientSecretSecretRef *SecretRef, f *field.Path) field.ErrorList {
+	all := validateNessieAuthConfig(authType, bearerToken, tokenSecretRef, basicAuth, f)
+	hasOAuthID := oauth2ClientID != "" || oauth2ClientIDSecretRef != nil
+	hasOAuthSecret := oauth2ClientSecret != "" || oauth2ClientSecretSecretRef != nil
+	if hasOAuthID != hasOAuthSecret {
+		all = append(all, field.Invalid(f.Child("oauth2ClientID"), oauth2ClientID, "oauth2ClientID and oauth2ClientSecret must both be set or both omitted"))
+	}
+	hasBearer := bearerToken != "" || tokenSecretRef != nil
+	if hasBearer && (hasOAuthID || hasOAuthSecret) {
+		all = append(all, field.Invalid(f.Child("bearerToken"), bearerToken, "bearerToken/tokenSecretRef cannot be combined with oauth2ClientID/oauth2ClientSecret"))
+	}
+	return all
+}
+
 func validateFlattenMetadataSpec(rawMode, flatten *bool, prefix string, f *field.Path) field.ErrorList {
 	if flatten == nil || !*flatten {
 		return nil

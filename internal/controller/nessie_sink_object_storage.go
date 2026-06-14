@@ -34,31 +34,64 @@ const (
 	envAWSRegion          = "AWS_REGION"
 )
 
-// nessieSinkUsesLocalObjectStorageSecretRefs is true when at least one S3 credential ref uses a Secret in the DataFlow namespace (processor SA needs get on those Secrets).
-func nessieSinkUsesLocalObjectStorageSecretRefs(sink *dataflowv1.SinkSpec, dataflowNamespace string) bool {
-	if !nessieSinkUsesObjectStorageSecretRefs(sink) {
-		return false
-	}
-	cfg, err := sink.GetNessieConfig()
-	if err != nil || cfg == nil {
-		return false
-	}
-	return len(nessieSinkObjectStorageSecretNames(cfg, dataflowNamespace)) > 0
+type catalogSinkObjectStorage struct {
+	accessKeySecretRef       *dataflowv1.SecretRef
+	secretAccessKeySecretRef *dataflowv1.SecretRef
+	s3Endpoint               string
+	s3Region                 string
 }
 
-// nessieSinkUsesObjectStorageSecretRefs is true when both S3 credential secret refs are set (pod env injection).
-func nessieSinkUsesObjectStorageSecretRefs(sink *dataflowv1.SinkSpec) bool {
-	if sink == nil || !strings.EqualFold(sink.Type, "nessie") {
-		return false
+func catalogSinkObjectStorageFromSink(sink *dataflowv1.SinkSpec) (catalogSinkObjectStorage, string, bool) {
+	if sink == nil {
+		return catalogSinkObjectStorage{}, "", false
 	}
-	cfg, err := sink.GetNessieConfig()
-	if err != nil || cfg == nil {
-		return false
+	switch strings.ToLower(sink.Type) {
+	case "nessie":
+		cfg, err := sink.GetNessieConfig()
+		if err != nil || cfg == nil {
+			return catalogSinkObjectStorage{}, "", false
+		}
+		return catalogSinkObjectStorage{
+			accessKeySecretRef:       cfg.AccessKeySecretRef,
+			secretAccessKeySecretRef: cfg.SecretAccessKeySecretRef,
+			s3Endpoint:               cfg.S3Endpoint,
+			s3Region:                 cfg.S3Region,
+		}, "nessie", true
+	case "iceberg":
+		cfg, err := sink.GetIcebergConfig()
+		if err != nil || cfg == nil {
+			return catalogSinkObjectStorage{}, "", false
+		}
+		return catalogSinkObjectStorage{
+			accessKeySecretRef:       cfg.AccessKeySecretRef,
+			secretAccessKeySecretRef: cfg.SecretAccessKeySecretRef,
+			s3Endpoint:               cfg.S3Endpoint,
+			s3Region:                 cfg.S3Region,
+		}, "iceberg", true
+	default:
+		return catalogSinkObjectStorage{}, "", false
 	}
-	return cfg.AccessKeySecretRef != nil && cfg.SecretAccessKeySecretRef != nil
 }
 
-// effectiveSecretNamespace returns the namespace where the Secret lives for a ref (defaults to DataFlow namespace).
+func catalogSinkUsesObjectStorageSecretRefs(sink *dataflowv1.SinkSpec) bool {
+	cfg, _, ok := catalogSinkObjectStorageFromSink(sink)
+	if !ok {
+		return false
+	}
+	return cfg.accessKeySecretRef != nil && cfg.secretAccessKeySecretRef != nil
+}
+
+func catalogSinkUsesLocalObjectStorageSecretRefs(sink *dataflowv1.SinkSpec, dataflowNamespace string) bool {
+	if !catalogSinkUsesObjectStorageSecretRefs(sink) {
+		return false
+	}
+	cfg, _, ok := catalogSinkObjectStorageFromSink(sink)
+	if !ok {
+		return false
+	}
+	return len(catalogSinkObjectStorageSecretNames(cfg, dataflowNamespace)) > 0
+}
+
 func effectiveSecretNamespace(ref *dataflowv1.SecretRef, dataflowNamespace string) string {
 	if ref == nil || ref.Namespace == "" {
 		return dataflowNamespace
@@ -66,50 +99,48 @@ func effectiveSecretNamespace(ref *dataflowv1.SecretRef, dataflowNamespace strin
 	return ref.Namespace
 }
 
-// validateNessieSinkObjectStorageRefs ensures S3 refs are paired and well-formed (name/key).
-// Cross-namespace refs are allowed: values are resolved by the operator into Deployment env literals.
-func validateNessieSinkObjectStorageRefs(sink *dataflowv1.SinkSpec) error {
-	if sink == nil || !strings.EqualFold(sink.Type, "nessie") {
+func validateCatalogSinkObjectStorageRefs(sink *dataflowv1.SinkSpec) error {
+	cfg, label, ok := catalogSinkObjectStorageFromSink(sink)
+	if !ok {
 		return nil
 	}
-	cfg, err := sink.GetNessieConfig()
-	if err != nil {
-		return fmt.Errorf("nessie sink: invalid config: %w", err)
-	}
-	if cfg == nil {
-		return nil
-	}
-	a := cfg.AccessKeySecretRef
-	s := cfg.SecretAccessKeySecretRef
+	a := cfg.accessKeySecretRef
+	s := cfg.secretAccessKeySecretRef
 	if a == nil && s == nil {
 		return nil
 	}
 	if (a == nil) != (s == nil) {
-		return fmt.Errorf("nessie sink: accessKeySecretRef and secretAccessKeySecretRef must both be set or both omitted")
+		return fmt.Errorf("%s sink: accessKeySecretRef and secretAccessKeySecretRef must both be set or both omitted", label)
 	}
-	if err := validateNessieS3SecretRefShape(a, "accessKeySecretRef"); err != nil {
+	if err := validateCatalogS3SecretRefShape(a, label, "accessKeySecretRef"); err != nil {
 		return err
 	}
-	if err := validateNessieS3SecretRefShape(s, "secretAccessKeySecretRef"); err != nil {
+	if err := validateCatalogS3SecretRefShape(s, label, "secretAccessKeySecretRef"); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateNessieS3SecretRefShape(ref *dataflowv1.SecretRef, field string) error {
+func validateCatalogS3SecretRefShape(ref *dataflowv1.SecretRef, sinkLabel, field string) error {
 	if ref == nil {
-		return fmt.Errorf("nessie sink: %s is nil", field)
+		return fmt.Errorf("%s sink: %s is nil", sinkLabel, field)
 	}
 	if ref.Name == "" || ref.Key == "" {
-		return fmt.Errorf("nessie sink: %s must specify name and key", field)
+		return fmt.Errorf("%s sink: %s must specify name and key", sinkLabel, field)
 	}
 	return nil
 }
 
-// nessieSinkObjectStorageEnvWithResolve builds processor env for iceberg-go / AWS SDK.
-// Refs in the DataFlow namespace use secretKeyRef; refs in other namespaces are resolved to literals via the operator client.
-func nessieSinkObjectStorageEnvWithResolve(ctx context.Context, resolver *SecretResolver, dataflowNamespace string, cfg *dataflowv1.NessieSinkSpec) ([]corev1.EnvVar, error) {
-	if cfg == nil || cfg.AccessKeySecretRef == nil || cfg.SecretAccessKeySecretRef == nil {
+func catalogSinkObjectStorageEnvWithResolve(ctx context.Context, resolver *SecretResolver, dataflowNamespace string, sink *dataflowv1.SinkSpec) ([]corev1.EnvVar, error) {
+	cfg, label, ok := catalogSinkObjectStorageFromSink(sink)
+	if !ok {
+		return nil, nil
+	}
+	return catalogSinkObjectStorageEnvFromConfig(ctx, resolver, dataflowNamespace, cfg, label)
+}
+
+func catalogSinkObjectStorageEnvFromConfig(ctx context.Context, resolver *SecretResolver, dataflowNamespace string, cfg catalogSinkObjectStorage, label string) ([]corev1.EnvVar, error) {
+	if cfg.accessKeySecretRef == nil || cfg.secretAccessKeySecretRef == nil {
 		return nil, nil
 	}
 	envOne := func(envName string, ref *dataflowv1.SecretRef) (corev1.EnvVar, error) {
@@ -126,35 +157,34 @@ func nessieSinkObjectStorageEnvWithResolve(ctx context.Context, resolver *Secret
 		}
 		val, err := resolver.ResolveSecretValue(ctx, dataflowNamespace, ref)
 		if err != nil {
-			return corev1.EnvVar{}, fmt.Errorf("nessie sink object storage %s: %w", envName, err)
+			return corev1.EnvVar{}, fmt.Errorf("%s sink object storage %s: %w", label, envName, err)
 		}
 		return corev1.EnvVar{Name: envName, Value: val}, nil
 	}
-	ak, err := envOne(envAWSAccessKeyID, cfg.AccessKeySecretRef)
+	ak, err := envOne(envAWSAccessKeyID, cfg.accessKeySecretRef)
 	if err != nil {
 		return nil, err
 	}
-	sk, err := envOne(envAWSSecretAccessKey, cfg.SecretAccessKeySecretRef)
+	sk, err := envOne(envAWSSecretAccessKey, cfg.secretAccessKeySecretRef)
 	if err != nil {
 		return nil, err
 	}
 	out := []corev1.EnvVar{ak, sk}
-	if cfg.S3Endpoint != "" {
-		out = append(out, corev1.EnvVar{Name: envAWSS3Endpoint, Value: cfg.S3Endpoint})
+	if cfg.s3Endpoint != "" {
+		out = append(out, corev1.EnvVar{Name: envAWSS3Endpoint, Value: cfg.s3Endpoint})
 	}
-	if cfg.S3Region != "" {
-		out = append(out, corev1.EnvVar{Name: envAWSRegion, Value: cfg.S3Region})
+	if cfg.s3Region != "" {
+		out = append(out, corev1.EnvVar{Name: envAWSRegion, Value: cfg.s3Region})
 	}
 	return out, nil
 }
 
-// nessieSinkObjectStorageSecretNames returns distinct secret names for Role resourceNames (same-namespace refs only).
-func nessieSinkObjectStorageSecretNames(cfg *dataflowv1.NessieSinkSpec, dataflowNamespace string) []string {
-	if cfg == nil || cfg.AccessKeySecretRef == nil || cfg.SecretAccessKeySecretRef == nil {
+func catalogSinkObjectStorageSecretNames(cfg catalogSinkObjectStorage, dataflowNamespace string) []string {
+	if cfg.accessKeySecretRef == nil || cfg.secretAccessKeySecretRef == nil {
 		return nil
 	}
 	names := map[string]struct{}{}
-	for _, ref := range []*dataflowv1.SecretRef{cfg.AccessKeySecretRef, cfg.SecretAccessKeySecretRef} {
+	for _, ref := range []*dataflowv1.SecretRef{cfg.accessKeySecretRef, cfg.secretAccessKeySecretRef} {
 		if ref == nil || ref.Name == "" {
 			continue
 		}
@@ -171,16 +201,12 @@ func nessieSinkObjectStorageSecretNames(cfg *dataflowv1.NessieSinkSpec, dataflow
 	return out
 }
 
-// nessieSinkObjectStorageRefsSecret reports whether the DataFlow Nessie sink S3 credential refs point at this Secret.
-func nessieSinkObjectStorageRefsSecret(df *dataflowv1.DataFlow, secret *corev1.Secret) bool {
+func catalogSinkObjectStorageRefsSecret(df *dataflowv1.DataFlow, secret *corev1.Secret) bool {
 	if df == nil || secret == nil {
 		return false
 	}
-	if !strings.EqualFold(df.Spec.Sink.Type, "nessie") {
-		return false
-	}
-	cfg, err := df.Spec.Sink.GetNessieConfig()
-	if err != nil || cfg == nil {
+	cfg, _, ok := catalogSinkObjectStorageFromSink(&df.Spec.Sink)
+	if !ok {
 		return false
 	}
 	match := func(ref *dataflowv1.SecretRef) bool {
@@ -189,5 +215,47 @@ func nessieSinkObjectStorageRefsSecret(df *dataflowv1.DataFlow, secret *corev1.S
 		}
 		return effectiveSecretNamespace(ref, df.Namespace) == secret.Namespace
 	}
-	return match(cfg.AccessKeySecretRef) || match(cfg.SecretAccessKeySecretRef)
+	return match(cfg.accessKeySecretRef) || match(cfg.secretAccessKeySecretRef)
+}
+
+func nessieSinkUsesLocalObjectStorageSecretRefs(sink *dataflowv1.SinkSpec, dataflowNamespace string) bool {
+	return catalogSinkUsesLocalObjectStorageSecretRefs(sink, dataflowNamespace)
+}
+
+func nessieSinkUsesObjectStorageSecretRefs(sink *dataflowv1.SinkSpec) bool {
+	return catalogSinkUsesObjectStorageSecretRefs(sink)
+}
+
+func validateNessieSinkObjectStorageRefs(sink *dataflowv1.SinkSpec) error {
+	return validateCatalogSinkObjectStorageRefs(sink)
+}
+
+func validateNessieS3SecretRefShape(ref *dataflowv1.SecretRef, field string) error {
+	return validateCatalogS3SecretRefShape(ref, "nessie", field)
+}
+
+func nessieSinkObjectStorageEnvWithResolve(ctx context.Context, resolver *SecretResolver, dataflowNamespace string, cfg *dataflowv1.NessieSinkSpec) ([]corev1.EnvVar, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	return catalogSinkObjectStorageEnvFromConfig(ctx, resolver, dataflowNamespace, catalogSinkObjectStorage{
+		accessKeySecretRef:       cfg.AccessKeySecretRef,
+		secretAccessKeySecretRef: cfg.SecretAccessKeySecretRef,
+		s3Endpoint:               cfg.S3Endpoint,
+		s3Region:                 cfg.S3Region,
+	}, "nessie")
+}
+
+func nessieSinkObjectStorageSecretNames(cfg *dataflowv1.NessieSinkSpec, dataflowNamespace string) []string {
+	if cfg == nil {
+		return nil
+	}
+	return catalogSinkObjectStorageSecretNames(catalogSinkObjectStorage{
+		accessKeySecretRef:       cfg.AccessKeySecretRef,
+		secretAccessKeySecretRef: cfg.SecretAccessKeySecretRef,
+	}, dataflowNamespace)
+}
+
+func nessieSinkObjectStorageRefsSecret(df *dataflowv1.DataFlow, secret *corev1.Secret) bool {
+	return catalogSinkObjectStorageRefsSecret(df, secret)
 }

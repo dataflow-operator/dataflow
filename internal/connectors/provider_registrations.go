@@ -18,10 +18,14 @@ func init() {
 	registerSourceConnector("nessie", createSourceConnectorWithOptions[v1.NessieSourceSpec]("nessie source", func(cfg *v1.NessieSourceSpec, opts *SourceConnectorOptions) SourceConnector {
 		return NewNessieSourceConnectorWithOptions(cfg, opts)
 	}), true)
+	registerSourceConnector("iceberg", createSourceConnectorWithOptions[v1.IcebergSourceSpec]("iceberg source", func(cfg *v1.IcebergSourceSpec, opts *SourceConnectorOptions) SourceConnector {
+		return NewIcebergSourceConnectorWithOptions(cfg, opts)
+	}), true)
 
 	registerSinkConnector("kafka", createSinkConnector[v1.KafkaSinkSpec]("kafka sink", func(cfg *v1.KafkaSinkSpec) SinkConnector { return NewKafkaSinkConnector(cfg) }))
 	registerSinkConnector("postgresql", createSinkConnector[v1.PostgreSQLSinkSpec]("postgresql sink", func(cfg *v1.PostgreSQLSinkSpec) SinkConnector { return NewPostgreSQLSinkConnector(cfg) }))
 	registerSinkConnector("trino", createSinkConnector[v1.TrinoSinkSpec]("trino sink", func(cfg *v1.TrinoSinkSpec) SinkConnector { return NewTrinoSinkConnector(cfg) }))
 	registerSinkConnector("clickhouse", createSinkConnector[v1.ClickHouseSinkSpec]("clickhouse sink", func(cfg *v1.ClickHouseSinkSpec) SinkConnector { return NewClickHouseSinkConnector(cfg) }))
 	registerSinkConnector("nessie", createSinkConnector[v1.NessieSinkSpec]("nessie sink", func(cfg *v1.NessieSinkSpec) SinkConnector { return NewNessieSinkConnector(cfg) }))
+	registerSinkConnector("iceberg", createSinkConnector[v1.IcebergSinkSpec]("iceberg sink", func(cfg *v1.IcebergSinkSpec) SinkConnector { return NewIcebergSinkConnector(cfg) }))
 }

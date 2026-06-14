@@ -1888,6 +1888,63 @@ func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageEnvAndRBAC(t *testi
 	assert.Contains(t, role.Rules[0].Verbs, "get")
 }
 
+func TestDataFlowReconciler_Reconcile_IcebergSinkObjectStorageEnvAndRBAC(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDataFlowReconciler(fakeClient, scheme, nil)
+	ctx := context.Background()
+
+	cpOff := false
+	dataflow := &dataflowv1.DataFlow{
+		ObjectMeta: metav1.ObjectMeta{Name: "iceberg-s3-test", Namespace: "default"},
+		Spec: dataflowv1.DataFlowSpec{
+			CheckpointPersistence: &cpOff,
+			Source: dataflowv1.SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(dataflowv1.KafkaSourceSpec{Brokers: []string{"localhost:9092"}, Topic: "t", ConsumerGroup: "g"}),
+			},
+			Sink: dataflowv1.SinkSpec{
+				Type: "iceberg",
+				Config: mustConfig(dataflowv1.IcebergSinkSpec{
+					CatalogURI: "https://catalog.example",
+					Namespace:  "ns",
+					Table:      "tbl",
+					S3Endpoint: "https://storage.yandexcloud.net",
+					S3Region:   "ru-central1",
+					AccessKeySecretRef: &dataflowv1.SecretRef{
+						Name: "iceberg-s3-static", Key: "AWS_ACCESS_KEY_ID",
+					},
+					SecretAccessKeySecretRef: &dataflowv1.SecretRef{
+						Name: "iceberg-s3-static", Key: "AWS_SECRET_ACCESS_KEY",
+					},
+				}),
+			},
+		},
+	}
+	require.NoError(t, fakeClient.Create(ctx, dataflow))
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "iceberg-s3-test", Namespace: "default"}}
+	_, err := reconciler.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var deployment appsv1.Deployment
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-iceberg-s3-test", Namespace: "default"}, &deployment))
+	assert.Equal(t, "df-iceberg-s3-test-processor", deployment.Spec.Template.Spec.ServiceAccountName)
+
+	env := deployment.Spec.Template.Spec.Containers[0].Env
+	idVar, ok := envVarByName(env, envAWSAccessKeyID)
+	require.True(t, ok)
+	require.Equal(t, "iceberg-s3-static", idVar.ValueFrom.SecretKeyRef.Name)
+
+	var role rbacv1.Role
+	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: "df-iceberg-s3-test-processor", Namespace: "default"}, &role))
+	require.Len(t, role.Rules, 1)
+	assert.Equal(t, []string{"iceberg-s3-static"}, role.Rules[0].ResourceNames)
+}
+
 func TestDataFlowReconciler_Reconcile_NessieSinkObjectStorageCrossNamespaceResolvesToLiteralEnv(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, dataflowv1.AddToScheme(scheme))

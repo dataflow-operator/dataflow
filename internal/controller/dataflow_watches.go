@@ -127,7 +127,7 @@ func (r *DataFlowReconciler) enqueueAllDataFlowsForSecretUpdate(ctx context.Cont
 	}
 	for i := range listAll.Items {
 		df := &listAll.Items[i]
-		if nessieSinkObjectStorageRefsSecret(df, secret) {
+		if catalogSinkObjectStorageRefsSecret(df, secret) {
 			add(df.Namespace, df.Name, &reqs)
 		}
 	}

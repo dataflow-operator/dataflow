@@ -88,33 +88,6 @@ func TestCreateSourceConnector_PostgreSQL(t *testing.T) {
 	})
 }
 
-func TestCreateSourceConnector_Iceberg(t *testing.T) {
-	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
-		// TODO: Iceberg source is not yet implemented, using Trino instead
-		{
-			name: "valid trino source",
-			source: func() *v1.SourceSpec {
-				cfg := v1.TrinoSourceSpec{
-					ServerURL: "http://localhost:8080",
-					Catalog:   "test_catalog",
-					Schema:    "test_schema",
-					Table:     "test_table",
-				}
-				raw, _ := json.Marshal(cfg)
-				return &v1.SourceSpec{Type: "trino", Config: &runtime.RawExtension{Raw: raw}}
-			}(),
-		},
-		{
-			name: "trino source without config",
-			source: &v1.SourceSpec{
-				Type: "trino",
-			},
-			wantErr:     true,
-			errContains: "trino source configuration is required",
-		},
-	})
-}
-
 func TestCreateSourceConnector_Nessie(t *testing.T) {
 	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
 		{
@@ -137,6 +110,31 @@ func TestCreateSourceConnector_Nessie(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "nessie source configuration is required",
+		},
+	})
+}
+
+func TestCreateSourceConnector_Iceberg(t *testing.T) {
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
+		{
+			name: "valid iceberg source",
+			source: func() *v1.SourceSpec {
+				cfg := v1.IcebergSourceSpec{
+					CatalogURI: "https://catalog:8181",
+					Namespace:  "ns",
+					Table:      "t1",
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "iceberg", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
+		},
+		{
+			name: "iceberg source without config",
+			source: &v1.SourceSpec{
+				Type: "iceberg",
+			},
+			wantErr:     true,
+			errContains: "iceberg source configuration is required",
 		},
 	})
 }
@@ -219,6 +217,31 @@ func TestCreateSinkConnector_Nessie(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "nessie sink configuration is required",
+		},
+	})
+}
+
+func TestCreateSinkConnector_Iceberg(t *testing.T) {
+	runCreateSinkConnectorTests(t, []sinkConnectorTestCase{
+		{
+			name: "valid iceberg sink",
+			sink: func() *v1.SinkSpec {
+				cfg := v1.IcebergSinkSpec{
+					CatalogURI: "https://catalog:8181",
+					Namespace:  "ns",
+					Table:      "t1",
+				}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "iceberg", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
+		},
+		{
+			name: "iceberg sink without config",
+			sink: &v1.SinkSpec{
+				Type: "iceberg",
+			},
+			wantErr:     true,
+			errContains: "iceberg sink configuration is required",
 		},
 	})
 }

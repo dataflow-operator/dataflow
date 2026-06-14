@@ -18,11 +18,7 @@ package connectors
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -40,130 +36,12 @@ import (
 	"github.com/go-logr/logr"
 )
 
-const nessieSnapshotConflictToken = icebergRESTSnapshotConflictToken
-
-// buildNessieIcebergURI returns the Iceberg REST catalog URI for Nessie.
-// Format: {baseURL}/iceberg[/{branch}][|{warehouse}]
-func buildNessieIcebergURI(baseURL, branch, warehouse string) string {
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	path := baseURL + "/iceberg"
-	if branch != "" {
-		path += "/" + branch
-	}
-	if warehouse != "" {
-		path += "|" + warehouse
-	}
-	return path
-}
-
-const (
-	nessiePreflightTimeout = icebergRESTPreflightTimeout
-	maxPreflightBodyBytes  = maxIcebergRESTPreflightBodyBytes
-)
-
-type nessiePreflightConfig struct {
-	baseURL     string
-	branch      string
-	authType    v1.NessieAuthenticationType
-	bearerToken string
-	basicAuth   *v1.BasicAuthConfig
-}
-
-func (c *NessieSourceConnector) preflightConfig() nessiePreflightConfig {
-	return nessiePreflightConfig{
-		baseURL:     c.config.BaseURL,
-		branch:      c.config.Branch,
-		authType:    c.config.AuthenticationType,
-		bearerToken: c.config.BearerToken,
-		basicAuth:   c.config.BasicAuth,
-	}
-}
-
-func (c *NessieSinkConnector) preflightConfig() nessiePreflightConfig {
-	return nessiePreflightConfig{
-		baseURL:     c.config.BaseURL,
-		branch:      c.config.Branch,
-		authType:    c.config.AuthenticationType,
-		bearerToken: c.config.BearerToken,
-		basicAuth:   c.config.BasicAuth,
-	}
-}
-
-func runNessiePreflight(ctx context.Context, cfg nessiePreflightConfig) error {
-	baseURL := strings.TrimSuffix(strings.TrimSpace(cfg.baseURL), "/")
-	if baseURL == "" {
-		return fmt.Errorf("nessie preflight: baseURL is empty")
-	}
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return fmt.Errorf("nessie preflight: invalid baseURL %q: %w", cfg.baseURL, err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("nessie preflight: baseURL must include scheme and host, got %q", cfg.baseURL)
-	}
-
-	preflightCtx, cancel := context.WithTimeout(ctx, nessiePreflightTimeout)
-	defer cancel()
-	client := &http.Client{}
-
-	if err := nessiePreflightRequest(preflightCtx, client, baseURL+"/api/v2/config", cfg, "server config"); err != nil {
-		return err
-	}
-
-	branch := cfg.branch
-	if branch == "" {
-		branch = "main"
-	}
-	refURL := fmt.Sprintf("%s/api/v2/trees/%s", baseURL, url.PathEscape(branch))
-	if err := nessiePreflightRequest(preflightCtx, client, refURL, cfg, fmt.Sprintf("branch %q", branch)); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func nessiePreflightRequest(ctx context.Context, client *http.Client, endpoint string, cfg nessiePreflightConfig, what string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return fmt.Errorf("nessie preflight: failed to prepare %s request: %w", what, err)
-	}
-	token, basic := resolveNessieAuthentication(cfg.authType, cfg.bearerToken, cfg.basicAuth)
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	} else if basic != "" {
-		req.Header.Set("Authorization", basic)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("nessie preflight: timeout while checking %s at %s", what, endpoint)
-		}
-		if ctx.Err() != nil {
-			return fmt.Errorf("nessie preflight: context canceled while checking %s at %s: %w", what, endpoint, ctx.Err())
-		}
-		return fmt.Errorf("nessie preflight: failed to reach %s at %s: %w", what, endpoint, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxPreflightBodyBytes))
-		msg := strings.TrimSpace(string(body))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return fmt.Errorf("nessie preflight: %s check failed (%s): %s", what, endpoint, msg)
-	}
-
-	return nil
-}
-
-// NessieSourceConnector implements SourceConnector for Nessie (Iceberg REST catalog).
-type NessieSourceConnector struct {
+// IcebergSourceConnector implements SourceConnector for Apache Iceberg REST catalog.
+type IcebergSourceConnector struct {
 	baseConnectorRWMutex
 	connectorLogger
 	connectorMetadata
-	config                    *v1.NessieSourceSpec
+	config                    *v1.IcebergSourceSpec
 	cat                       *rest.Catalog
 	tbl                       *table.Table
 	channelBufferSize         int
@@ -174,24 +52,24 @@ type NessieSourceConnector struct {
 	lastAckedSnapshotSequence int64
 }
 
-// NewNessieSourceConnector creates a new Nessie source connector.
-func NewNessieSourceConnector(config *v1.NessieSourceSpec) *NessieSourceConnector {
-	return NewNessieSourceConnectorWithOptions(config, nil)
+// NewIcebergSourceConnector creates a new Iceberg REST source connector.
+func NewIcebergSourceConnector(config *v1.IcebergSourceSpec) *IcebergSourceConnector {
+	return NewIcebergSourceConnectorWithOptions(config, nil)
 }
 
-// NewNessieSourceConnectorWithOptions creates a new Nessie source connector with optional settings.
-func NewNessieSourceConnectorWithOptions(config *v1.NessieSourceSpec, opts *SourceConnectorOptions) *NessieSourceConnector {
-	c := &NessieSourceConnector{
+// NewIcebergSourceConnectorWithOptions creates a new Iceberg REST source connector with optional settings.
+func NewIcebergSourceConnectorWithOptions(config *v1.IcebergSourceSpec, opts *SourceConnectorOptions) *IcebergSourceConnector {
+	c := &IcebergSourceConnector{
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
-		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "source"},
+		connectorMetadata: connectorMetadata{connectorType: "iceberg", connectorRole: "source"},
 	}
 	if opts != nil {
-		if nessieIncrementalEnabled(config) {
+		if icebergIncrementalEnabled(config) {
 			c.checkpointStore = opts.CheckpointStore
 			c.sourceType = opts.SourceType
 			if c.sourceType == "" {
-				c.sourceType = "nessie"
+				c.sourceType = "iceberg"
 			}
 			if len(opts.InitialCheckpoint) > 0 {
 				c.applyInitialCheckpoint(opts.InitialCheckpoint)
@@ -208,31 +86,25 @@ func NewNessieSourceConnectorWithOptions(config *v1.NessieSourceSpec, opts *Sour
 	return c
 }
 
-// Connect establishes connection to Nessie and loads the Iceberg table.
-func (c *NessieSourceConnector) Connect(ctx context.Context) error {
+// Connect establishes connection to the Iceberg REST catalog and loads the table.
+func (c *IcebergSourceConnector) Connect(ctx context.Context) error {
 	if !c.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
 	defer c.Unlock()
 
-	branch := c.config.Branch
-	if branch == "" {
-		branch = "main"
-	}
-	uri := buildNessieIcebergURI(c.config.BaseURL, branch, c.config.Warehouse)
-	c.logger.Info("Connecting to Nessie", "uri", uri, "namespace", c.config.Namespace, "table", c.config.Table)
-	if err := runNessiePreflight(ctx, c.preflightConfig()); err != nil {
+	auth := icebergRESTAuthFromSource(c.config)
+	c.logger.Info("Connecting to Iceberg REST catalog",
+		"catalogURI", c.config.CatalogURI,
+		"namespace", c.config.Namespace,
+		"table", c.config.Table)
+	if err := runIcebergRESTPreflight(ctx, c.config.CatalogURI, c.config.Warehouse, auth); err != nil {
 		return err
 	}
 
-	opts := nessieAuthOptions(c.config.AuthenticationType, c.config.BearerToken, c.config.BasicAuth)
-	if c.config.Warehouse != "" {
-		opts = append(opts, rest.WithWarehouseLocation(c.config.Warehouse))
-	}
-
-	cat, err := rest.NewCatalog(ctx, "nessie", uri, opts...)
+	cat, err := newIcebergRESTCatalog(ctx, "iceberg", c.config.CatalogURI, c.config.Warehouse, c.config.Prefix, auth)
 	if err != nil {
-		return fmt.Errorf("failed to create Nessie catalog client: %w", err)
+		return err
 	}
 
 	ident := catalog.ToIdentifier(c.config.Namespace, c.config.Table)
@@ -243,16 +115,16 @@ func (c *NessieSourceConnector) Connect(ctx context.Context) error {
 
 	c.cat = cat
 	c.tbl = tbl
-	c.logger.Info("Successfully connected to Nessie", "namespace", c.config.Namespace, "table", c.config.Table)
+	c.logger.Info("Successfully connected to Iceberg REST catalog", "namespace", c.config.Namespace, "table", c.config.Table)
 	return nil
 }
 
 // Read returns a channel of messages from the Iceberg table (polling).
-func (c *NessieSourceConnector) Read(ctx context.Context) (<-chan *types.Message, error) {
+func (c *IcebergSourceConnector) Read(ctx context.Context) (<-chan *types.Message, error) {
 	if c.tbl == nil {
 		return nil, fmt.Errorf("not connected, call Connect first")
 	}
-	c.logger.Info("Starting to read from Nessie", "namespace", c.config.Namespace, "table", c.config.Table)
+	c.logger.Info("Starting to read from Iceberg", "namespace", c.config.Namespace, "table", c.config.Table)
 	pollInterval := 10 * time.Second
 	if c.config.PollInterval != nil && *c.config.PollInterval > 0 {
 		pollInterval = time.Duration(*c.config.PollInterval) * time.Second
@@ -263,7 +135,7 @@ func (c *NessieSourceConnector) Read(ctx context.Context) (<-chan *types.Message
 	}), nil
 }
 
-func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *types.Message) error {
+func (c *IcebergSourceConnector) readOnce(ctx context.Context, msgChan chan *types.Message) error {
 	c.RLock()
 	closed := c.Closed()
 	tbl := c.tbl
@@ -274,21 +146,21 @@ func (c *NessieSourceConnector) readOnce(ctx context.Context, msgChan chan *type
 
 	if err := tbl.Refresh(ctx); err != nil {
 		c.RecordError("read", "refresh_error")
-		return fmt.Errorf("nessie refresh: %w", err)
+		return fmt.Errorf("iceberg refresh: %w", err)
 	}
 
-	if nessieIncrementalEnabled(c.config) {
+	if icebergIncrementalEnabled(c.config) {
 		return c.readOnceIncremental(ctx, msgChan, tbl)
 	}
 	return c.readOnceFullScan(ctx, msgChan, tbl)
 }
 
-func (c *NessieSourceConnector) readOnceFullScan(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
+func (c *IcebergSourceConnector) readOnceFullScan(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
 	pollStart := time.Now()
 	arrowTbl, err := tbl.Scan().ToArrowTable(ctx)
 	if err != nil {
 		c.RecordError("read", "scan_error")
-		return fmt.Errorf("nessie scan: %w", err)
+		return fmt.Errorf("iceberg scan: %w", err)
 	}
 	defer arrowTbl.Release()
 
@@ -303,7 +175,7 @@ func (c *NessieSourceConnector) readOnceFullScan(ctx context.Context, msgChan ch
 			return ctx.Err()
 		}
 	}
-	c.logger.Info("Nessie poll cycle completed",
+	c.logger.Info("Iceberg poll cycle completed",
 		"namespace", c.config.Namespace,
 		"table", c.config.Table,
 		"mode", "full_scan",
@@ -313,7 +185,7 @@ func (c *NessieSourceConnector) readOnceFullScan(ctx context.Context, msgChan ch
 	return nil
 }
 
-func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
+func (c *IcebergSourceConnector) readOnceIncremental(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
 	pollStart := time.Now()
 	current := tbl.CurrentSnapshot()
 	if current == nil {
@@ -369,7 +241,7 @@ func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan
 		arrowTbl, err := tbl.Scan(table.WithSnapshotID(snap.SnapshotID)).ToArrowTable(ctx)
 		if err != nil {
 			c.RecordError("read", "scan_error")
-			return fmt.Errorf("nessie scan snapshot %d: %w", snap.SnapshotID, err)
+			return fmt.Errorf("iceberg scan snapshot %d: %w", snap.SnapshotID, err)
 		}
 		msgs := arrowTableToMessages(arrowTbl, c.config.Namespace, c.config.Table, false)
 		arrowTbl.Release()
@@ -397,7 +269,7 @@ func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan
 		return ErrSourceExhausted
 	}
 	lastSnap := chain[len(chain)-1]
-	c.logger.Info("Nessie poll cycle completed",
+	c.logger.Info("Iceberg poll cycle completed",
 		"namespace", c.config.Namespace,
 		"table", c.config.Table,
 		"mode", "incremental",
@@ -412,39 +284,38 @@ func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan
 	return nil
 }
 
-// Close closes the Nessie source connector.
-func (c *NessieSourceConnector) Close() error {
+// Close closes the Iceberg source connector.
+func (c *IcebergSourceConnector) Close() error {
 	if c.guardClose() {
 		return nil
 	}
 	defer c.Unlock()
-	c.logger.Info("Closing Nessie source connection", "table", c.config.Table)
+	c.logger.Info("Closing Iceberg source connection", "table", c.config.Table)
 	c.tbl = nil
 	c.cat = nil
 	return nil
 }
 
-// NessieSinkConnector implements SinkConnector for Nessie (Iceberg REST catalog).
-type NessieSinkConnector struct {
+// IcebergSinkConnector implements SinkConnector for Apache Iceberg REST catalog.
+type IcebergSinkConnector struct {
 	baseConnector
 	connectorLogger
 	connectorMetadata
 	progressRecorder
 	rawModeConfig
 	flattenMetadataSinkState
-	config *v1.NessieSinkSpec
-	cat    *rest.Catalog
-	tbl    *table.Table
-	// metaColumnTypes maps flattened column name to Iceberg type (Nessie-specific).
+	config          *v1.IcebergSinkSpec
+	cat             *rest.Catalog
+	tbl             *table.Table
 	metaColumnTypes map[string]iceberg.Type
 }
 
-// NewNessieSinkConnector creates a new Nessie sink connector.
-func NewNessieSinkConnector(config *v1.NessieSinkSpec) *NessieSinkConnector {
-	return &NessieSinkConnector{
+// NewIcebergSinkConnector creates a new Iceberg REST sink connector.
+func NewIcebergSinkConnector(config *v1.IcebergSinkSpec) *IcebergSinkConnector {
+	return &IcebergSinkConnector{
 		config:            config,
 		connectorLogger:   connectorLogger{logger: logr.Discard()},
-		connectorMetadata: connectorMetadata{connectorType: "nessie", connectorRole: "sink"},
+		connectorMetadata: connectorMetadata{connectorType: "iceberg", connectorRole: "sink"},
 		rawModeConfig: rawModeConfig{
 			RawMode:                      config.RawMode,
 			FlattenMetadataColumns:       config.FlattenMetadataColumns,
@@ -453,31 +324,25 @@ func NewNessieSinkConnector(config *v1.NessieSinkSpec) *NessieSinkConnector {
 	}
 }
 
-// Connect establishes connection to Nessie and loads or creates the Iceberg table.
-func (c *NessieSinkConnector) Connect(ctx context.Context) error {
+// Connect establishes connection to the Iceberg REST catalog and loads or creates the table.
+func (c *IcebergSinkConnector) Connect(ctx context.Context) error {
 	if !c.guardConnect() {
 		return fmt.Errorf("connector is closed")
 	}
 	defer c.Unlock()
 
-	branch := c.config.Branch
-	if branch == "" {
-		branch = "main"
-	}
-	uri := buildNessieIcebergURI(c.config.BaseURL, branch, c.config.Warehouse)
-	c.logger.Info("Connecting to Nessie sink", "uri", uri, "namespace", c.config.Namespace, "table", c.config.Table)
-	if err := runNessiePreflight(ctx, c.preflightConfig()); err != nil {
+	auth := icebergRESTAuthFromSink(c.config)
+	c.logger.Info("Connecting to Iceberg REST sink",
+		"catalogURI", c.config.CatalogURI,
+		"namespace", c.config.Namespace,
+		"table", c.config.Table)
+	if err := runIcebergRESTPreflight(ctx, c.config.CatalogURI, c.config.Warehouse, auth); err != nil {
 		return err
 	}
 
-	opts := nessieAuthOptions(c.config.AuthenticationType, c.config.BearerToken, c.config.BasicAuth)
-	if c.config.Warehouse != "" {
-		opts = append(opts, rest.WithWarehouseLocation(c.config.Warehouse))
-	}
-
-	cat, err := rest.NewCatalog(ctx, "nessie", uri, opts...)
+	cat, err := newIcebergRESTCatalog(ctx, "iceberg", c.config.CatalogURI, c.config.Warehouse, c.config.Prefix, auth)
 	if err != nil {
-		return fmt.Errorf("failed to create Nessie catalog client: %w", err)
+		return err
 	}
 
 	ident := catalog.ToIdentifier(c.config.Namespace, c.config.Table)
@@ -498,8 +363,8 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 					return fmt.Errorf("table %s.%s: %w", c.config.Namespace, c.config.Table, err)
 				}
 				c.metaColumnNames = metaCols
-				c.metaColumnTypes = nessieMetaColumnTypesFromTable(tbl, metaCols)
-			} else if err := validateNessieRawModeSchema(tbl); err != nil {
+				c.metaColumnTypes = icebergRESTMetaColumnTypesFromTable(tbl, metaCols)
+			} else if err := validateIcebergRESTRawModeSchema(tbl); err != nil {
 				return fmt.Errorf("table %s.%s: %w", c.config.Namespace, c.config.Table, err)
 			}
 		}
@@ -509,7 +374,7 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 			c.logger.Info("Deferring Iceberg table creation until first batch with metadata keys",
 				"namespace", c.config.Namespace, "table", c.config.Table)
 		} else {
-			schema := nessieIcebergSchema(c.rawMode())
+			schema := icebergRESTDefaultSchema(c.rawMode())
 			tbl, err = cat.CreateTable(ctx, ident, schema)
 			if err != nil {
 				return fmt.Errorf("failed to create table: %w", err)
@@ -522,12 +387,12 @@ func (c *NessieSinkConnector) Connect(ctx context.Context) error {
 
 	c.cat = cat
 	c.tbl = tbl
-	c.logger.Info("Successfully connected to Nessie sink", "namespace", c.config.Namespace, "table", c.config.Table)
+	c.logger.Info("Successfully connected to Iceberg REST sink", "namespace", c.config.Namespace, "table", c.config.Table)
 	return nil
 }
 
-// Write writes messages to the Iceberg table via Nessie.
-func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {
+// Write writes messages to the Iceberg table via REST catalog.
+func (c *IcebergSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {
 	if c.cat == nil {
 		return fmt.Errorf("not connected, call Connect first")
 	}
@@ -546,7 +411,7 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 	})
 }
 
-func (c *NessieSinkConnector) flushBatch(batchCtx context.Context, msgs []*types.Message) error {
+func (c *IcebergSinkConnector) flushBatch(batchCtx context.Context, msgs []*types.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -568,13 +433,13 @@ func (c *NessieSinkConnector) flushBatch(batchCtx context.Context, msgs []*types
 	}
 
 	return retry.OnRetry(batchCtx, retry.NessieAppendMaxAttempts, retry.NessieAppendInitialBackoff, func(err error) bool {
-		return isRetryableNessieAppendError(err)
+		return isRetryableIcebergRESTAppendError(err)
 	}, func() error {
 		attemptCtx, cancel := BatchWriteContext(batchCtx)
 		defer cancel()
 		newTbl, appendErr := c.tbl.AppendTable(attemptCtx, arrowTbl, appendSize, nil)
 		if appendErr != nil {
-			if isRetryableNessieSnapshotConflict(appendErr) {
+			if isRetryableIcebergRESTSnapshotConflict(appendErr) {
 				if refreshErr := c.tbl.Refresh(attemptCtx); refreshErr != nil {
 					return fmt.Errorf("append table: %w (refresh after snapshot conflict: %v)", appendErr, refreshErr)
 				}
@@ -588,13 +453,13 @@ func (c *NessieSinkConnector) flushBatch(batchCtx context.Context, msgs []*types
 	})
 }
 
-// Close closes the Nessie sink connector.
-func (c *NessieSinkConnector) Close() error {
+// Close closes the Iceberg sink connector.
+func (c *IcebergSinkConnector) Close() error {
 	if c.guardClose() {
 		return nil
 	}
 	defer c.Unlock()
-	c.logger.Info("Closing Nessie sink connection", "table", c.config.Table)
+	c.logger.Info("Closing Iceberg sink connection", "table", c.config.Table)
 	c.tbl = nil
 	c.cat = nil
 	c.flattenMetadataSinkState = flattenMetadataSinkState{}
@@ -602,7 +467,7 @@ func (c *NessieSinkConnector) Close() error {
 	return nil
 }
 
-func (c *NessieSinkConnector) ensureFlattenMetadataTable(ctx context.Context, msgs []*types.Message) error {
+func (c *IcebergSinkConnector) ensureFlattenMetadataTable(ctx context.Context, msgs []*types.Message) error {
 	if !c.flattenMetadataColumns() || c.tbl != nil {
 		return nil
 	}
@@ -634,7 +499,7 @@ func (c *NessieSinkConnector) ensureFlattenMetadataTable(ctx context.Context, ms
 	return nil
 }
 
-func (c *NessieSinkConnector) buildArrowTableFromMessages(msgs []*types.Message) (arrow.Table, error) {
+func (c *IcebergSinkConnector) buildArrowTableFromMessages(msgs []*types.Message) (arrow.Table, error) {
 	if c.flattenMetadataColumns() {
 		if len(c.metaColumnNames) == 0 {
 			return nil, fmt.Errorf("flattenMetadataColumns: metadata columns not initialized")

@@ -168,6 +168,15 @@ func (r *SecretResolver) resolveSinkSpecRecursive(ctx context.Context, namespace
 				return err
 			}
 			return marshalConfig(sink.Config, &cfg)
+		case "iceberg":
+			var cfg dataflowv1.IcebergSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveIcebergSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(sink.Config, &cfg)
 		}
 	}
 	return nil
@@ -221,6 +230,15 @@ func (r *SecretResolver) resolveSourceSpec(ctx context.Context, namespace string
 				return err
 			}
 			if err := r.resolveNessieSourceSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(source.Config, &cfg)
+		case "iceberg":
+			var cfg dataflowv1.IcebergSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveIcebergSourceSpec(ctx, namespace, &cfg); err != nil {
 				return err
 			}
 			return marshalConfig(source.Config, &cfg)
@@ -285,6 +303,17 @@ func (r *SecretResolver) resolveSinkSpec(ctx context.Context, namespace string, 
 				return err
 			}
 			if err := r.resolveNessieSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			if err := marshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+		case "iceberg":
+			var cfg dataflowv1.IcebergSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveIcebergSinkSpec(ctx, namespace, &cfg); err != nil {
 				return err
 			}
 			if err := marshalConfig(sink.Config, &cfg); err != nil {
@@ -359,6 +388,17 @@ func (r *SecretResolver) resolveRouterSinks(ctx context.Context, namespace strin
 						return err
 					}
 					if err := r.resolveNessieSinkSpec(ctx, namespace, &cfg); err != nil {
+						return err
+					}
+					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+				case "iceberg":
+					var cfg dataflowv1.IcebergSinkSpec
+					if err := unmarshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+					if err := r.resolveIcebergSinkSpec(ctx, namespace, &cfg); err != nil {
 						return err
 					}
 					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
@@ -949,6 +989,144 @@ func (r *SecretResolver) resolveNessieSinkSpec(ctx context.Context, namespace st
 			return err
 		}
 		spec.BearerToken = value
+	}
+	if spec.NamespaceSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.NamespaceSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Namespace = value
+	}
+	if spec.TableSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TableSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Table = value
+	}
+	if spec.BasicAuth != nil {
+		if spec.BasicAuth.UsernameSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.UsernameSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Username = value
+		}
+		if spec.BasicAuth.PasswordSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.PasswordSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Password = value
+		}
+	}
+	return nil
+}
+
+func (r *SecretResolver) resolveIcebergSourceSpec(ctx context.Context, namespace string, spec *dataflowv1.IcebergSourceSpec) error {
+	if spec.CatalogURISecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.CatalogURISecretRef)
+		if err != nil {
+			return err
+		}
+		spec.CatalogURI = value
+	}
+	if spec.TokenSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TokenSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.BearerToken = value
+	}
+	if spec.OAuth2ServerURISecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.OAuth2ServerURISecretRef)
+		if err != nil {
+			return err
+		}
+		spec.OAuth2ServerURI = value
+	}
+	if spec.OAuth2ClientIDSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.OAuth2ClientIDSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.OAuth2ClientID = value
+	}
+	if spec.OAuth2ClientSecretSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.OAuth2ClientSecretSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.OAuth2ClientSecret = value
+	}
+	if spec.NamespaceSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.NamespaceSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Namespace = value
+	}
+	if spec.TableSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TableSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Table = value
+	}
+	if spec.BasicAuth != nil {
+		if spec.BasicAuth.UsernameSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.UsernameSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Username = value
+		}
+		if spec.BasicAuth.PasswordSecretRef != nil {
+			value, err := r.ResolveSecretValue(ctx, namespace, spec.BasicAuth.PasswordSecretRef)
+			if err != nil {
+				return err
+			}
+			spec.BasicAuth.Password = value
+		}
+	}
+	return nil
+}
+
+func (r *SecretResolver) resolveIcebergSinkSpec(ctx context.Context, namespace string, spec *dataflowv1.IcebergSinkSpec) error {
+	if spec.CatalogURISecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.CatalogURISecretRef)
+		if err != nil {
+			return err
+		}
+		spec.CatalogURI = value
+	}
+	if spec.TokenSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TokenSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.BearerToken = value
+	}
+	if spec.OAuth2ServerURISecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.OAuth2ServerURISecretRef)
+		if err != nil {
+			return err
+		}
+		spec.OAuth2ServerURI = value
+	}
+	if spec.OAuth2ClientIDSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.OAuth2ClientIDSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.OAuth2ClientID = value
+	}
+	if spec.OAuth2ClientSecretSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.OAuth2ClientSecretSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.OAuth2ClientSecret = value
 	}
 	if spec.NamespaceSecretRef != nil {
 		value, err := r.ResolveSecretValue(ctx, namespace, spec.NamespaceSecretRef)

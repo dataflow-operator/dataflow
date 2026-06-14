@@ -163,13 +163,11 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 		processorSentryEnvVars()...,
 	)
 	if resolvedSpec != nil {
-		if cfg, err := resolvedSpec.Sink.GetNessieConfig(); err == nil && cfg != nil {
-			s3Env, err := nessieSinkObjectStorageEnvWithResolve(ctx, r.secretResolver, req.Namespace, cfg)
-			if err != nil {
-				return fmt.Errorf("nessie sink object storage env: %w", err)
-			}
-			processorEnv = append(processorEnv, s3Env...)
+		s3Env, err := catalogSinkObjectStorageEnvWithResolve(ctx, r.secretResolver, req.Namespace, &resolvedSpec.Sink)
+		if err != nil {
+			return fmt.Errorf("catalog sink object storage env: %w", err)
 		}
+		processorEnv = append(processorEnv, s3Env...)
 	}
 
 	deployment := &appsv1.Deployment{

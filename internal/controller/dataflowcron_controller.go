@@ -124,13 +124,13 @@ func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc
 
 func (r *DataFlowCronReconciler) reconcileProcessorManifests(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	checkpointOn := checkpointPersistenceEnabled(resolvedSpec)
-	nessieLocalS3Secrets := nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, dfc.Namespace)
+	catalogLocalS3Secrets := catalogSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, dfc.Namespace)
 	if checkpointOn {
 		if _, err := createOrUpdateCheckpointConfigMap(ctx, r.Client, r.Scheme, dfc.Namespace, dfc.Name, dfc); err != nil {
 			return fmt.Errorf("checkpoint ConfigMap: %w", err)
 		}
 	}
-	if checkpointOn || nessieLocalS3Secrets {
+	if checkpointOn || catalogLocalS3Secrets {
 		if err := createOrUpdateProcessorRBAC(ctx, r.Client, r.Scheme, dfc.Namespace, dfc.Name, dfc, resolvedSpec); err != nil {
 			return fmt.Errorf("processor RBAC: %w", err)
 		}

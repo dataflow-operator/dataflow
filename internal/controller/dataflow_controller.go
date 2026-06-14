@@ -513,7 +513,7 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 	}
 
 	checkpointOn := resolvedSpec.CheckpointPersistence == nil || *resolvedSpec.CheckpointPersistence
-	nessieLocalS3Secrets := nessieSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, req.Namespace)
+	nessieLocalS3Secrets := catalogSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, req.Namespace)
 
 	if checkpointOn {
 		if err := r.createOrUpdateCheckpointConfigMap(ctx, req, dataflow); err != nil {

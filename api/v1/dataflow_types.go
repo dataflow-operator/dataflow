@@ -161,6 +161,11 @@ func (s *SourceSpec) GetNessieConfig() (*NessieSourceSpec, error) {
 	return getTypedConfig[NessieSourceSpec](s.Config)
 }
 
+// GetIcebergConfig returns Iceberg REST catalog source config.
+func (s *SourceSpec) GetIcebergConfig() (*IcebergSourceSpec, error) {
+	return getTypedConfig[IcebergSourceSpec](s.Config)
+}
+
 // KafkaSourceSpec defines Kafka source configuration
 type KafkaSourceSpec struct {
 	// Brokers is a list of Kafka broker addresses
@@ -508,6 +513,113 @@ type NessieSourceSpec struct {
 	SnapshotCheckpoints *bool `json:"snapshotCheckpoints,omitempty"`
 }
 
+// IcebergRESTAuthenticationType selects how Authorization is sent to the Iceberg REST catalog.
+type IcebergRESTAuthenticationType = NessieAuthenticationType
+
+const (
+	IcebergRESTAuthenticationAuto   = NessieAuthenticationAuto
+	IcebergRESTAuthenticationBearer = NessieAuthenticationBearer
+	IcebergRESTAuthenticationBasic  = NessieAuthenticationBasic
+	IcebergRESTAuthenticationNone   = NessieAuthenticationNone
+)
+
+// IcebergSourceSpec defines Apache Iceberg REST catalog source configuration.
+type IcebergSourceSpec struct {
+	// CatalogURI is the REST catalog base URL (e.g. https://catalog:8181).
+	CatalogURI string `json:"catalogURI"`
+
+	// Prefix is the optional REST catalog path prefix (multi-tenant /v1/{prefix}/...).
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// Warehouse is the optional warehouse identifier passed to the catalog.
+	// +optional
+	Warehouse string `json:"warehouse,omitempty"`
+
+	// Namespace is the schema/namespace of the Iceberg table.
+	Namespace string `json:"namespace"`
+
+	// Table is the Iceberg table name.
+	Table string `json:"table"`
+
+	// Query for custom filter (optional). If empty, full table scan.
+	// +optional
+	Query string `json:"query,omitempty"`
+
+	// PollInterval in seconds for polling mode.
+	// +optional
+	PollInterval *int32 `json:"pollInterval,omitempty"`
+
+	// BasicAuth for Iceberg REST catalog.
+	// +optional
+	BasicAuth *BasicAuthConfig `json:"basicAuth,omitempty"`
+
+	// BearerToken for Iceberg REST (optional if TokenSecretRef is set).
+	// +optional
+	BearerToken string `json:"bearerToken,omitempty"`
+
+	// AuthenticationType controls how Authorization header is sent to the REST catalog.
+	// Supported: AUTO (default), BEARER, BASIC, NONE.
+	// +optional
+	AuthenticationType IcebergRESTAuthenticationType `json:"authenticationType,omitempty"`
+
+	// OAuth2ServerURI overrides the OAuth2 token endpoint (optional).
+	// +optional
+	OAuth2ServerURI string `json:"oauth2ServerURI,omitempty"`
+
+	// OAuth2ClientID for client credentials flow (optional if OAuth2ClientIDSecretRef is set).
+	// +optional
+	OAuth2ClientID string `json:"oauth2ClientID,omitempty"`
+
+	// OAuth2ClientSecret for client credentials flow (optional if OAuth2ClientSecretSecretRef is set).
+	// +optional
+	OAuth2ClientSecret string `json:"oauth2ClientSecret,omitempty"`
+
+	// OAuth2Scope for client credentials flow (default: catalog).
+	// +optional
+	OAuth2Scope string `json:"oauth2Scope,omitempty"`
+
+	// CatalogURISecretRef references a Kubernetes secret for catalog URI.
+	// +optional
+	CatalogURISecretRef *SecretRef `json:"catalogURISecretRef,omitempty"`
+
+	// TokenSecretRef references a Kubernetes secret for bearer token.
+	// +optional
+	TokenSecretRef *SecretRef `json:"tokenSecretRef,omitempty"`
+
+	// OAuth2ServerURISecretRef references a Kubernetes secret for OAuth2 server URI.
+	// +optional
+	OAuth2ServerURISecretRef *SecretRef `json:"oauth2ServerURISecretRef,omitempty"`
+
+	// OAuth2ClientIDSecretRef references a Kubernetes secret for OAuth2 client ID.
+	// +optional
+	OAuth2ClientIDSecretRef *SecretRef `json:"oauth2ClientIDSecretRef,omitempty"`
+
+	// OAuth2ClientSecretSecretRef references a Kubernetes secret for OAuth2 client secret.
+	// +optional
+	OAuth2ClientSecretSecretRef *SecretRef `json:"oauth2ClientSecretSecretRef,omitempty"`
+
+	// NamespaceSecretRef references a Kubernetes secret for namespace.
+	// +optional
+	NamespaceSecretRef *SecretRef `json:"namespaceSecretRef,omitempty"`
+
+	// TableSecretRef references a Kubernetes secret for table name.
+	// +optional
+	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// IncrementalBySnapshot enables incremental reads using the Iceberg snapshot chain.
+	// +optional
+	IncrementalBySnapshot *bool `json:"incrementalBySnapshot,omitempty"`
+
+	// StartSnapshotID is the snapshot ID to start from when no checkpoint exists.
+	// +optional
+	StartSnapshotID string `json:"startSnapshotID,omitempty"`
+
+	// SnapshotCheckpoints persists snapshot progress to the checkpoint store when true.
+	// +optional
+	SnapshotCheckpoints *bool `json:"snapshotCheckpoints,omitempty"`
+}
+
 // KeycloakConfig defines Keycloak OAuth2/OIDC authentication configuration
 type KeycloakConfig struct {
 	// ServerURL is the Keycloak server URL (e.g., https://keycloak.example.com/auth)
@@ -603,6 +715,11 @@ func (s *SinkSpec) GetNessieConfig() (*NessieSinkSpec, error) {
 	return getTypedConfig[NessieSinkSpec](s.Config)
 }
 
+// GetIcebergConfig returns Iceberg REST catalog sink config.
+func (s *SinkSpec) GetIcebergConfig() (*IcebergSinkSpec, error) {
+	return getTypedConfig[IcebergSinkSpec](s.Config)
+}
+
 // NessieSinkSpec defines Nessie (Iceberg REST catalog) sink configuration.
 // Writes are committed to the given branch via the catalog.
 type NessieSinkSpec struct {
@@ -691,8 +808,118 @@ type NessieSinkSpec struct {
 	SecretAccessKeySecretRef *SecretRef `json:"secretAccessKeySecretRef,omitempty"`
 }
 
+// IcebergSinkSpec defines Apache Iceberg REST catalog sink configuration.
+type IcebergSinkSpec struct {
+	// CatalogURI is the REST catalog base URL (e.g. https://catalog:8181).
+	CatalogURI string `json:"catalogURI"`
+
+	// Prefix is the optional REST catalog path prefix.
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// Warehouse is the optional warehouse identifier.
+	// +optional
+	Warehouse string `json:"warehouse,omitempty"`
+
+	// Namespace is the schema/namespace of the Iceberg table.
+	Namespace string `json:"namespace"`
+
+	// Table is the Iceberg table name.
+	Table string `json:"table"`
+
+	// BatchSize for batch appends.
+	// +optional
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached.
+	// +optional
+	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
+
+	// AutoCreateTable creates the table if it does not exist.
+	// +optional
+	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
+
+	// RawMode when true, creates table with data and _metadata string columns.
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
+
+	FlattenMetadataSpec `json:",inline"`
+
+	// BasicAuth for Iceberg REST catalog.
+	// +optional
+	BasicAuth *BasicAuthConfig `json:"basicAuth,omitempty"`
+
+	// BearerToken for Iceberg REST (optional if TokenSecretRef is set).
+	// +optional
+	BearerToken string `json:"bearerToken,omitempty"`
+
+	// AuthenticationType controls how Authorization header is sent to the REST catalog.
+	// +optional
+	AuthenticationType IcebergRESTAuthenticationType `json:"authenticationType,omitempty"`
+
+	// OAuth2ServerURI overrides the OAuth2 token endpoint (optional).
+	// +optional
+	OAuth2ServerURI string `json:"oauth2ServerURI,omitempty"`
+
+	// OAuth2ClientID for client credentials flow.
+	// +optional
+	OAuth2ClientID string `json:"oauth2ClientID,omitempty"`
+
+	// OAuth2ClientSecret for client credentials flow.
+	// +optional
+	OAuth2ClientSecret string `json:"oauth2ClientSecret,omitempty"`
+
+	// OAuth2Scope for client credentials flow (default: catalog).
+	// +optional
+	OAuth2Scope string `json:"oauth2Scope,omitempty"`
+
+	// CatalogURISecretRef references a Kubernetes secret for catalog URI.
+	// +optional
+	CatalogURISecretRef *SecretRef `json:"catalogURISecretRef,omitempty"`
+
+	// TokenSecretRef references a Kubernetes secret for bearer token.
+	// +optional
+	TokenSecretRef *SecretRef `json:"tokenSecretRef,omitempty"`
+
+	// OAuth2ServerURISecretRef references a Kubernetes secret for OAuth2 server URI.
+	// +optional
+	OAuth2ServerURISecretRef *SecretRef `json:"oauth2ServerURISecretRef,omitempty"`
+
+	// OAuth2ClientIDSecretRef references a Kubernetes secret for OAuth2 client ID.
+	// +optional
+	OAuth2ClientIDSecretRef *SecretRef `json:"oauth2ClientIDSecretRef,omitempty"`
+
+	// OAuth2ClientSecretSecretRef references a Kubernetes secret for OAuth2 client secret.
+	// +optional
+	OAuth2ClientSecretSecretRef *SecretRef `json:"oauth2ClientSecretSecretRef,omitempty"`
+
+	// NamespaceSecretRef references a Kubernetes secret for namespace.
+	// +optional
+	NamespaceSecretRef *SecretRef `json:"namespaceSecretRef,omitempty"`
+
+	// TableSecretRef references a Kubernetes secret for table name.
+	// +optional
+	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// S3Endpoint is the S3-compatible API endpoint URL for iceberg-go/AWS SDK.
+	// +optional
+	S3Endpoint string `json:"s3Endpoint,omitempty"`
+
+	// S3Region is the region passed as AWS_REGION for object storage operations.
+	// +optional
+	S3Region string `json:"s3Region,omitempty"`
+
+	// AccessKeySecretRef references a Kubernetes Secret key for the S3 access key ID.
+	// +optional
+	AccessKeySecretRef *SecretRef `json:"accessKeySecretRef,omitempty"`
+
+	// SecretAccessKeySecretRef references a Kubernetes Secret key for the S3 secret access key.
+	// +optional
+	SecretAccessKeySecretRef *SecretRef `json:"secretAccessKeySecretRef,omitempty"`
+}
+
 // FlattenMetadataSpec configures writing msg.Metadata as separate columns instead of a single _metadata field.
-// Requires rawMode on the sink. Supported by PostgreSQL, Trino, ClickHouse, and Nessie sinks.
+// Requires rawMode on the sink. Supported by PostgreSQL, Trino, ClickHouse, Nessie, and Iceberg sinks.
 type FlattenMetadataSpec struct {
 	// FlattenMetadataColumns when true, writes each metadata key as a separate column instead of _metadata.
 	// +optional

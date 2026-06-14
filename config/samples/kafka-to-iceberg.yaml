@@ -1,0 +1,27 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-iceberg
+spec:
+  source:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: iceberg
+    config:
+      catalogURI: "https://iceberg-catalog.example.com"
+      prefix: production
+      warehouse: main
+      authenticationType: BEARER
+      bearerToken: "replace-with-token"
+      namespace: analytics
+      table: events
+      batchSize: 100
+      autoCreateTable: true
+      rawMode: true
+      flattenMetadataColumns: true
+      flattenMetadataColumnsPrefix: kafka_
