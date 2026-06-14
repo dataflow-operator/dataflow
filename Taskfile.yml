@@ -103,80 +103,8 @@ tasks:
   sync-crd-to-helm:
     desc: Sync generated CRD into Helm chart template (wraps CRD with Helm conditionals)
     deps: [manifests]
-    vars:
-      CRD_SOURCE: config/crd/bases/dataflow.dataflow.io_dataflows.yaml
-      HELM_TARGET: ../helm-charts/charts/dataflow-operator/templates/crd.yaml
-      CRON_CRD_SOURCE: config/crd/bases/dataflow.dataflow.io_dataflowcrons.yaml
-      CRON_HELM_TARGET: ../helm-charts/charts/dataflow-operator/templates/crd-dataflowcrons.yaml
     cmds:
-      - |
-        HEADER='{{- if .Values.crds.install }}'
-        FOOTER='{{- end }}'
-        LABELS_BLOCK='  labels:
-            {{- include "dataflow-operator.labels" . | nindent 4 }}'
-        KEEP_BLOCK='    {{- if .Values.crds.keep }}
-            "helm.sh/resource-policy": keep
-            {{- end }}'
-
-        {
-          echo "$HEADER"
-          awk '
-            /^---$/ { next }
-            /^metadata:$/ {
-              print
-              getline
-              # annotations block
-              if ($0 ~ /^  annotations:/) {
-                print
-                # print existing annotations
-                while (getline > 0 && $0 ~ /^    [^ ]/) {
-                  print
-                }
-                # insert keep annotation block
-                printf "%s\n", "'"$KEEP_BLOCK"'"
-                # insert labels block
-                printf "%s\n", "'"$LABELS_BLOCK"'"
-                print
-              }
-              next
-            }
-            { print }
-          ' "{{.CRD_SOURCE}}"
-          echo "$FOOTER"
-        } > "{{.HELM_TARGET}}"
-        echo "Synced CRD to {{.HELM_TARGET}}"
-      - |
-        HEADER='{{- if .Values.crds.install }}'
-        FOOTER='{{- end }}'
-        LABELS_BLOCK='  labels:
-            {{- include "dataflow-operator.labels" . | nindent 4 }}'
-        KEEP_BLOCK='    {{- if .Values.crds.keep }}
-            "helm.sh/resource-policy": keep
-            {{- end }}'
-
-        {
-          echo "$HEADER"
-          awk '
-            /^---$/ { next }
-            /^metadata:$/ {
-              print
-              getline
-              if ($0 ~ /^  annotations:/) {
-                print
-                while (getline > 0 && $0 ~ /^    [^ ]/) {
-                  print
-                }
-                printf "%s\n", "'"$KEEP_BLOCK"'"
-                printf "%s\n", "'"$LABELS_BLOCK"'"
-                print
-              }
-              next
-            }
-            { print }
-          ' "{{.CRON_CRD_SOURCE}}"
-          echo "$FOOTER"
-        } > "{{.CRON_HELM_TARGET}}"
-        echo "Synced CRD to {{.CRON_HELM_TARGET}}"
+      - bash scripts/sync-crd-to-helm.sh
 
   # Deployment tasks
   install:
