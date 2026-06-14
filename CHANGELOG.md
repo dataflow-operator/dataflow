@@ -1,5 +1,9 @@
 ## Commits
 
+- d5071a2 feat: add PostgreSQL CDC source configuration and validation
+
+## Commits
+
 - 612add5 docs: add Agent Skills section to README with links to GitHub and documentation
 
 ## Commits
