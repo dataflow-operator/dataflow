@@ -63,6 +63,18 @@ func TestBatchWriteContext(t *testing.T) {
 	})
 }
 
+func TestApplyAckGranularity(t *testing.T) {
+	cfg := BatchWriteConfig{MaxBatchSize: 100, FlushInterval: 5 * time.Second}
+	assert.Equal(t, 100, cfg.MaxBatchSize)
+
+	messageCfg := ApplyAckGranularity(cfg, true)
+	assert.Equal(t, 1, messageCfg.MaxBatchSize)
+	assert.Equal(t, 5*time.Second, messageCfg.FlushInterval)
+
+	batchCfg := ApplyAckGranularity(cfg, false)
+	assert.Equal(t, 100, batchCfg.MaxBatchSize)
+}
+
 func TestNewBatchWriteConfig(t *testing.T) {
 	batchSizeVal := int32(50)
 	flushSecVal := int32(5)

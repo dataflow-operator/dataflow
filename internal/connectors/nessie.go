@@ -640,13 +640,13 @@ func (c *NessieSinkConnector) Write(ctx context.Context, messages <-chan *types.
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100)
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100), c.ackGranularityIsMessage())
 	return RunBatchWriteLoop(ctx, messages, cfg, BatchWriteOptions{
 		Logger:    c.logger,
 		LogFields: []any{"table", c.config.Table},
 		OnFlush:   c.flushBatch,
 		OnAck: func(msgs []*types.Message) {
-			c.AckMessagesAndNotifyProgress(msgs)
+			c.AckAfterSuccessfulWrite(msgs)
 		},
 	})
 }

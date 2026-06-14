@@ -88,6 +88,14 @@ type DataFlowSpec struct {
 	// +optional
 	CheckpointSaveInterval *metav1.Duration `json:"checkpointSaveInterval,omitempty"`
 
+	// AckGranularity controls when source offsets are committed relative to sink writes.
+	// "batch" (default): commit after each sink batch flush.
+	// "message": commit after each message is successfully written (reduces re-read window for Kafka→batch sink).
+	// +kubebuilder:validation:Enum=batch;message
+	// +kubebuilder:default:=batch
+	// +optional
+	AckGranularity string `json:"ackGranularity,omitempty"`
+
 	// ChannelBufferSize is the buffer size for message channels between source, processor, and sink.
 	// Larger values reduce blocking when sink is slower than source (e.g. high Kafka throughput).
 	// Default: 100. Recommended for high throughput: 500–1000.

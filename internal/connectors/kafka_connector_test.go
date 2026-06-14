@@ -1092,3 +1092,128 @@ func TestKafkaConsumeClaim_ProgressHeartbeat(t *testing.T) {
 		t.Fatalf("progressCalls = %d, want at least 1", progressCalls.Load())
 	}
 }
+
+type countingConsumerGroupSession struct {
+	mockConsumerGroupSession
+	markCount   atomic.Int32
+	commitCount atomic.Int32
+}
+
+func (s *countingConsumerGroupSession) MarkMessage(*sarama.ConsumerMessage, string) {
+	s.markCount.Add(1)
+}
+
+func (s *countingConsumerGroupSession) Commit() {
+	s.commitCount.Add(1)
+}
+
+func waitForAckMarks(t *testing.T, session *countingConsumerGroupSession, wantMarks int32, wantCommits int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if session.markCount.Load() == wantMarks && session.commitCount.Load() == wantCommits {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("markCount = %d, want %d; commitCount = %d, want %d",
+		session.markCount.Load(), wantMarks, session.commitCount.Load(), wantCommits)
+}
+
+func TestConsumeClaim_AckGranularity_MessageCommitsOffsets(t *testing.T) {
+	t.Parallel()
+
+	claim := &mockConsumerGroupClaim{
+		ch: make(chan *sarama.ConsumerMessage, 1),
+	}
+	consumerMsg := &sarama.ConsumerMessage{Value: []byte(`{}`), Offset: 7}
+	claim.ch <- consumerMsg
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	session := &countingConsumerGroupSession{mockConsumerGroupSession: mockConsumerGroupSession{ctx: ctx}}
+	msgChan := make(chan *types.Message, 1)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.SetAckGranularity(v1.AckGranularityMessage)
+
+	handler := &kafkaConsumerGroupHandler{
+		connector: k,
+		msgChan:   msgChan,
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.ConsumeClaim(session, claim)
+	}()
+
+	var msg *types.Message
+	select {
+	case msg = <-msgChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for message")
+	}
+	if msg.Ack == nil {
+		t.Fatal("expected Ack callback")
+	}
+	msg.Ack()
+	waitForAckMarks(t, session, 1, 1)
+
+	close(claim.ch)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for ConsumeClaim exit")
+	}
+}
+
+func TestConsumeClaim_AckGranularity_BatchDoesNotCommitImmediately(t *testing.T) {
+	t.Parallel()
+
+	claim := &mockConsumerGroupClaim{
+		ch: make(chan *sarama.ConsumerMessage, 1),
+	}
+	claim.ch <- &sarama.ConsumerMessage{Value: []byte(`{}`)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	session := &countingConsumerGroupSession{mockConsumerGroupSession: mockConsumerGroupSession{ctx: ctx}}
+	msgChan := make(chan *types.Message, 1)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.SetAckGranularity(v1.AckGranularityBatch)
+
+	handler := &kafkaConsumerGroupHandler{
+		connector: k,
+		msgChan:   msgChan,
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.ConsumeClaim(session, claim)
+	}()
+
+	var msg *types.Message
+	select {
+	case msg = <-msgChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for message")
+	}
+	msg.Ack()
+	waitForAckMarks(t, session, 1, 0)
+
+	close(claim.ch)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for ConsumeClaim exit")
+	}
+}

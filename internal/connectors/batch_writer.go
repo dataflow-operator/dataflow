@@ -65,6 +65,14 @@ func NewBatchWriteConfig(batchSize, flushIntervalSec *int32, defaultBatchSize in
 	}
 }
 
+// ApplyAckGranularity forces single-message batches when per-message ack is enabled.
+func ApplyAckGranularity(cfg BatchWriteConfig, messageAck bool) BatchWriteConfig {
+	if messageAck {
+		cfg.MaxBatchSize = 1
+	}
+	return cfg
+}
+
 // BatchWriteContext returns a context detached from parent cancellation.
 // Parent cancel (SIGTERM) must not abort in-flight batch IO; timeout bounds duration.
 // Uses a shorter timeout when parent is already cancelled (shutdown flush).

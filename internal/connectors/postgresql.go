@@ -620,6 +620,9 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 	if batchSize == 0 {
 		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
 	}
+	if p.ackGranularityIsMessage() {
+		maxBatchSize = 1
+	}
 
 	flushIntervalSec := 10
 	if p.config.BatchFlushIntervalSeconds != nil {
@@ -659,7 +662,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		for _, m := range batchMessages {
 			p.RecordMessageWritten(getRouteFromMessage(m))
 		}
-		p.AckMessagesAndNotifyProgress(batchMessages)
+		p.AckAfterSuccessfulWrite(batchMessages)
 		batch = &pgx.Batch{}
 		batchMessages = make([]*types.Message, 0, maxBatchSize)
 		count = 0
@@ -958,18 +961,39 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 }
 
 func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.Batch) error {
+	if batch.Len() == 0 {
+		return nil
+	}
 	batchStart := time.Now()
 	p.logger.V(1).Info("Executing batch", "batchSize", batch.Len(), "table", p.config.Table)
-	br := p.conn.SendBatch(ctx, batch)
-	defer br.Close()
 
+	tx, err := p.conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	br := tx.SendBatch(ctx, batch)
 	for i := 0; i < batch.Len(); i++ {
-		_, err := br.Exec()
-		if err != nil {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
 			p.logger.Error(err, "Batch statement failed", "statementIndex", i, "batchSize", batch.Len(), "table", p.config.Table)
 			return fmt.Errorf("batch execution error: %w", err)
 		}
 	}
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("batch close error: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	committed = true
+
 	p.firstWriteOnce.Do(func() {
 		p.logger.Info("First message written to sink", "table", p.config.Table)
 	})

@@ -839,6 +839,13 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 
 	markChan := make(chan *sarama.ConsumerMessage, kafkaMarkChannelBuffer)
 
+	markMessage := func(message *sarama.ConsumerMessage) {
+		session.MarkMessage(message, "")
+		if h.connector.ackGranularityIsMessage() {
+			session.Commit()
+		}
+	}
+
 	markPending := func(message *sarama.ConsumerMessage) {
 		select {
 		case markChan <- message:
@@ -850,7 +857,7 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 		for {
 			select {
 			case m := <-markChan:
-				session.MarkMessage(m, "")
+				markMessage(m)
 			default:
 				return
 			}
@@ -905,13 +912,13 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 					h.connector.RecordMessageRead()
 					enqueued = true
 				case m := <-markChan:
-					session.MarkMessage(m, "")
+					markMessage(m)
 				case <-session.Context().Done():
 					return nil
 				}
 			}
 		case m := <-markChan:
-			session.MarkMessage(m, "")
+			markMessage(m)
 		case <-session.Context().Done():
 			return nil
 		}

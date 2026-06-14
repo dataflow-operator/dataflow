@@ -337,6 +337,9 @@ func (p *Processor) initConnector(connector interface{}, logger logr.Logger) {
 			sc.SetCheckpointBatchAckSyncer(syncer)
 		}
 	}
+	if ag, ok := connector.(interface{ SetAckGranularity(string) }); ok {
+		ag.SetAckGranularity(v1.AckGranularityOrDefault(p.spec))
+	}
 }
 
 // processMessages applies transformations to messages

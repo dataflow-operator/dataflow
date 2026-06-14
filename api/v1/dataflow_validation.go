@@ -45,7 +45,26 @@ func ValidateDataFlowSpec(spec *DataFlowSpec) field.ErrorList {
 	all = append(all, validateTransformations(spec.Transformations, f.Child("transformations"))...)
 	all = append(all, validateResources(spec.Resources, f.Child("resources"))...)
 	all = append(all, validateReplicas(spec, f)...)
+	all = append(all, validateAckGranularity(spec, f)...)
 	return all
+}
+
+func validateAckGranularity(spec *DataFlowSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	if spec == nil || spec.AckGranularity == "" {
+		return all
+	}
+	switch spec.AckGranularity {
+	case AckGranularityBatch, AckGranularityMessage:
+		return all
+	default:
+		return field.ErrorList{
+			field.NotSupported(f.Child("ackGranularity"), spec.AckGranularity, []string{
+				AckGranularityBatch,
+				AckGranularityMessage,
+			}),
+		}
+	}
 }
 
 // ValidateDataFlowCronSpec validates DataFlowCron spec and returns field errors.

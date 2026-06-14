@@ -715,7 +715,7 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100)
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100), c.ackGranularityIsMessage())
 	batchSize := cfg.MaxBatchSize
 	if c.config.BatchSize != nil {
 		batchSize = int(*c.config.BatchSize)
@@ -757,7 +757,7 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			return true
 		},
 		OnAck: func(msgs []*types.Message) {
-			c.AckMessagesAndNotifyProgress(msgs)
+			c.AckAfterSuccessfulWrite(msgs)
 		},
 	})
 }

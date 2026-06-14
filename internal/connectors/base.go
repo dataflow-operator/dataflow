@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/metrics"
@@ -174,6 +175,7 @@ func (c *connectorMetadata) SetMetadata(namespace, name string) {
 type progressRecorder struct {
 	onProgress     func()
 	batchAckSyncer checkpoint.BatchAckSyncer
+	ackGranularity string
 }
 
 // SetProgressCallback registers a callback for liveness/progress probes.
@@ -184,6 +186,19 @@ func (p *progressRecorder) SetProgressCallback(fn func()) {
 // SetCheckpointBatchAckSyncer registers a callback to flush checkpoint after sink batch ack.
 func (p *progressRecorder) SetCheckpointBatchAckSyncer(syncer checkpoint.BatchAckSyncer) {
 	p.batchAckSyncer = syncer
+}
+
+// SetAckGranularity configures per-batch or per-message source offset commits.
+func (p *progressRecorder) SetAckGranularity(granularity string) {
+	if granularity == v1.AckGranularityMessage {
+		p.ackGranularity = v1.AckGranularityMessage
+		return
+	}
+	p.ackGranularity = v1.AckGranularityBatch
+}
+
+func (p *progressRecorder) ackGranularityIsMessage() bool {
+	return p.ackGranularity == v1.AckGranularityMessage
 }
 
 func (p *progressRecorder) notifyProgress() {
@@ -215,6 +230,20 @@ func (p *progressRecorder) AckMessagesAndNotifyProgress(msgs []*types.Message) {
 	AckMessages(msgs)
 	p.flushCheckpointAfterBatchAck()
 	p.notifyProgress()
+}
+
+// AckAfterSuccessfulWrite commits source offsets using the configured ack granularity.
+func (p *progressRecorder) AckAfterSuccessfulWrite(msgs []*types.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	if p.ackGranularityIsMessage() {
+		for _, m := range msgs {
+			p.AckMessageAndNotifyProgress(m)
+		}
+		return
+	}
+	p.AckMessagesAndNotifyProgress(msgs)
 }
 
 func (p *progressRecorder) flushCheckpointAfterBatchAck() {

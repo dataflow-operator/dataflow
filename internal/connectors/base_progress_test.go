@@ -111,3 +111,42 @@ func TestProgressRecorder_SyncerInterface(t *testing.T) {
 
 	var _ checkpoint.BatchAckSyncer = (*mockBatchAckSyncer)(nil)
 }
+
+func TestAckAfterSuccessfulWrite_BatchGranularity(t *testing.T) {
+	t.Parallel()
+
+	var ackCalls atomic.Int32
+	rec := &progressRecorder{}
+	rec.SetAckGranularity("batch")
+
+	msg1 := types.NewMessage([]byte(`{"a":1}`))
+	msg1.Ack = func() { ackCalls.Add(1) }
+	msg2 := types.NewMessage([]byte(`{"a":2}`))
+	msg2.Ack = func() { ackCalls.Add(1) }
+
+	rec.AckAfterSuccessfulWrite([]*types.Message{msg1, msg2})
+	assert.Equal(t, int32(2), ackCalls.Load())
+}
+
+func TestAckAfterSuccessfulWrite_MessageGranularity(t *testing.T) {
+	t.Parallel()
+
+	var ackCalls atomic.Int32
+	var progressCalls atomic.Int32
+	syncer := &mockBatchAckSyncer{}
+
+	rec := &progressRecorder{}
+	rec.SetAckGranularity("message")
+	rec.SetProgressCallback(func() { progressCalls.Add(1) })
+	rec.SetCheckpointBatchAckSyncer(syncer)
+
+	msg1 := types.NewMessage([]byte(`{"a":1}`))
+	msg1.Ack = func() { ackCalls.Add(1) }
+	msg2 := types.NewMessage([]byte(`{"a":2}`))
+	msg2.Ack = func() { ackCalls.Add(1) }
+
+	rec.AckAfterSuccessfulWrite([]*types.Message{msg1, msg2})
+	assert.Equal(t, int32(2), ackCalls.Load())
+	assert.Equal(t, int32(2), progressCalls.Load())
+	assert.Equal(t, int32(2), syncer.calls.Load())
+}

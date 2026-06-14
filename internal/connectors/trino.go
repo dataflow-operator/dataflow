@@ -509,7 +509,7 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := NewBatchWriteConfig(t.config.BatchSize, t.config.BatchFlushIntervalSeconds, 1)
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(t.config.BatchSize, t.config.BatchFlushIntervalSeconds, 1), t.ackGranularityIsMessage())
 	batchSize := 1
 	if t.config.BatchSize != nil {
 		batchSize = int(*t.config.BatchSize)
@@ -547,7 +547,7 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 					t.logger.V(1).Info("Message has no Ack callback", logkeys.MessageID, types.MessageID(m))
 				}
 			}
-			t.AckMessagesAndNotifyProgress(msgs)
+			t.AckAfterSuccessfulWrite(msgs)
 			t.logger.V(1).Info("Committed source offsets after successful batch", "batchSize", len(msgs), logkeys.MessageID, firstMsgID)
 		},
 		OnMessage: func(msg *types.Message) bool {

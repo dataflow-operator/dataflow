@@ -37,6 +37,16 @@ spec:
             type: object
           spec:
             properties:
+              ackGranularity:
+                default: batch
+                description: |-
+                  AckGranularity controls when source offsets are committed relative to sink writes.
+                  "batch" (default): commit after each sink batch flush.
+                  "message": commit after each message is successfully written (reduces re-read window for Kafka→batch sink).
+                enum:
+                - batch
+                - message
+                type: string
               affinity:
                 description: Affinity is a group of affinity scheduling rules
                 properties:
