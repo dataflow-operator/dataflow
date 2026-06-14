@@ -300,6 +300,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Check Deployment status
 	deployment := &appsv1.Deployment{}
+	deploymentFound := false
 	deploymentName := k8snames.ProcessorDeployment(dataflow.Name)
 	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: req.Namespace}, deployment); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -313,6 +314,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 	} else {
+		deploymentFound = true
 		desired := desiredProcessorReplicas(&dataflow.Spec)
 		ready := deployment.Status.ReadyReplicas
 		// Update status based on Deployment state
@@ -341,6 +343,13 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			dataflow.Status.Message = "No replicas available"
 			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, "DeploymentUnavailable")
 		}
+	}
+
+	if err := r.tryConsumeCheckpointResetAfterRollout(ctx, req.NamespacedName, &dataflow, deployment, deploymentFound); err != nil {
+		metrics.RecordControllerReconcileError("consume_checkpoint_reset")
+		metrics.ObserveControllerReconcileDuration("error", time.Since(start).Seconds())
+		log.Error(err, "failed to clear checkpoint reset flags")
+		return ctrl.Result{}, err
 	}
 
 	// Update metrics with current status
@@ -478,7 +487,7 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 		return err
 	}
 
-	resetRequested := applyCheckpointResetIntent(dataflow, resolvedSpec)
+	applyCheckpointResetIntent(dataflow, resolvedSpec)
 
 	if err := validateNessieSinkObjectStorageRefs(&resolvedSpec.Sink); err != nil {
 		log.Error(err, "invalid Nessie sink object storage configuration")
@@ -567,13 +576,6 @@ func (r *DataFlowReconciler) reconcileResources(ctx context.Context, req ctrl.Re
 			log.Error(updateErr, "unable to update DataFlow status")
 		}
 		return err
-	}
-
-	if resetRequested {
-		if err := r.consumeCheckpointResetFlags(ctx, req.NamespacedName); err != nil {
-			log.Error(err, "failed to clear checkpoint reset flags")
-			return err
-		}
 	}
 
 	return nil

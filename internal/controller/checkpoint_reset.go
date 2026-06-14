@@ -20,20 +20,28 @@ import (
 	"context"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// checkpointResetPending reports whether the DataFlow CR still carries one-shot checkpoint reset markers.
+func checkpointResetPending(df *dataflowv1.DataFlow) bool {
+	if df == nil {
+		return false
+	}
+	if dataflowv1.CheckpointResetRequested(&df.Spec) {
+		return true
+	}
+	return df.Annotations != nil && df.Annotations[dataflowv1.AnnotationResetCheckpoint] == "true"
+}
 
 // applyCheckpointResetIntent sets resolvedSpec.CheckpointReset when the user requested a one-shot reset.
 func applyCheckpointResetIntent(df *dataflowv1.DataFlow, resolvedSpec *dataflowv1.DataFlowSpec) bool {
 	if df == nil || resolvedSpec == nil {
 		return false
 	}
-	reset := dataflowv1.CheckpointResetRequested(&df.Spec)
-	if df.Annotations != nil && df.Annotations[dataflowv1.AnnotationResetCheckpoint] == "true" {
-		reset = true
-	}
-	if !reset {
+	if !checkpointResetPending(df) {
 		return false
 	}
 	trueVal := true
@@ -41,7 +49,37 @@ func applyCheckpointResetIntent(df *dataflowv1.DataFlow, resolvedSpec *dataflowv
 	return true
 }
 
-// consumeCheckpointResetFlags clears one-shot reset markers from the DataFlow CR after they were propagated to the processor spec.
+// processorDeploymentRolloutReady reports whether the processor Deployment finished rolling out the current spec.
+func processorDeploymentRolloutReady(deployment *appsv1.Deployment, desired int32) bool {
+	if deployment == nil || desired <= 0 {
+		return false
+	}
+	status := deployment.Status
+	if deployment.Generation > status.ObservedGeneration {
+		return false
+	}
+	return status.UpdatedReplicas >= desired && status.ReadyReplicas >= desired
+}
+
+// tryConsumeCheckpointResetAfterRollout clears one-shot reset markers only after the processor Deployment rollout completes.
+func (r *DataFlowReconciler) tryConsumeCheckpointResetAfterRollout(
+	ctx context.Context,
+	req types.NamespacedName,
+	dataflow *dataflowv1.DataFlow,
+	deployment *appsv1.Deployment,
+	deploymentFound bool,
+) error {
+	if !checkpointResetPending(dataflow) || !deploymentFound {
+		return nil
+	}
+	desired := desiredProcessorReplicas(&dataflow.Spec)
+	if !processorDeploymentRolloutReady(deployment, desired) {
+		return nil
+	}
+	return r.consumeCheckpointResetFlags(ctx, req)
+}
+
+// consumeCheckpointResetFlags clears one-shot reset markers from the DataFlow CR after rollout-ready pods applied them.
 func (r *DataFlowReconciler) consumeCheckpointResetFlags(ctx context.Context, req types.NamespacedName) error {
 	var df dataflowv1.DataFlow
 	if err := r.Get(ctx, req, &df); err != nil {
