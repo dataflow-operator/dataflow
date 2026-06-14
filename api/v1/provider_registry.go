@@ -20,36 +20,42 @@ func init() {
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "postgresql", path, validatePostgreSQLSource)
 		},
+		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
 		Type: "postgresql-cdc",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "postgresql-cdc", path, validatePostgreSQLCDCSource)
 		},
+		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
 		Type: "trino",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "trino", path, validateTrinoSource)
 		},
+		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
 		Type: "clickhouse",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "clickhouse", path, validateClickHouseSource)
 		},
+		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
 		Type: "nessie",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "nessie", path, validateNessieSource)
 		},
+		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
 		Type: "iceberg",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "iceberg", path, validateIcebergSource)
 		},
+		SupportsCheckpoint: true,
 	})
 
 	providers.RegisterSink(providers.SinkDefinition{

@@ -90,11 +90,38 @@ func (r *DataFlowCronReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.reconcileTriggeredJobs(ctx, &dfc); err != nil {
 		return ctrl.Result{}, err
 	}
+	var jobs batchv1.JobList
+	if err := r.List(ctx, &jobs, client.InNamespace(dfc.Namespace), client.MatchingLabels{dataFlowCronOwnerLabel: dfc.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	consumed, err := r.tryConsumeCheckpointResetAfterProcessorJob(
+		ctx,
+		req.NamespacedName,
+		&dfc,
+		jobs.Items,
+		k8snames.CronSpecConfigMap(dfc.Name),
+	)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if consumed {
+		if err := r.Get(ctx, req.NamespacedName, &dfc); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		resolvedSpec, err = r.secretResolver.ResolveDataFlowSpec(ctx, dfc.Namespace, &dfc.Spec.DataFlowSpec)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("resolve secrets after checkpoint reset consume: %w", err)
+		}
+		if err := r.reconcileSpecConfigMap(ctx, &dfc, resolvedSpec); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	logger.V(1).Info("reconciled DataFlowCron", "name", req.NamespacedName)
 	return ctrl.Result{}, nil
 }
 
 func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) error {
+	resetWritten := applyCheckpointResetIntentCron(dfc, resolvedSpec)
 	specJSON, err := json.Marshal(resolvedSpec)
 	if err != nil {
 		return fmt.Errorf("marshal spec: %w", err)
@@ -104,6 +131,7 @@ func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: dfc.Namespace},
 		Data:       map[string]string{"spec.json": string(specJSON)},
 	}
+	setCheckpointResetAppliedAt(cm, resetWritten)
 	if err := ctrl.SetControllerReference(dfc, cm, r.Scheme); err != nil {
 		return err
 	}
@@ -115,10 +143,24 @@ func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc
 	if err != nil {
 		return err
 	}
-	if existing.Data["spec.json"] == cm.Data["spec.json"] {
+	specChanged := existing.Data["spec.json"] != cm.Data["spec.json"]
+	annotationChanged := existing.Annotations[AnnotationCheckpointResetAppliedAt] != cm.Annotations[AnnotationCheckpointResetAppliedAt]
+	if !specChanged && !annotationChanged {
 		return nil
 	}
 	existing.Data = cm.Data
+	if cm.Annotations != nil {
+		if existing.Annotations == nil {
+			existing.Annotations = map[string]string{}
+		}
+		if _, ok := cm.Annotations[AnnotationCheckpointResetAppliedAt]; ok {
+			existing.Annotations[AnnotationCheckpointResetAppliedAt] = cm.Annotations[AnnotationCheckpointResetAppliedAt]
+		} else {
+			delete(existing.Annotations, AnnotationCheckpointResetAppliedAt)
+		}
+	} else if existing.Annotations != nil {
+		delete(existing.Annotations, AnnotationCheckpointResetAppliedAt)
+	}
 	return r.Update(ctx, &existing)
 }
 

@@ -17,7 +17,10 @@ limitations under the License.
 package v1
 
 import (
+	"fmt"
+
 	"github.com/dataflow-operator/dataflow/pkg/providers"
+	"github.com/dataflow-operator/dataflow/pkg/transformtypes"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
@@ -41,20 +44,66 @@ func validateErrors(errors *ErrorSinkSpec, f *field.Path) field.ErrorList {
 	return all
 }
 
+type outputSinkRef struct {
+	sink *SinkSpec
+	path *field.Path
+	role string
+}
+
+func collectOutputSinks(spec *DataFlowSpec, f *field.Path) []outputSinkRef {
+	if spec == nil {
+		return nil
+	}
+	refs := []outputSinkRef{{
+		sink: &spec.Sink,
+		path: f.Child("sink"),
+		role: "main sink",
+	}}
+	if spec.Errors != nil {
+		refs = append(refs, outputSinkRef{
+			sink: &spec.Errors.SinkSpec,
+			path: f.Child("errors"),
+			role: "error sink",
+		})
+	}
+	for i, t := range spec.Transformations {
+		if t.Type != transformtypes.Router {
+			continue
+		}
+		routerCfg, _ := t.GetRouterConfig()
+		if routerCfg == nil {
+			continue
+		}
+		idx := f.Child("transformations").Index(i)
+		routesPath := idx.Child("router", "routes")
+		if t.Config != nil && len(t.Config.Raw) > 0 {
+			routesPath = idx.Child("config", "routes")
+		}
+		for j, route := range routerCfg.Routes {
+			sink := route.Sink
+			refs = append(refs, outputSinkRef{
+				sink: &sink,
+				path: routesPath.Index(j).Child("sink"),
+				role: "router route sink",
+			})
+		}
+	}
+	return refs
+}
+
 func validateIdempotency(spec *DataFlowSpec, f *field.Path) field.ErrorList {
 	var all field.ErrorList
 	if spec == nil || !isPollingSourceType(spec.Source.Type) {
 		return all
 	}
-	if sinkIsIdempotent(&spec.Sink) {
-		return all
-	}
-	msg := "polling source with non-idempotent main sink may produce duplicates on restart; enable upsertMode on the sink or set strictIdempotency: false to accept this warning"
-	if StrictIdempotencyEnabled(spec) {
-		all = append(all, field.Invalid(f.Child("sink"), spec.Sink.Type,
-			"strictIdempotency is enabled but main sink is not idempotent (enable upsertMode for postgresql/trino/clickhouse sinks)"))
-	} else {
-		_ = msg // warnings emitted via WarnDataFlowSpec
+	for _, ref := range collectOutputSinks(spec, f) {
+		if sinkIsIdempotent(ref.sink) {
+			continue
+		}
+		if StrictIdempotencyEnabled(spec) {
+			all = append(all, field.Invalid(ref.path, ref.sink.Type,
+				fmt.Sprintf("strictIdempotency is enabled but %s is not idempotent (enable upsertMode and conflictKey for postgresql/trino/clickhouse sinks)", ref.role)))
+		}
 	}
 	return all
 }
@@ -65,15 +114,28 @@ func WarnDataFlowSpec(spec *DataFlowSpec) admission.Warnings {
 	if spec == nil {
 		return warnings
 	}
-	if isPollingSourceType(spec.Source.Type) && !sinkIsIdempotent(&spec.Sink) && !StrictIdempotencyEnabled(spec) {
+	if !isPollingSourceType(spec.Source.Type) || StrictIdempotencyEnabled(spec) {
+		return warnings
+	}
+	for _, ref := range collectOutputSinks(spec, field.NewPath("spec")) {
+		if sinkIsIdempotent(ref.sink) {
+			continue
+		}
 		warnings = append(warnings,
-			"polling source with non-idempotent main sink may produce duplicates on restart; enable sink.config.upsertMode or set strictIdempotency: true to reject at admission")
+			fmt.Sprintf("polling source with non-idempotent %s may produce duplicates on restart; enable sink.config.upsertMode and conflictKey or set strictIdempotency: true to reject at admission", ref.role))
 	}
 	return warnings
 }
 
 func isPollingSourceType(sourceType string) bool {
 	return providers.SourceSupportsCheckpoint(sourceType)
+}
+
+func upsertConfigIsIdempotent(upsertMode *bool, conflictKey *string) bool {
+	if upsertMode == nil || !*upsertMode {
+		return false
+	}
+	return resolveConflictKeyForValidation(conflictKey) != ""
 }
 
 func sinkIsIdempotent(sink *SinkSpec) bool {
@@ -86,19 +148,19 @@ func sinkIsIdempotent(sink *SinkSpec) bool {
 		if err != nil || cfg == nil {
 			return false
 		}
-		return cfg.UpsertMode != nil && *cfg.UpsertMode
+		return upsertConfigIsIdempotent(cfg.UpsertMode, cfg.ConflictKey)
 	case "clickhouse":
 		cfg, err := sink.GetClickHouseConfig()
 		if err != nil || cfg == nil {
 			return false
 		}
-		return cfg.UpsertMode != nil && *cfg.UpsertMode
+		return upsertConfigIsIdempotent(cfg.UpsertMode, cfg.ConflictKey)
 	case "trino":
 		cfg, err := sink.GetTrinoConfig()
 		if err != nil || cfg == nil {
 			return false
 		}
-		return cfg.UpsertMode != nil && *cfg.UpsertMode
+		return upsertConfigIsIdempotent(cfg.UpsertMode, cfg.ConflictKey)
 	default:
 		return false
 	}

@@ -20,8 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -182,4 +184,60 @@ func TestDataFlowReconciler_CheckpointResetConsumedAfterRolloutReady(t *testing.
 	var afterSecond dataflowv1.DataFlow
 	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &afterSecond))
 	assert.Nil(t, afterSecond.Spec.CheckpointReset, "reset flag must be consumed after rollout is ready")
+}
+
+func TestApplyCheckpointResetIntentCron(t *testing.T) {
+	t.Parallel()
+
+	trueVal := true
+	dfc := &dataflowv1.DataFlowCron{}
+	dfc.Annotations = map[string]string{dataflowv1.AnnotationResetCheckpoint: "true"}
+	resolved := &dataflowv1.DataFlowSpec{}
+	assert.True(t, applyCheckpointResetIntentCron(dfc, resolved))
+	assert.NotNil(t, resolved.CheckpointReset)
+	assert.True(t, *resolved.CheckpointReset)
+
+	dfc2 := &dataflowv1.DataFlowCron{Spec: dataflowv1.DataFlowCronSpec{
+		DataFlowSpec: dataflowv1.DataFlowSpec{CheckpointReset: &trueVal},
+	}}
+	resolved2 := &dataflowv1.DataFlowSpec{}
+	assert.True(t, applyCheckpointResetIntentCron(dfc2, resolved2))
+}
+
+func TestCheckpointResetPendingCron(t *testing.T) {
+	t.Parallel()
+
+	trueVal := true
+	assert.False(t, checkpointResetPendingCron(nil))
+	assert.False(t, checkpointResetPendingCron(&dataflowv1.DataFlowCron{}))
+	assert.True(t, checkpointResetPendingCron(&dataflowv1.DataFlowCron{
+		Spec: dataflowv1.DataFlowCronSpec{
+			DataFlowSpec: dataflowv1.DataFlowSpec{CheckpointReset: &trueVal},
+		},
+	}))
+	assert.True(t, checkpointResetPendingCron(&dataflowv1.DataFlowCron{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{dataflowv1.AnnotationResetCheckpoint: "true"},
+		},
+	}))
+}
+
+func TestProcessorJobStartedAfterCheckpointReset(t *testing.T) {
+	t.Parallel()
+
+	appliedAt := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	before := metav1.NewTime(appliedAt.Add(-time.Minute))
+	after := metav1.NewTime(appliedAt.Add(time.Minute))
+
+	assert.False(t, processorJobStartedAfterCheckpointReset(nil, appliedAt))
+	assert.False(t, processorJobStartedAfterCheckpointReset(&batchv1.Job{}, appliedAt))
+	assert.False(t, processorJobStartedAfterCheckpointReset(&batchv1.Job{
+		Status: batchv1.JobStatus{StartTime: &before},
+	}, appliedAt))
+	assert.True(t, processorJobStartedAfterCheckpointReset(&batchv1.Job{
+		Status: batchv1.JobStatus{StartTime: &after},
+	}, appliedAt))
+	assert.True(t, processorJobStartedAfterCheckpointReset(&batchv1.Job{
+		Status: batchv1.JobStatus{StartTime: &metav1.Time{Time: appliedAt}},
+	}, appliedAt))
 }

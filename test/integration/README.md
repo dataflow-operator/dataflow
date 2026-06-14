@@ -42,7 +42,10 @@ go test -tags=integration ./test/integration/... -v
 ```bash
 # Только тесты коннекторов (нужен Docker и -tags=integration)
 go test -tags=integration ./test/integration/... -v -run TestKafkaConnectorIntegration
-go test -tags=integration ./test/integration/... -v -run TestPostgreSQLConnectorIntegration
+go test -tags=integration ./test/integration/... -v -run TestKafkaSinkWriteIntegration
+go test -tags=integration ./test/integration/... -v -run TestIcebergSinkWriteIntegration
+go test -tags=integration ./test/integration/... -v -run TestNessieSinkWriteIntegration
+go test -tags=integration ./test/integration/... -v -run TestPostgreSQLCDCReadLoop
 
 # Только тесты трансформеров (Docker не нужен)
 go test ./test/integration/... -v -run TestTransformersIntegration
@@ -56,10 +59,23 @@ go test ./test/integration/... -v -run TestTransformersChainIntegration
 #### Kafka
 - ✅ Source коннектор: чтение сообщений из Kafka топика
 - ✅ Sink коннектор: запись сообщений в Kafka топик
+- ✅ Sink Write batch (несколько сообщений)
 
 #### PostgreSQL
 - ✅ Source коннектор: чтение данных из таблицы PostgreSQL
 - ✅ Sink коннектор: запись данных в таблицу PostgreSQL
+
+#### PostgreSQL CDC
+- ✅ Source readLoop: streaming insert/update/delete через logical replication
+- ✅ Initial snapshot, multi-table, snapshot-then-stream
+- ✅ readLoop Ack callback и fatal error через ReadErrors
+
+#### Iceberg / Nessie
+- ✅ Iceberg REST sink Write (MinIO + iceberg-rest-fixture)
+- ✅ Nessie sink Write (MinIO + Nessie catalog)
+
+#### ClickHouse
+- ✅ Source и Sink коннекторы (см. `connectors_test.go`)
 
 ### Трансформеры
 
@@ -76,9 +92,12 @@ go test ./test/integration/... -v -run TestTransformersChainIntegration
 
 ```
 test/integration/
-├── connectors_test.go    # Тесты для всех коннекторов
-├── transformers_test.go   # Тесты для всех трансформеров
-└── README.md             # Этот файл
+├── catalog_stack_test.go   # MinIO + Iceberg REST / Nessie testcontainers helpers
+├── connectors_test.go      # Kafka, PostgreSQL, ClickHouse коннекторы
+├── postgresql_cdc_test.go  # PostgreSQL CDC integration tests
+├── sink_write_test.go      # Kafka / Iceberg / Nessie sink Write
+├── transformers_test.go    # Трансформеры
+└── README.md
 ```
 
 ## Как работают тесты
@@ -160,7 +179,7 @@ func TestTransformersIntegration(t *testing.T) {
 
 ## Известные ограничения
 
-- Iceberg коннектор не тестируется (требует REST Catalog сервер)
+- Iceberg/Nessie тесты требуют Docker и загрузки образов `apache/iceberg-rest-fixture`, `ghcr.io/projectnessie/nessie`, `minio/minio`
 - Некоторые тесты могут быть нестабильными из-за таймаутов
-- Требуется Docker для всех тестов
+- Требуется Docker для всех тестов коннекторов
 

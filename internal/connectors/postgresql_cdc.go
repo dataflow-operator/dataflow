@@ -57,6 +57,8 @@ type PostgreSQLCDCSourceConnector struct {
 	readErrCh chan error
 	// testReadLoop, if set, replaces readLoop in Read (unit tests only).
 	testReadLoop func(ctx context.Context, msgChan chan *types.Message) error
+	// testConnectRepl, if set, replaces pgconn.Connect during Connect (unit tests only).
+	testConnectRepl func(ctx context.Context, connString string) (*pgconn.PgConn, error)
 }
 
 // NewPostgreSQLCDCSourceConnector creates a PostgreSQL CDC source connector.
@@ -107,6 +109,14 @@ func (c *PostgreSQLCDCSourceConnector) heartbeatInterval() time.Duration {
 	return 10 * time.Second
 }
 
+// connectReplication opens a replication connection; testConnectRepl overrides pgconn.Connect in tests.
+func (c *PostgreSQLCDCSourceConnector) connectReplication(ctx context.Context, connString string) (*pgconn.PgConn, error) {
+	if c.testConnectRepl != nil {
+		return c.testConnectRepl(ctx, connString)
+	}
+	return pgconn.Connect(ctx, connString)
+}
+
 // Connect validates PostgreSQL, bootstraps publication, and prepares replication.
 func (c *PostgreSQLCDCSourceConnector) Connect(ctx context.Context) error {
 	if !c.guardConnect() {
@@ -125,8 +135,16 @@ func (c *PostgreSQLCDCSourceConnector) Connect(ctx context.Context) error {
 		c.RecordError("connect", "connection_error")
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
+
+	connectOK := false
+	defer func() {
+		if !connectOK {
+			_ = conn.Close(ctx)
+			c.sqlConn = nil
+		}
+	}()
+
 	if err := checkPostgreSQLWalLevel(ctx, conn); err != nil {
-		_ = conn.Close(ctx)
 		c.RecordError("connect", "wal_level_error")
 		return err
 	}
@@ -134,28 +152,24 @@ func (c *PostgreSQLCDCSourceConnector) Connect(ctx context.Context) error {
 	tables := normalizePostgreSQLTableRefs(c.config.Tables)
 	if postgresCDCCreatePublication(c.config) {
 		if err := ensurePostgreSQLPublication(ctx, conn, c.config.PublicationName, tables); err != nil {
-			_ = conn.Close(ctx)
 			c.RecordError("connect", "publication_error")
 			return err
 		}
 	}
 	if err := checkPostgreSQLReplicaIdentity(ctx, conn, tables); err != nil {
-		_ = conn.Close(ctx)
 		c.RecordError("connect", "replica_identity_error")
 		return err
 	}
 
-	c.sqlConn = conn
-
-	replConn, err := pgconn.Connect(ctx, replicationConnectionString(c.config.ConnectionString))
+	replConn, err := c.connectReplication(ctx, replicationConnectionString(c.config.ConnectionString))
 	if err != nil {
 		c.RecordError("connect", "replication_connection_error")
 		return fmt.Errorf("failed to connect for replication: %w", err)
 	}
+	defer func() { _ = replConn.Close(ctx) }()
 
 	sysident, err := pglogrepl.IdentifySystem(ctx, replConn)
 	if err != nil {
-		_ = replConn.Close(ctx)
 		c.RecordError("connect", "identify_system_error")
 		return fmt.Errorf("identify system: %w", err)
 	}
@@ -163,24 +177,22 @@ func (c *PostgreSQLCDCSourceConnector) Connect(ctx context.Context) error {
 
 	exists, err := slotExists(ctx, conn, c.config.SlotName)
 	if err != nil {
-		_ = replConn.Close(ctx)
 		return fmt.Errorf("check replication slot: %w", err)
 	}
 	if !exists {
 		if !postgresCDCCreateSlot(c.config) {
-			_ = replConn.Close(ctx)
 			return fmt.Errorf("replication slot %q does not exist", c.config.SlotName)
 		}
 		_, err = pglogrepl.CreateReplicationSlot(ctx, replConn, c.config.SlotName, postgresCDCPlugin(c.config), pglogrepl.CreateReplicationSlotOptions{})
 		if err != nil {
-			_ = replConn.Close(ctx)
 			c.RecordError("connect", "create_slot_error")
 			return fmt.Errorf("create replication slot: %w", err)
 		}
 		c.logger.Info("Created replication slot", "slot", c.config.SlotName)
 	}
 
-	_ = replConn.Close(ctx)
+	c.sqlConn = conn
+	connectOK = true
 
 	c.cp.onAdvance = func(lsn pglogrepl.LSN) {
 		c.sendStandbyStatusUpdate(lsn)
@@ -537,7 +549,9 @@ func (c *PostgreSQLCDCSourceConnector) Close() error {
 	c.replMu.Unlock()
 
 	if c.sqlConn != nil {
-		return c.sqlConn.Close(context.Background())
+		err := c.sqlConn.Close(context.Background())
+		c.sqlConn = nil
+		return err
 	}
 	return nil
 }

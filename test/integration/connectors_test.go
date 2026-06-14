@@ -50,6 +50,7 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	skipUnlessDocker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -59,7 +60,7 @@ func TestKafkaConnectorIntegration(t *testing.T) {
 	kafkaContainer, err := kafka.RunContainer(ctx,
 		kafka.WithClusterID("test-cluster"),
 	)
-	require.NoError(t, err)
+	requireDocker(t, err)
 	defer func() {
 		if err := kafkaContainer.Terminate(ctx); err != nil {
 			t.Logf("failed to terminate kafka container: %v", err)
@@ -258,6 +259,7 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	skipUnlessDocker(t)
 	ctx := context.Background()
 
 	// Start PostgreSQL container
@@ -272,7 +274,7 @@ func TestPostgreSQLConnectorIntegration(t *testing.T) {
 				WithStartupTimeout(60*time.Second),
 		),
 	)
-	require.NoError(t, err)
+	requireDocker(t, err)
 	defer func() {
 		if err := postgresContainer.Terminate(ctx); err != nil {
 			t.Logf("failed to terminate postgres container: %v", err)
@@ -562,6 +564,7 @@ func TestClickHouseConnectorIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	skipUnlessDocker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -576,7 +579,7 @@ func TestClickHouseConnectorIntegration(t *testing.T) {
 				WithPollInterval(2*time.Second),
 		),
 	)
-	require.NoError(t, err)
+	requireDocker(t, err)
 	defer func() {
 		if err := clickHouseContainer.Terminate(ctx); err != nil {
 			t.Logf("failed to terminate clickhouse container: %v", err)

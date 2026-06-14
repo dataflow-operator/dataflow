@@ -45,6 +45,8 @@ type PostgreSQLSourceConnector struct {
 	conn              *pgx.Conn
 	cp                CompositeCheckpointHolder
 	channelBufferSize int
+	// testPostConnectSetup, if set, runs instead of AutoCreateTable during Connect (unit tests only).
+	testPostConnectSetup func(ctx context.Context) error
 }
 
 // NewPostgreSQLSourceConnector creates a new PostgreSQL source connector
@@ -91,19 +93,32 @@ func (p *PostgreSQLSourceConnector) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
+	connectOK := false
+	defer func() {
+		if !connectOK {
+			_ = conn.Close(ctx)
+			p.conn = nil
+		}
+	}()
+
 	p.conn = conn
-	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
 
-	p.SetConnectionStatus(true)
-
-	// Auto-create table if enabled (source)
-	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable {
+	if p.testPostConnectSetup != nil {
+		if err := p.testPostConnectSetup(ctx); err != nil {
+			p.RecordError("connect", "ensure_table_error")
+			return err
+		}
+	} else if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable {
 		if err := p.ensureSourceTable(ctx); err != nil {
 			p.RecordError("connect", "ensure_table_error")
 			p.logger.Error(err, "Failed to ensure source table exists", "table", p.config.Table)
 			return fmt.Errorf("failed to ensure source table exists: %w", err)
 		}
 	}
+
+	connectOK = true
+	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
+	p.SetConnectionStatus(true)
 
 	return nil
 }
@@ -373,6 +388,8 @@ type PostgreSQLSinkConnector struct {
 	firstWriteOnce    sync.Once
 	tableExistsCached *bool // Cache to avoid N queries per message (tableExists + hasJSONB check)
 	hasJSONBCached    *bool
+	// testPostConnectSetup, if set, runs instead of post-connect table setup during Connect (unit tests only).
+	testPostConnectSetup func(ctx context.Context) error
 }
 
 // NewPostgreSQLSinkConnector creates a new PostgreSQL sink connector
@@ -404,13 +421,22 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
+	connectOK := false
+	defer func() {
+		if !connectOK {
+			_ = conn.Close(ctx)
+			p.conn = nil
+		}
+	}()
+
 	p.conn = conn
-	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
 
-	p.SetConnectionStatus(true)
-
-	// Auto-create table if enabled and RawMode (structure known at Connect time)
-	if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable && p.rawMode() {
+	if p.testPostConnectSetup != nil {
+		if err := p.testPostConnectSetup(ctx); err != nil {
+			p.RecordError("connect", "ensure_table_error")
+			return err
+		}
+	} else if p.config.AutoCreateTable != nil && *p.config.AutoCreateTable && p.rawMode() {
 		if p.flattenMetadataColumns() {
 			if err := p.connectFlattenMetadata(ctx); err != nil {
 				p.RecordError("connect", "ensure_table_error")
@@ -423,9 +449,14 @@ func (p *PostgreSQLSinkConnector) Connect(ctx context.Context) error {
 		}
 	} else if p.rawMode() && p.flattenMetadataColumns() {
 		if err := p.connectFlattenMetadata(ctx); err != nil {
+			p.RecordError("connect", "ensure_table_error")
 			return fmt.Errorf("failed to prepare flatten metadata table: %w", err)
 		}
 	}
+
+	connectOK = true
+	p.logger.Info("Successfully connected to PostgreSQL", "table", p.config.Table)
+	p.SetConnectionStatus(true)
 
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -279,4 +280,118 @@ func TestDataFlowCronReconcile_ResolvesSecretsInConfigMap(t *testing.T) {
 	sinkCfg, err := spec.Sink.GetPostgreSQLConfig()
 	require.NoError(t, err)
 	assert.Equal(t, wantDSN, sinkCfg.ConnectionString)
+}
+
+func TestDataFlowCronReconcile_CheckpointResetOneShot(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	trueVal := true
+	dfc := &dataflowv1.DataFlowCron{
+		ObjectMeta: metav1.ObjectMeta{Name: "cron-reset", Namespace: "default"},
+		Spec: dataflowv1.DataFlowCronSpec{
+			Schedule: "0 0 * * *",
+			DataFlowSpec: dataflowv1.DataFlowSpec{
+				CheckpointReset:       &trueVal,
+				CheckpointPersistence: &trueVal,
+				Source:                dataflowv1.SourceSpec{Type: "postgresql"},
+				Sink:                  dataflowv1.SinkSpec{Type: "postgresql"},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlowCron{}).
+		WithObjects(dfc).
+		Build()
+	r := NewDataFlowCronReconciler(c, scheme)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "cron-reset", Namespace: "default"}}
+
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var afterFirst dataflowv1.DataFlowCron
+	require.NoError(t, c.Get(ctx, req.NamespacedName, &afterFirst))
+	require.NotNil(t, afterFirst.Spec.CheckpointReset)
+	assert.True(t, *afterFirst.Spec.CheckpointReset, "reset flag must remain until processor job applies it")
+
+	var configMapAfterFirst struct {
+		CheckpointReset *bool `json:"checkpointReset"`
+	}
+	cmName := types.NamespacedName{Name: k8snames.CronSpecConfigMap("cron-reset"), Namespace: "default"}
+	var cm corev1.ConfigMap
+	require.NoError(t, c.Get(ctx, cmName, &cm))
+	require.NotEmpty(t, cm.Annotations[AnnotationCheckpointResetAppliedAt])
+	require.NoError(t, json.Unmarshal([]byte(cm.Data["spec.json"]), &configMapAfterFirst))
+	require.NotNil(t, configMapAfterFirst.CheckpointReset)
+	assert.True(t, *configMapAfterFirst.CheckpointReset)
+
+	appliedAt, err := time.Parse(time.RFC3339Nano, cm.Annotations[AnnotationCheckpointResetAppliedAt])
+	require.NoError(t, err)
+
+	oldJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cron-reset-old",
+			Namespace: "default",
+			Labels: map[string]string{
+				dataFlowCronOwnerLabel:        "cron-reset",
+				dataFlowCronTriggerIndexLabel: dataFlowCronProcessorStepLabel,
+			},
+		},
+		Status: batchv1.JobStatus{
+			StartTime: &metav1.Time{Time: appliedAt.Add(-time.Hour)},
+			Conditions: []batchv1.JobCondition{{
+				Type:   batchv1.JobComplete,
+				Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+	require.NoError(t, c.Create(ctx, oldJob))
+
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var afterOldJob dataflowv1.DataFlowCron
+	require.NoError(t, c.Get(ctx, req.NamespacedName, &afterOldJob))
+	require.NotNil(t, afterOldJob.Spec.CheckpointReset, "old processor job must not consume reset")
+
+	newJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cron-reset-new",
+			Namespace: "default",
+			Labels: map[string]string{
+				dataFlowCronOwnerLabel:        "cron-reset",
+				dataFlowCronTriggerIndexLabel: dataFlowCronProcessorStepLabel,
+			},
+		},
+		Status: batchv1.JobStatus{
+			StartTime: &metav1.Time{Time: appliedAt.Add(time.Minute)},
+			Conditions: []batchv1.JobCondition{{
+				Type:   batchv1.JobComplete,
+				Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+	require.NoError(t, c.Create(ctx, newJob))
+
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var afterConsume dataflowv1.DataFlowCron
+	require.NoError(t, c.Get(ctx, req.NamespacedName, &afterConsume))
+	assert.Nil(t, afterConsume.Spec.CheckpointReset, "reset flag must be consumed after processor job")
+
+	var cmAfterConsume corev1.ConfigMap
+	require.NoError(t, c.Get(ctx, cmName, &cmAfterConsume))
+	_, hasAppliedAt := cmAfterConsume.Annotations[AnnotationCheckpointResetAppliedAt]
+	assert.False(t, hasAppliedAt)
+
+	var configMapAfterConsume struct {
+		CheckpointReset *bool `json:"checkpointReset"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(cmAfterConsume.Data["spec.json"]), &configMapAfterConsume))
+	assert.Nil(t, configMapAfterConsume.CheckpointReset)
 }

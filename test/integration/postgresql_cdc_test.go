@@ -24,6 +24,7 @@ func TestPostgreSQLCDCSourceIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	skipUnlessDocker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -34,7 +35,7 @@ func TestPostgreSQLCDCSourceIntegration(t *testing.T) {
 			"-c", "max_wal_senders=4",
 		),
 	)
-	require.NoError(t, err)
+	requireDocker(t, err)
 	defer func() {
 		if err := postgresContainer.Terminate(ctx); err != nil {
 			t.Logf("failed to terminate postgres container: %v", err)
@@ -137,6 +138,7 @@ func TestPostgreSQLCDCInitialSnapshotIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	skipUnlessDocker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -147,7 +149,7 @@ func TestPostgreSQLCDCInitialSnapshotIntegration(t *testing.T) {
 			"-c", "max_wal_senders=4",
 		),
 	)
-	require.NoError(t, err)
+	requireDocker(t, err)
 	defer func() {
 		_ = postgresContainer.Terminate(ctx)
 	}()
@@ -213,6 +215,7 @@ func TestPostgreSQLCDCMultiTableIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	skipUnlessDocker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -223,7 +226,7 @@ func TestPostgreSQLCDCMultiTableIntegration(t *testing.T) {
 			"-c", "max_wal_senders=4",
 		),
 	)
-	require.NoError(t, err)
+	requireDocker(t, err)
 	defer func() { _ = postgresContainer.Terminate(ctx) }()
 
 	connStr, err := postgresContainer.ConnectionString(ctx, "sslmode=disable")
@@ -306,6 +309,7 @@ func TestPostgreSQLCDCSnapshotThenStreamIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	skipUnlessDocker(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -316,7 +320,7 @@ func TestPostgreSQLCDCSnapshotThenStreamIntegration(t *testing.T) {
 			"-c", "max_wal_senders=4",
 		),
 	)
-	require.NoError(t, err)
+	requireDocker(t, err)
 	defer func() { _ = postgresContainer.Terminate(ctx) }()
 
 	connStr, err := postgresContainer.ConnectionString(ctx, "sslmode=disable")
@@ -385,4 +389,158 @@ readLoop:
 	}
 	assert.True(t, snapshotDone, "expected initial snapshot row")
 	assert.True(t, streamInsert, "expected streaming insert after snapshot")
+}
+
+func TestPostgreSQLCDCReadLoopAckIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	skipUnlessDocker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	postgresContainer, connStr, conn := startPostgreSQLCDCContainer(ctx, t)
+	defer func() { _ = postgresContainer.Terminate(ctx) }()
+	defer conn.Close(ctx)
+
+	tableName := "cdc_readloop_ack"
+	_, err := conn.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(100) NOT NULL
+		)
+	`, tableName))
+	require.NoError(t, err)
+
+	snapshotNever := "never"
+	sourceSpec := &v1.PostgreSQLCDCSourceSpec{
+		ConnectionString: connStr,
+		SlotName:         "dataflow_cdc_readloop_ack_slot",
+		PublicationName:  "dataflow_cdc_readloop_ack_pub",
+		Tables:           []string{"public." + tableName},
+		SnapshotMode:     snapshotNever,
+	}
+	source := connectors.NewPostgreSQLCDCSourceConnector(sourceSpec)
+	require.NoError(t, source.Connect(ctx))
+	defer source.Close()
+
+	msgChan, err := source.Read(ctx)
+	require.NoError(t, err)
+	readErrors := source.ReadErrors()
+	require.NotNil(t, readErrors)
+
+	time.Sleep(2 * time.Second)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (name) VALUES ('readloop-ack')`, tableName))
+	require.NoError(t, err)
+
+	var msg *types.Message
+	select {
+	case msg = <-msgChan:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for CDC readLoop message")
+	}
+	require.NotNil(t, msg)
+	require.NotNil(t, msg.Ack, "readLoop should attach Ack callback to streamed messages")
+	assert.Equal(t, "insert", msg.Metadata["operation"])
+
+	msg.Ack()
+
+	select {
+	case err := <-readErrors:
+		t.Fatalf("unexpected fatal readLoop error: %v", err)
+	default:
+	}
+}
+
+func TestPostgreSQLCDCReadLoopFatalErrorIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	skipUnlessDocker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	postgresContainer, connStr, conn := startPostgreSQLCDCContainer(ctx, t)
+	defer func() { _ = postgresContainer.Terminate(ctx) }()
+	defer conn.Close(ctx)
+
+	tableName := "cdc_readloop_fatal"
+	_, err := conn.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(100) NOT NULL
+		)
+	`, tableName))
+	require.NoError(t, err)
+
+	slotName := "dataflow_cdc_readloop_fatal_slot"
+	sourceSpec := &v1.PostgreSQLCDCSourceSpec{
+		ConnectionString: connStr,
+		SlotName:         slotName,
+		PublicationName:  "dataflow_cdc_readloop_fatal_pub",
+		Tables:           []string{"public." + tableName},
+		SnapshotMode:     "never",
+	}
+	source := connectors.NewPostgreSQLCDCSourceConnector(sourceSpec)
+	require.NoError(t, source.Connect(ctx))
+	defer source.Close()
+
+	msgChan, err := source.Read(ctx)
+	require.NoError(t, err)
+	readErrors := source.ReadErrors()
+	require.NotNil(t, readErrors)
+
+	time.Sleep(2 * time.Second)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`SELECT pg_drop_replication_slot('%s')`, slotName))
+	require.NoError(t, err)
+
+	select {
+	case fatalErr := <-readErrors:
+		require.Error(t, fatalErr)
+		assert.Contains(t, fatalErr.Error(), "postgres CDC read error")
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for fatal readLoop error on ReadErrors")
+	}
+
+	for range msgChan {
+	}
+}
+
+func startPostgreSQLCDCContainer(ctx context.Context, t *testing.T) (testcontainers.Container, string, *pgx.Conn) {
+	t.Helper()
+	skipUnlessDocker(t)
+
+	postgresContainer, err := postgres.RunContainer(ctx,
+		testcontainers.WithCmd("postgres",
+			"-c", "wal_level=logical",
+			"-c", "max_replication_slots=4",
+			"-c", "max_wal_senders=4",
+		),
+	)
+	requireDocker(t, err)
+
+	connStr, err := postgresContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	var conn *pgx.Conn
+	for i, delay := 0, 500*time.Millisecond; i < 10; i++ {
+		conn, err = pgx.Connect(ctx, connStr)
+		if err == nil && conn.Ping(ctx) == nil {
+			break
+		}
+		if conn != nil {
+			conn.Close(ctx)
+			conn = nil
+		}
+		time.Sleep(delay)
+		delay *= 2
+	}
+	require.NotNil(t, conn)
+
+	_, err = conn.Exec(ctx, `ALTER USER CURRENT_USER WITH REPLICATION`)
+	require.NoError(t, err)
+
+	return postgresContainer, connStr, conn
 }

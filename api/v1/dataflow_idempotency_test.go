@@ -19,7 +19,9 @@ package v1
 import (
 	"testing"
 
+	"github.com/dataflow-operator/dataflow/pkg/transformtypes"
 	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 func TestWarnDataFlowSpec_pollingNonIdempotent(t *testing.T) {
@@ -35,6 +37,7 @@ func TestWarnDataFlowSpec_pollingNonIdempotent(t *testing.T) {
 	}
 	warnings := WarnDataFlowSpec(&spec)
 	assert.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "main sink")
 }
 
 func TestValidateDataFlowSpec_strictIdempotency(t *testing.T) {
@@ -66,4 +69,120 @@ func TestValidateErrors_ackPolicy(t *testing.T) {
 	}
 	errs := ValidateDataFlowSpec(&spec)
 	assert.NotEmpty(t, errs)
+}
+
+func TestSinkIsIdempotent_requiresConflictKey(t *testing.T) {
+	t.Parallel()
+
+	upsertOn := true
+	conflictKey := "id"
+
+	assert.False(t, sinkIsIdempotent(&SinkSpec{
+		Type:   "postgresql",
+		Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "out", UpsertMode: &upsertOn}),
+	}))
+	assert.True(t, sinkIsIdempotent(&SinkSpec{
+		Type:   "postgresql",
+		Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "out", UpsertMode: &upsertOn, ConflictKey: &conflictKey}),
+	}))
+}
+
+func TestValidateIdempotency_upsertWithoutConflictKey(t *testing.T) {
+	t.Parallel()
+
+	strict := true
+	upsertOn := true
+	spec := DataFlowSpec{
+		StrictIdempotency: &strict,
+		Source:            SourceSpec{Type: "postgresql", Config: mustConfig(PostgreSQLSourceSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "t"})},
+		Sink: SinkSpec{
+			Type:   "postgresql",
+			Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "out", UpsertMode: &upsertOn}),
+		},
+	}
+	errs := validateIdempotency(&spec, field.NewPath("spec"))
+	assert.NotEmpty(t, errs)
+}
+
+func TestValidateIdempotency_errorSink(t *testing.T) {
+	t.Parallel()
+
+	strict := true
+	upsertOn := true
+	conflictKey := "id"
+	spec := DataFlowSpec{
+		StrictIdempotency: &strict,
+		Source:            SourceSpec{Type: "postgresql", Config: mustConfig(PostgreSQLSourceSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "t"})},
+		Sink: SinkSpec{
+			Type:   "postgresql",
+			Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "out", UpsertMode: &upsertOn, ConflictKey: &conflictKey}),
+		},
+		Errors: &ErrorSinkSpec{
+			SinkSpec: SinkSpec{
+				Type:   "postgresql",
+				Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "errors"}),
+			},
+		},
+	}
+	errs := validateIdempotency(&spec, field.NewPath("spec"))
+	assert.NotEmpty(t, errs)
+	assert.Contains(t, errs[0].Error(), "error sink")
+}
+
+func TestValidateIdempotency_routerSink(t *testing.T) {
+	t.Parallel()
+
+	strict := true
+	upsertOn := true
+	conflictKey := "id"
+	spec := DataFlowSpec{
+		StrictIdempotency: &strict,
+		Source:            SourceSpec{Type: "postgresql", Config: mustConfig(PostgreSQLSourceSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "t"})},
+		Sink: SinkSpec{
+			Type:   "postgresql",
+			Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "out", UpsertMode: &upsertOn, ConflictKey: &conflictKey}),
+		},
+		Transformations: []TransformationSpec{
+			{
+				Type: transformtypes.Router,
+				Config: mustConfig(RouterTransformation{
+					Routes: []RouteRule{
+						{
+							Condition: "$.type == 'vip'",
+							Sink: SinkSpec{
+								Type:   "postgresql",
+								Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "vip"}),
+							},
+						},
+					},
+				}),
+			},
+		},
+	}
+	errs := validateIdempotency(&spec, field.NewPath("spec"))
+	assert.NotEmpty(t, errs)
+	assert.Contains(t, errs[0].Error(), "router route sink")
+}
+
+func TestWarnDataFlowSpec_errorSinkNonIdempotent(t *testing.T) {
+	t.Parallel()
+
+	upsertOn := true
+	conflictKey := "id"
+	spec := DataFlowSpec{
+		Source: SourceSpec{Type: "postgresql", Config: mustConfig(PostgreSQLSourceSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "t"})},
+		Sink: SinkSpec{
+			Type:   "postgresql",
+			Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "out", UpsertMode: &upsertOn, ConflictKey: &conflictKey}),
+		},
+		Errors: &ErrorSinkSpec{
+			SinkSpec: SinkSpec{
+				Type:   "postgresql",
+				Config: mustConfig(PostgreSQLSinkSpec{ConnectionString: "postgres://u:p@localhost/db", Table: "errors"}),
+			},
+		},
+	}
+	warnings := WarnDataFlowSpec(&spec)
+	assert.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "error sink")
 }
