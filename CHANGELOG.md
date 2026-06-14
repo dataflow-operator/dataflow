@@ -1,5 +1,13 @@
 ## Commits
 
+- 6f85f38 feat: enhance PostgreSQL CDC source with error handling
+- 016ff6e feat: implement checkpoint reset handling in DataFlow reconciler
+- 023d6ea feat: enhance PostgreSQL CDC checkpoint handling with new tests
+- 49a6bb4 feat: enhance checkpoint reporting across connectors
+- 311383c feat: implement checkpoint reset handling in DataFlowCron
+
+## Commits
+
 - d5071a2 feat: add PostgreSQL CDC source configuration and validation
 
 ## Commits
