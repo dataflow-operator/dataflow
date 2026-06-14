@@ -22,7 +22,7 @@
         ]
       }
     ],
-    "@semantic-release/release-notes-generator",
+    "./scripts/semantic-release/commit-list-notes.cjs",
     [
       "@semantic-release/changelog",
       {"changelogFile": "CHANGELOG.md"}
