@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -216,13 +217,7 @@ func (r *DataFlowCronReconciler) tryConsumeCheckpointResetAfterProcessorJob(
 
 // consumeCheckpointResetFlags clears one-shot reset markers from the DataFlowCron CR after a processor Job applied them.
 func (r *DataFlowCronReconciler) consumeCheckpointResetFlags(ctx context.Context, req types.NamespacedName) error {
-	var dfc dataflowv1.DataFlowCron
-	if err := r.Get(ctx, req, &dfc); err != nil {
-		return err
-	}
-	patch := client.MergeFrom(dfc.DeepCopy())
-	if !clearCheckpointResetMarkers(&dfc.Spec.DataFlowSpec, dfc.Annotations) {
-		return nil
-	}
-	return r.Patch(ctx, &dfc, patch)
+	return r.patchDataFlowCronWithRetry(ctx, ctrl.Request{NamespacedName: req}, func(dfc *dataflowv1.DataFlowCron) bool {
+		return clearCheckpointResetMarkers(&dfc.Spec.DataFlowSpec, dfc.Annotations)
+	})
 }

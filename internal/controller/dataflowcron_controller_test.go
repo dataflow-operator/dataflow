@@ -395,3 +395,128 @@ func TestDataFlowCronReconcile_CheckpointResetOneShot(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(cmAfterConsume.Data["spec.json"]), &configMapAfterConsume))
 	assert.Nil(t, configMapAfterConsume.CheckpointReset)
 }
+
+func succeededCronJob(name, namespace, owner, runID, triggerIndex string) *batchv1.Job {
+	now := metav1.Now()
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				dataFlowCronOwnerLabel:        owner,
+				dataFlowCronRunIDLabel:        runID,
+				dataFlowCronTriggerIndexLabel: triggerIndex,
+			},
+		},
+		Status: batchv1.JobStatus{
+			CompletionTime: &now,
+			Conditions: []batchv1.JobCondition{{
+				Type:   batchv1.JobComplete,
+				Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+}
+
+func TestDataFlowCronReconcile_StatusUpdateWithMultipleSucceededJobs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	const runID = "bddc71c4"
+	dfc := &dataflowv1.DataFlowCron{
+		ObjectMeta: metav1.ObjectMeta{Name: "migration", Namespace: "default"},
+		Spec: dataflowv1.DataFlowCronSpec{
+			Schedule: "0 0 1 1 *",
+			DataFlowSpec: dataflowv1.DataFlowSpec{
+				Source: dataflowv1.SourceSpec{Type: "postgresql"},
+				Sink:   dataflowv1.SinkSpec{Type: "postgresql"},
+			},
+			Triggers: []dataflowv1.DataFlowCronTrigger{{Image: "postgres:16-alpine"}},
+		},
+	}
+	processorJob := succeededCronJob("migration-processor", "default", "migration", runID, dataFlowCronProcessorStepLabel)
+	triggerJob := succeededCronJob(stableJobName("migration", runID, "trigger-0"), "default", "migration", runID, "0")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlowCron{}).
+		WithObjects(dfc, processorJob, triggerJob).
+		Build()
+	r := NewDataFlowCronReconciler(c, scheme)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "migration", Namespace: "default"}}
+
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after dataflowv1.DataFlowCron
+	require.NoError(t, c.Get(ctx, req.NamespacedName, &after))
+	assert.Equal(t, "Completed", after.Status.Phase)
+	assert.Equal(t, runID, after.Status.CurrentRunID)
+	assert.Nil(t, after.Status.CurrentTriggerIndex)
+	require.NotNil(t, after.Status.LastSuccessfulTime)
+}
+
+func TestDataFlowCronReconcile_StuckRunningTriggersRecoversToCompleted(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, dataflowv1.AddToScheme(scheme))
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+
+	const runID = "bddc71c4"
+	triggerIdx := int32(0)
+	dfc := &dataflowv1.DataFlowCron{
+		ObjectMeta: metav1.ObjectMeta{Name: "migration", Namespace: "default"},
+		Spec: dataflowv1.DataFlowCronSpec{
+			Schedule: "0 0 1 1 *",
+			DataFlowSpec: dataflowv1.DataFlowSpec{
+				Source: dataflowv1.SourceSpec{Type: "postgresql"},
+				Sink:   dataflowv1.SinkSpec{Type: "postgresql"},
+			},
+			Triggers: []dataflowv1.DataFlowCronTrigger{{Image: "postgres:16-alpine"}},
+		},
+		Status: dataflowv1.DataFlowCronStatus{
+			Phase:               "RunningTriggers",
+			CurrentRunID:        runID,
+			CurrentTriggerIndex: &triggerIdx,
+			ActiveJobName:       "migration-processor",
+		},
+	}
+	processorJob := succeededCronJob("migration-processor", "default", "migration", runID, dataFlowCronProcessorStepLabel)
+	triggerJob := succeededCronJob(stableJobName("migration", runID, "trigger-0"), "default", "migration", runID, "0")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dataflowv1.DataFlowCron{}).
+		WithObjects(dfc, processorJob, triggerJob).
+		Build()
+	r := NewDataFlowCronReconciler(c, scheme)
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "migration", Namespace: "default"}}
+
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after dataflowv1.DataFlowCron
+	require.NoError(t, c.Get(ctx, req.NamespacedName, &after))
+	assert.Equal(t, "Completed", after.Status.Phase)
+	assert.Nil(t, after.Status.CurrentTriggerIndex)
+}
+
+func TestShouldSkipSucceededStep(t *testing.T) {
+	t.Parallel()
+	runID := "run-a"
+	triggerIdx := int32(0)
+	dfc := &dataflowv1.DataFlowCron{
+		Status: dataflowv1.DataFlowCronStatus{
+			Phase:               "RunningTriggers",
+			CurrentRunID:        runID,
+			CurrentTriggerIndex: &triggerIdx,
+		},
+	}
+	assert.True(t, shouldSkipSucceededStep(dfc, runID, -1))
+	assert.False(t, shouldSkipSucceededStep(dfc, runID, 0))
+
+	dfc.Status.Phase = "Completed"
+	assert.True(t, shouldSkipSucceededStep(dfc, runID, 0))
+}

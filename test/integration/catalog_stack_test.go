@@ -38,8 +38,8 @@ func startObjectStorageStack(ctx context.Context, t *testing.T) *objectStorageSt
 
 	minioCtr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "minio/minio:RELEASE.2024-06-28T09-06-49Z",
-			ExposedPorts: []string{"9000/tcp"},
+			Image:          "minio/minio:RELEASE.2024-06-28T09-06-49Z",
+			ExposedPorts:   []string{"9000/tcp"},
 			Networks:       []string{net.Name},
 			NetworkAliases: map[string][]string{net.Name: {"minio"}},
 			Env: map[string]string{
@@ -52,7 +52,7 @@ func startObjectStorageStack(ctx context.Context, t *testing.T) *objectStorageSt
 				WithStartupTimeout(2 * time.Minute),
 		},
 		Started: true,
-	}	)
+	})
 	requireDocker(t, err)
 
 	minioHost, err := minioCtr.Host(ctx)
@@ -125,7 +125,7 @@ func startIcebergRESTCatalog(ctx context.Context, t *testing.T, stack *objectSto
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        "apache/iceberg-rest-fixture:1.9.1",
 			ExposedPorts: []string{"8181/tcp"},
-			Networks:       []string{stack.network.Name},
+			Networks:     []string{stack.network.Name},
 			Env: map[string]string{
 				"AWS_ACCESS_KEY_ID":     minioAccessKey,
 				"AWS_SECRET_ACCESS_KEY": minioSecretKey,
@@ -155,26 +155,26 @@ func startNessieCatalog(ctx context.Context, t *testing.T, stack *objectStorageS
 	t.Helper()
 
 	nessieEnv := map[string]string{
-		"nessie.version.store.type": "IN_MEMORY",
-		"nessie.catalog.default-warehouse": "warehouse",
-		fmt.Sprintf("nessie.catalog.warehouses.warehouse.location"): "s3://" + minioBucket + "/",
-		"nessie.catalog.service.s3.default-options.region":              minioRegion,
+		"nessie.version.store.type":                                   "IN_MEMORY",
+		"nessie.catalog.default-warehouse":                            "warehouse",
+		fmt.Sprintf("nessie.catalog.warehouses.warehouse.location"):   "s3://" + minioBucket + "/",
+		"nessie.catalog.service.s3.default-options.region":            minioRegion,
 		"nessie.catalog.service.s3.default-options.path-style-access": "true",
-		"nessie.catalog.service.s3.default-options.endpoint":            "http://minio:9000/",
+		"nessie.catalog.service.s3.default-options.endpoint":          "http://minio:9000/",
 		"nessie.catalog.service.s3.default-options.external-endpoint": stack.minioEndpoint + "/",
-		"nessie.catalog.service.s3.default-options.auth-type":           "STATIC",
-		"nessie.catalog.service.s3.default-options.access-key":          "urn:nessie-secret:quarkus:nessie.catalog.secrets.access-key",
-		"nessie.catalog.secrets.access-key.name":                          minioAccessKey,
-		"nessie.catalog.secrets.access-key.secret":                        minioSecretKey,
-		"nessie.server.authentication.enabled":                          "false",
+		"nessie.catalog.service.s3.default-options.auth-type":         "STATIC",
+		"nessie.catalog.service.s3.default-options.access-key":        "urn:nessie-secret:quarkus:nessie.catalog.secrets.access-key",
+		"nessie.catalog.secrets.access-key.name":                      minioAccessKey,
+		"nessie.catalog.secrets.access-key.secret":                    minioSecretKey,
+		"nessie.server.authentication.enabled":                        "false",
 	}
 
 	nessieCtr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        "ghcr.io/projectnessie/nessie:0.99.0",
 			ExposedPorts: []string{"19120/tcp"},
-			Networks:       []string{stack.network.Name},
-			Env:              nessieEnv,
+			Networks:     []string{stack.network.Name},
+			Env:          nessieEnv,
 			WaitingFor: wait.ForHTTP("/api/v2/config").
 				WithPort("19120/tcp").
 				WithStartupTimeout(3 * time.Minute),

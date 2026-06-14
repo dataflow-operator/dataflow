@@ -118,11 +118,11 @@ func TestIcebergSinkWriteIntegration(t *testing.T) {
 	batchSize := int32(10)
 
 	sinkSpec := &v1.IcebergSinkSpec{
-		CatalogURI:    catalogURI,
-		Namespace:     namespace,
-		Table:         table,
+		CatalogURI:      catalogURI,
+		Namespace:       namespace,
+		Table:           table,
 		AutoCreateTable: &autoCreate,
-		BatchSize:     &batchSize,
+		BatchSize:       &batchSize,
 	}
 	sink := connectors.NewIcebergSinkConnector(sinkSpec)
 	require.NoError(t, sink.Connect(ctx))
@@ -192,13 +192,13 @@ func TestNessieSinkWriteIntegration(t *testing.T) {
 	authNone := v1.NessieAuthenticationNone
 
 	sinkSpec := &v1.NessieSinkSpec{
-		BaseURL:         baseURL,
-		Branch:          "main",
-		Warehouse:       "warehouse",
-		Namespace:       namespace,
-		Table:           table,
-		AutoCreateTable: &autoCreate,
-		BatchSize:       &batchSize,
+		BaseURL:            baseURL,
+		Branch:             "main",
+		Warehouse:          "warehouse",
+		Namespace:          namespace,
+		Table:              table,
+		AutoCreateTable:    &autoCreate,
+		BatchSize:          &batchSize,
 		AuthenticationType: authNone,
 	}
 	sink := connectors.NewNessieSinkConnector(sinkSpec)
@@ -216,12 +216,12 @@ func TestNessieSinkWriteIntegration(t *testing.T) {
 
 	pollInterval := int32(1)
 	sourceSpec := &v1.NessieSourceSpec{
-		BaseURL:      baseURL,
-		Branch:        "main",
-		Warehouse:     "warehouse",
-		Namespace:     namespace,
-		Table:         table,
-		PollInterval: &pollInterval,
+		BaseURL:            baseURL,
+		Branch:             "main",
+		Warehouse:          "warehouse",
+		Namespace:          namespace,
+		Table:              table,
+		PollInterval:       &pollInterval,
 		AuthenticationType: authNone,
 	}
 	source := connectors.NewNessieSourceConnector(sourceSpec)

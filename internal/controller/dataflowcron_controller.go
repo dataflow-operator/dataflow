@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -72,7 +73,7 @@ func (r *DataFlowCronReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, r.handleDeletion(ctx, &dfc)
 	}
 	if err := r.ensureFinalizer(ctx, &dfc); err != nil {
-		return ctrl.Result{}, err
+		return requeueOnConflict(err)
 	}
 	resolvedSpec, err := r.secretResolver.ResolveDataFlowSpec(ctx, dfc.Namespace, &dfc.Spec.DataFlowSpec)
 	if err != nil {
@@ -87,8 +88,8 @@ func (r *DataFlowCronReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.reconcileCronJob(ctx, &dfc, resolvedSpec); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.reconcileTriggeredJobs(ctx, &dfc); err != nil {
-		return ctrl.Result{}, err
+	if err := r.reconcileTriggeredJobs(ctx, req, &dfc); err != nil {
+		return requeueOnConflict(err)
 	}
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(dfc.Namespace), client.MatchingLabels{dataFlowCronOwnerLabel: dfc.Name}); err != nil {
@@ -102,7 +103,7 @@ func (r *DataFlowCronReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		k8snames.CronSpecConfigMap(dfc.Name),
 	)
 	if err != nil {
-		return ctrl.Result{}, err
+		return requeueOnConflict(err)
 	}
 	if consumed {
 		if err := r.Get(ctx, req.NamespacedName, &dfc); err != nil {
@@ -242,65 +243,205 @@ func (r *DataFlowCronReconciler) buildFirstStepJobTemplate(dfc *dataflowv1.DataF
 	}
 }
 
-func (r *DataFlowCronReconciler) reconcileTriggeredJobs(ctx context.Context, dfc *dataflowv1.DataFlowCron) error {
+func (r *DataFlowCronReconciler) reconcileTriggeredJobs(ctx context.Context, req ctrl.Request, dfc *dataflowv1.DataFlowCron) error {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(dfc.Namespace), client.MatchingLabels{dataFlowCronOwnerLabel: dfc.Name}); err != nil {
 		return err
 	}
-	for i := range jobs.Items {
-		job := &jobs.Items[i]
-		if isJobFailed(job) {
-			now := metav1.Now()
-			dfc.Status.Phase = "Failed"
-			dfc.Status.ActiveJobName = job.Name
-			dfc.Status.LastFailedTime = &now
-			_ = r.Status().Update(ctx, dfc)
-			continue
-		}
-		if !isJobSucceeded(job) {
-			continue
-		}
-		runID := job.Labels[dataFlowCronRunIDLabel]
-		if runID == "" {
-			runID = shortHash(job.Name)
-		}
-		if err := r.handleSucceededStep(ctx, dfc, job, runID); err != nil {
-			return err
+
+	runID := selectActiveRunID(dfc, jobs.Items)
+	if runID != "" {
+		if failedJob := findFailedJobForRun(jobs.Items, runID); failedJob != nil {
+			if shouldReportFailedJob(dfc, runID, failedJob.Name) {
+				now := metav1.Now()
+				return r.updateDataFlowCronStatusWithRetry(ctx, req, func(d *dataflowv1.DataFlowCron) {
+					d.Status.Phase = "Failed"
+					d.Status.CurrentRunID = runID
+					d.Status.ActiveJobName = failedJob.Name
+					d.Status.LastFailedTime = &now
+				})
+			}
 		}
 	}
-	return nil
+
+	job, jobRunID := findSucceededJobNeedingAdvance(dfc, jobs.Items)
+	if job == nil {
+		return nil
+	}
+	return r.handleSucceededStep(ctx, req, dfc, job, jobRunID)
 }
 
-func (r *DataFlowCronReconciler) handleSucceededStep(ctx context.Context, dfc *dataflowv1.DataFlowCron, job *batchv1.Job, runID string) error {
+func selectActiveRunID(dfc *dataflowv1.DataFlowCron, jobs []batchv1.Job) string {
+	for i := range jobs {
+		job := &jobs[i]
+		if isJobActive(job) {
+			return jobRunID(job)
+		}
+	}
+	for i := range jobs {
+		runID := jobRunID(&jobs[i])
+		if runID == "" {
+			continue
+		}
+		if succeededJobNeedingAdvanceForRun(dfc, jobs, runID) != nil {
+			return runID
+		}
+	}
+	if dfc.Status.CurrentRunID != "" {
+		return dfc.Status.CurrentRunID
+	}
+	var bestRunID string
+	var bestTime time.Time
+	for i := range jobs {
+		job := &jobs[i]
+		runID := jobRunID(job)
+		if runID == "" {
+			continue
+		}
+		if t := jobCompletionTime(job); !t.IsZero() && (bestRunID == "" || t.After(bestTime)) {
+			bestRunID = runID
+			bestTime = t
+		}
+	}
+	return bestRunID
+}
+
+func jobRunID(job *batchv1.Job) string {
+	if runID := job.Labels[dataFlowCronRunIDLabel]; runID != "" {
+		return runID
+	}
+	return shortHash(job.Name)
+}
+
+func jobCompletionTime(job *batchv1.Job) time.Time {
+	if job.Status.CompletionTime != nil {
+		return job.Status.CompletionTime.Time
+	}
+	return time.Time{}
+}
+
+func isJobActive(job *batchv1.Job) bool {
+	return !isJobSucceeded(job) && !isJobFailed(job)
+}
+
+func findFailedJobForRun(jobs []batchv1.Job, runID string) *batchv1.Job {
+	var best *batchv1.Job
+	var bestTime time.Time
+	for i := range jobs {
+		job := &jobs[i]
+		if jobRunID(job) != runID || !isJobFailed(job) {
+			continue
+		}
+		t := jobCompletionTime(job)
+		if best == nil || t.After(bestTime) {
+			best = job
+			bestTime = t
+		}
+	}
+	return best
+}
+
+func shouldReportFailedJob(dfc *dataflowv1.DataFlowCron, runID, jobName string) bool {
+	if dfc.Status.Phase == "Failed" && dfc.Status.CurrentRunID == runID && dfc.Status.ActiveJobName == jobName {
+		return false
+	}
+	return true
+}
+
+func shouldSkipSucceededStep(dfc *dataflowv1.DataFlowCron, runID string, idx int) bool {
+	if dfc.Status.CurrentRunID != "" && dfc.Status.CurrentRunID != runID {
+		return true
+	}
+	switch dfc.Status.Phase {
+	case "Completed":
+		return dfc.Status.CurrentRunID == runID
+	case "RunningTriggers":
+		if dfc.Status.CurrentRunID != runID {
+			return false
+		}
+		if idx == -1 {
+			return true
+		}
+		if dfc.Status.CurrentTriggerIndex == nil {
+			return false
+		}
+		return *dfc.Status.CurrentTriggerIndex > int32(idx)
+	case "Failed":
+		return dfc.Status.CurrentRunID == runID
+	default:
+		return false
+	}
+}
+
+func succeededJobNeedingAdvanceForRun(dfc *dataflowv1.DataFlowCron, jobs []batchv1.Job, runID string) *batchv1.Job {
+	var best *batchv1.Job
+	bestIdx := -2
+	for i := range jobs {
+		job := &jobs[i]
+		if jobRunID(job) != runID || !isJobSucceeded(job) {
+			continue
+		}
+		idx := parseTriggerIndex(job.Labels[dataFlowCronTriggerIndexLabel])
+		if shouldSkipSucceededStep(dfc, runID, idx) {
+			continue
+		}
+		if best == nil || idx > bestIdx {
+			best = job
+			bestIdx = idx
+		}
+	}
+	return best
+}
+
+func findSucceededJobNeedingAdvance(dfc *dataflowv1.DataFlowCron, jobs []batchv1.Job) (*batchv1.Job, string) {
+	runID := selectActiveRunID(dfc, jobs)
+	if runID == "" {
+		return nil, ""
+	}
+	if job := succeededJobNeedingAdvanceForRun(dfc, jobs, runID); job != nil {
+		return job, runID
+	}
+	return nil, ""
+}
+
+func (r *DataFlowCronReconciler) handleSucceededStep(ctx context.Context, req ctrl.Request, dfc *dataflowv1.DataFlowCron, job *batchv1.Job, runID string) error {
 	idx := parseTriggerIndex(job.Labels[dataFlowCronTriggerIndexLabel])
 	nextIndex := idx + 1
-	dfc.Status.CurrentRunID = runID
-	dfc.Status.ActiveJobName = job.Name
+
 	if idx == -1 && len(dfc.Spec.Triggers) > 0 {
 		stepName := stableJobName(dfc.Name, runID, "trigger-0")
 		if err := r.ensureStepJob(ctx, dfc, stepName, runID, 0); err != nil {
 			return err
 		}
-		dfc.Status.Phase = "RunningTriggers"
-		v := int32(0)
-		dfc.Status.CurrentTriggerIndex = &v
-		return r.Status().Update(ctx, dfc)
+		return r.updateDataFlowCronStatusWithRetry(ctx, req, func(d *dataflowv1.DataFlowCron) {
+			d.Status.CurrentRunID = runID
+			d.Status.ActiveJobName = job.Name
+			d.Status.Phase = "RunningTriggers"
+			v := int32(0)
+			d.Status.CurrentTriggerIndex = &v
+		})
 	}
 	if idx >= 0 && nextIndex < len(dfc.Spec.Triggers) {
 		stepName := stableJobName(dfc.Name, runID, fmt.Sprintf("trigger-%d", nextIndex))
 		if err := r.ensureStepJob(ctx, dfc, stepName, runID, nextIndex); err != nil {
 			return err
 		}
-		dfc.Status.Phase = "RunningTriggers"
-		v := int32(nextIndex)
-		dfc.Status.CurrentTriggerIndex = &v
-		return r.Status().Update(ctx, dfc)
+		return r.updateDataFlowCronStatusWithRetry(ctx, req, func(d *dataflowv1.DataFlowCron) {
+			d.Status.CurrentRunID = runID
+			d.Status.ActiveJobName = job.Name
+			d.Status.Phase = "RunningTriggers"
+			v := int32(nextIndex)
+			d.Status.CurrentTriggerIndex = &v
+		})
 	}
 	now := metav1.Now()
-	dfc.Status.Phase = "Completed"
-	dfc.Status.CurrentTriggerIndex = nil
-	dfc.Status.LastSuccessfulTime = &now
-	return r.Status().Update(ctx, dfc)
+	return r.updateDataFlowCronStatusWithRetry(ctx, req, func(d *dataflowv1.DataFlowCron) {
+		d.Status.CurrentRunID = runID
+		d.Status.ActiveJobName = job.Name
+		d.Status.Phase = "Completed"
+		d.Status.CurrentTriggerIndex = nil
+		d.Status.LastSuccessfulTime = &now
+	})
 }
 
 func (r *DataFlowCronReconciler) ensureStepJob(ctx context.Context, dfc *dataflowv1.DataFlowCron, name, runID string, idx int) error {
