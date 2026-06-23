@@ -1044,6 +1044,38 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              maintenance:
+                description: Maintenance defines optional maintenance windows and
+                  manual suspension.
+                properties:
+                  description:
+                    description: Description of the maintenance window.
+                    type: string
+                  duration:
+                    description: Duration is how long the maintenance window lasts
+                      (e.g. "2h", "30m").
+                    type: string
+                  repeat:
+                    description: 'Repeat defines recurrence: daily, weekly, or monthly.
+                      Empty means a one-time window.'
+                    enum:
+                    - daily
+                    - weekly
+                    - monthly
+                    type: string
+                  startTime:
+                    description: StartTime is when the maintenance window begins (RFC3339,
+                      e.g. "2024-01-01T02:00:00Z").
+                    type: string
+                  suspended:
+                    description: Suspended manually stops the DataFlow processor (scales
+                      Deployment to zero).
+                    type: boolean
+                  timezone:
+                    description: 'Timezone for interpreting StartTime (IANA name,
+                      default: UTC).'
+                    type: string
+                type: object
               nodeSelector:
                 additionalProperties:
                   type: string

@@ -119,6 +119,47 @@ type DataFlowSpec struct {
 	// +kubebuilder:default:=1
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Maintenance defines optional maintenance windows and manual suspension.
+	// +optional
+	Maintenance *MaintenanceSpec `json:"maintenance,omitempty"`
+}
+
+// MaintenanceRepeat defines recurrence for scheduled maintenance windows.
+type MaintenanceRepeat string
+
+const (
+	MaintenanceRepeatDaily   MaintenanceRepeat = "daily"
+	MaintenanceRepeatWeekly  MaintenanceRepeat = "weekly"
+	MaintenanceRepeatMonthly MaintenanceRepeat = "monthly"
+)
+
+// MaintenanceSpec defines maintenance window configuration.
+type MaintenanceSpec struct {
+	// StartTime is when the maintenance window begins (RFC3339, e.g. "2024-01-01T02:00:00Z").
+	// +optional
+	StartTime string `json:"startTime,omitempty"`
+
+	// Duration is how long the maintenance window lasts (e.g. "2h", "30m").
+	// +optional
+	Duration string `json:"duration,omitempty"`
+
+	// Repeat defines recurrence: daily, weekly, or monthly. Empty means a one-time window.
+	// +kubebuilder:validation:Enum=daily;weekly;monthly
+	// +optional
+	Repeat MaintenanceRepeat `json:"repeat,omitempty"`
+
+	// Timezone for interpreting StartTime (IANA name, default: UTC).
+	// +optional
+	Timezone string `json:"timezone,omitempty"`
+
+	// Description of the maintenance window.
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// Suspended manually stops the DataFlow processor (scales Deployment to zero).
+	// +optional
+	Suspended *bool `json:"suspended,omitempty"`
 }
 
 // SourceSpec defines the source configuration (type + config).
@@ -1482,6 +1523,29 @@ type DataFlowStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// MaintenanceStatus shows current maintenance state.
+	// +optional
+	MaintenanceStatus *MaintenanceStatus `json:"maintenanceStatus,omitempty"`
+}
+
+// MaintenanceStatus reports observed maintenance state.
+type MaintenanceStatus struct {
+	// InMaintenance is true when the processor is paused due to a scheduled window.
+	// +optional
+	InMaintenance bool `json:"inMaintenance,omitempty"`
+
+	// NextMaintenanceTime is when the next scheduled maintenance window starts.
+	// +optional
+	NextMaintenanceTime *metav1.Time `json:"nextMaintenanceTime,omitempty"`
+
+	// LastMaintenanceTime is when the current or most recent maintenance window started.
+	// +optional
+	LastMaintenanceTime *metav1.Time `json:"lastMaintenanceTime,omitempty"`
+
+	// Suspended reflects spec.maintenance.suspended (manual pause).
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 //+kubebuilder:object:root=true

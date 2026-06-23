@@ -1,0 +1,52 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: schema-evolution-pipeline
+spec:
+  # Пайплайн для миграции с изменением схемы данных
+  ackGranularity: message
+  checkpointPersistence: true
+  source:
+    type: postgresql
+    config:
+      connectionString: "postgres://dataflow:dataflow@source-postgres:5432/legacy?sslmode=disable"
+      # Выбираем только нужные данные
+      table: legacy_events
+      query: "SELECT id, old_data, created_at, version FROM legacy_events WHERE migrated = false"
+      # Частый poll для постепенной миграции
+      pollInterval: 10
+      # Колонка для отслеживания изменений
+      changeTrackingColumn: created_at
+      orderByColumn: id
+  sink:
+    type: postgresql
+    config:
+      connectionString: "postgres://dataflow:dataflow@target-postgres:5432/modern?sslmode=disable"
+      table: modern_events
+      autoCreateTable: true
+      upsertMode: true
+      conflictKey: legacy_id
+      batchSize: 200
+  transformations:
+    # 1. Преобразуем старую схему в новую
+    - type: select
+      config:
+        fields:
+          - id
+          - old_data
+          - created_at
+          - version
+    # 2. Разворачиваем вложенные данные если они в JSON
+    - type: flatten
+      config:
+        field: old_data.items
+    # 3. Преобразуем имена колонок в camelCase для новой схемы
+    - type: camelCase
+    # 4. Добавляем метаданные миграции
+    - type: timestamp
+      config:
+        fieldName: migrated_at
+    # 5. Фильтруем записи с валидными данными
+    - type: filter
+      config:
+        condition: "$.eventType && $.userId"

@@ -47,6 +47,7 @@ func ValidateDataFlowSpec(spec *DataFlowSpec) field.ErrorList {
 	all = append(all, validateReplicas(spec, f)...)
 	all = append(all, validateAckGranularity(spec, f)...)
 	all = append(all, validateIdempotency(spec, f)...)
+	all = append(all, validateMaintenance(spec.Maintenance, f.Child("maintenance"))...)
 	return all
 }
 

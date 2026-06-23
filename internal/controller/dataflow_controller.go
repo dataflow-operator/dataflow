@@ -298,6 +298,16 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	if paused, maintErr := syncMaintenanceStatus(&dataflow, time.Now()); maintErr != nil {
+		metrics.RecordControllerReconcileError("maintenance_eval")
+		log.Error(maintErr, "failed to evaluate maintenance window")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&dataflow, corev1.EventTypeWarning, "MaintenanceEvalFailed", "Failed to evaluate maintenance: %v", maintErr)
+		}
+	} else if paused {
+		log.V(1).Info("DataFlow processor paused for maintenance", "suspended", dataflow.Status.MaintenanceStatus != nil && dataflow.Status.MaintenanceStatus.Suspended)
+	}
+
 	// Check Deployment status
 	deployment := &appsv1.Deployment{}
 	deploymentFound := false
@@ -320,8 +330,16 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// Update status based on Deployment state
 		if desired == 0 {
 			dataflow.Status.Phase = "Pending"
-			dataflow.Status.Message = "Processor scaled to zero replicas"
-			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, "DeploymentScaledToZero")
+			dataflow.Status.Message = processorPausedMessage(&dataflow)
+			reason := "DeploymentScaledToZero"
+			if dataflow.Status.MaintenanceStatus != nil {
+				if dataflow.Status.MaintenanceStatus.Suspended {
+					reason = "MaintenanceSuspended"
+				} else if dataflow.Status.MaintenanceStatus.InMaintenance {
+					reason = "MaintenanceWindow"
+				}
+			}
+			dataflow.Status.Conditions = buildStatusConditions(dataflow.Status.Phase, dataflow.Status.Message, true, false, reason)
 		} else if ready >= desired {
 			dataflow.Status.Phase = "Running"
 			if desired == 1 {
@@ -364,6 +382,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	statusErrorCount := dataflow.Status.ErrorCount
 	statusLastProcessedTime := dataflow.Status.LastProcessedTime
 	statusConditions := dataflow.Status.Conditions
+	statusMaintenanceStatus := dataflow.Status.MaintenanceStatus
 
 	if err := r.updateStatusWithRetry(ctx, req, func(df *dataflowv1.DataFlow) {
 		df.Status.Phase = statusPhase
@@ -372,6 +391,7 @@ func (r *DataFlowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		df.Status.ErrorCount = statusErrorCount
 		df.Status.LastProcessedTime = statusLastProcessedTime
 		df.Status.Conditions = statusConditions
+		df.Status.MaintenanceStatus = statusMaintenanceStatus
 	}); err != nil {
 		metrics.RecordControllerReconcileError("update_status")
 		log.Error(err, "unable to update DataFlow status")

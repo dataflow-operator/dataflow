@@ -1,0 +1,42 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: pipeline-with-dlq
+spec:
+  # Message-level ack для точной обработки
+  ackGranularity: message
+  source:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: main-events
+      consumerGroup: dataflow-dlq-group
+  sink:
+    type: postgresql
+    config:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: processed_events
+      upsertMode: true
+      conflictKey: event_id
+      batchSize: 100
+  # Dead Letter Queue для ошибочных сообщений
+  errors:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: dead-letter-queue
+    # afterWrite: коммитить offset после записи в DLQ
+    # never: не коммитить, повторная обработка после исправления
+    # afterMainSinkSuccess: коммитить только после успеха основного sink
+    ackPolicy: afterWrite
+  transformations:
+    # Валидация: пропускаем только сообщения с обязательными полями
+    - type: filter
+      config:
+        condition: "$.event_id && $.user_id && $.timestamp"
+    # Добавляем метаданные обработки
+    - type: timestamp
+      config:
+        fieldName: processed_at

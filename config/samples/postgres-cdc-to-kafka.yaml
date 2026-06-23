@@ -1,0 +1,65 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: postgres-cdc-to-kafka
+spec:
+  # Message-level ack для точной доставки CDC событий
+  ackGranularity: message
+  checkpointPersistence: true
+  source:
+    type: postgresql-cdc
+    config:
+      connectionString: "postgres://repl_user:repl_pass@postgres:5432/production?sslmode=disable"
+      # Имя logical replication slot
+      slotName: cdc_to_kafka_slot
+      # Имя publication для CDC
+      publicationName: cdc_to_kafka_pub
+      # Таблицы для репликации
+      tables:
+        - public.users
+        - public.orders
+        - public.products
+      # Режим snapshot: initial (все данные), never (только новые)
+      snapshotMode: initial
+      # Автосоздание slot и publication если не существуют
+      createSlotIfNotExists: true
+      createPublicationIfNotExists: true
+      # Heartbeat для поддержания slot активным
+      heartbeatIntervalSeconds: 30
+  sink:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      # Динамическая маршрутизация по таблицам через router transformation
+      topic: cdc-events-default
+  transformations:
+    # Добавляем метаданные CDC
+    - type: timestamp
+      config:
+        fieldName: cdc_processed_at
+    # Маршрутизатор: направляем события в разные топики по таблице
+    - type: router
+      config:
+        routes:
+          - condition: "$.source.table == 'users'"
+            sink:
+              type: kafka
+              config:
+                brokers:
+                  - kafka:9092
+                topic: cdc.users
+          - condition: "$.source.table == 'orders'"
+            sink:
+              type: kafka
+              config:
+                brokers:
+                  - kafka:9092
+                topic: cdc.orders
+          - condition: "$.source.table == 'products'"
+            sink:
+              type: kafka
+              config:
+                brokers:
+                  - kafka:9092
+                topic: cdc.products

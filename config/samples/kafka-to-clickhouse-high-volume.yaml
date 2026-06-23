@@ -1,0 +1,37 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-clickhouse-high-volume
+spec:
+  # Высоконагруженный поток: увеличиваем буфер канала
+  channelBufferSize: 1000
+  # Для high-volume потоков используем message-level ack
+  ackGranularity: message
+  source:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: high-volume-events
+      consumerGroup: dataflow-high-volume-group
+  sink:
+    type: clickhouse
+    config:
+      connectionString: "clickhouse://default@clickhouse:9000/default?dial_timeout=30s"
+      table: events_high_volume
+      # Увеличенный batch size для высокой пропускной способности
+      batchSize: 1000
+      # Интервал сброса batch (секунды)
+      batchFlushIntervalSeconds: 5
+      autoCreateTable: true
+      # Идемпотентность для защиты от дубликатов
+      upsertMode: true
+      conflictKey: event_id
+  # Оптимальные ресурсы для высокой нагрузки
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"

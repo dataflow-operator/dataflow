@@ -1,0 +1,44 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: multi-source-aggregator
+spec:
+  # Агрегация данных из нескольких источников
+  # Примечание: это пример концепции. Реальная множественная агрегация
+  # требует отдельных DataFlow для каждого источника с общим sink.
+  #
+  # Вариант 1: Несколько DataFlow → один PostgreSQL sink
+  # Вариант 2: Используйте Kafka как intermediate buffer
+  source:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      # Используем pattern для чтения из нескольких топиков
+      # или создайте отдельные DataFlow для каждого источника
+      topic: aggregated-events
+      consumerGroup: aggregator-group
+  sink:
+    type: postgresql
+    config:
+      connectionString: "postgres://dataflow:dataflow@postgres:5432/dataflow?sslmode=disable"
+      table: aggregated_metrics
+      upsertMode: true
+      conflictKey: metric_id
+      batchSize: 500
+  transformations:
+    # Обогащение: добавляем источник данных
+    - type: select
+      config:
+        fields:
+          - metric_id
+          - source_system
+          - metric_value
+          - timestamp
+          - metadata
+    # Нормализация ключей в snake_case для БД
+    - type: snakeCase
+    # Добавляем время агрегации
+    - type: timestamp
+      config:
+        fieldName: aggregated_at
