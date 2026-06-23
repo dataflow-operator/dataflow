@@ -1,5 +1,9 @@
 ## Commits
 
+- ecf1564 feat: add maintenance window support to DataFlow
+
+## Commits
+
 - fce8f4b Fix: refactor DataFlowCron reconciler for improved job handling and status updates
 
 ## Commits
