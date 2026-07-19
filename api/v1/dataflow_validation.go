@@ -1045,7 +1045,7 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 						all = append(all, field.Required(idx.Child("config"), "at least one of renames, include, or exclude is required"))
 					}
 					for j, rename := range cfg.Renames {
-						if !isValidReplaceFieldRename(rename) {
+						if !isValidColonMapping(rename) {
 							all = append(all, field.Invalid(idx.Child("config", "renames").Index(j), rename, "rename must be in oldPath:newPath format"))
 						}
 					}
@@ -1053,18 +1053,35 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "replaceField transformation configuration is required"))
 			}
+		case transformtypes.HeadersToPayload:
+			if hasConfig {
+				var cfg HeadersToPayloadTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid headersToPayload config: "+err.Error()))
+				} else if len(cfg.Mappings) == 0 {
+					all = append(all, field.Required(idx.Child("config", "mappings"), "at least one mapping is required"))
+				} else {
+					for j, mapping := range cfg.Mappings {
+						if !isValidColonMapping(mapping) {
+							all = append(all, field.Invalid(idx.Child("config", "mappings").Index(j), mapping, "mapping must be in headerName:fieldPath format"))
+						}
+					}
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "headersToPayload transformation configuration is required"))
+			}
 		}
 	}
 	return all
 }
 
-// isValidReplaceFieldRename reports whether rename is in oldPath:newPath form with non-empty sides.
-func isValidReplaceFieldRename(rename string) bool {
-	oldPath, newPath, ok := strings.Cut(rename, ":")
+// isValidColonMapping reports whether s is in left:right form with non-empty sides.
+func isValidColonMapping(s string) bool {
+	left, right, ok := strings.Cut(s, ":")
 	if !ok {
 		return false
 	}
-	return strings.TrimSpace(oldPath) != "" && strings.TrimSpace(newPath) != ""
+	return strings.TrimSpace(left) != "" && strings.TrimSpace(right) != ""
 }
 
 func validateResources(r *corev1.ResourceRequirements, f *field.Path) field.ErrorList {

@@ -955,6 +955,61 @@ func TestConsumeClaim_SetsTimestampMetadata(t *testing.T) {
 	}
 }
 
+func TestConsumeClaim_SetsHeadersMetadata(t *testing.T) {
+	claim := &mockConsumerGroupClaim{
+		ch: make(chan *sarama.ConsumerMessage, 1),
+	}
+	claim.ch <- &sarama.ConsumerMessage{
+		Topic:     "test-topic",
+		Partition: 1,
+		Offset:    7,
+		Key:       []byte("key-1"),
+		Value:     []byte(`{"id":1}`),
+		Timestamp: time.Date(2024, 2, 27, 10, 13, 20, 0, time.UTC),
+		Headers: []*sarama.RecordHeader{
+			{Key: []byte("X-Request-Id"), Value: []byte("req-123")},
+			{Key: []byte("X-User-Id"), Value: []byte("user-456")},
+		},
+	}
+	close(claim.ch)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	session := &mockConsumerGroupSession{ctx: ctx}
+
+	msgChan := make(chan *types.Message, 1)
+	handler := &kafkaConsumerGroupHandler{
+		connector: &KafkaSourceConnector{
+			config:          &v1.KafkaSourceSpec{},
+			connectorLogger: connectorLogger{logger: logr.Discard()},
+		},
+		msgChan:   msgChan,
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	err := handler.ConsumeClaim(session, claim)
+	if err != nil {
+		t.Fatalf("ConsumeClaim returned error: %v", err)
+	}
+
+	select {
+	case msg := <-msgChan:
+		headers, ok := msg.Metadata["headers"].(map[string]string)
+		if !ok {
+			t.Fatalf("headers not found in metadata or wrong type: %T", msg.Metadata["headers"])
+		}
+		if headers["X-Request-Id"] != "req-123" {
+			t.Errorf("X-Request-Id = %q, want %q", headers["X-Request-Id"], "req-123")
+		}
+		if headers["X-User-Id"] != "user-456" {
+			t.Errorf("X-User-Id = %q, want %q", headers["X-User-Id"], "user-456")
+		}
+	default:
+		t.Fatal("no message received from msgChan")
+	}
+}
+
 func TestConsumeClaim_TimestampMetadataUTC(t *testing.T) {
 	tests := []struct {
 		name      string

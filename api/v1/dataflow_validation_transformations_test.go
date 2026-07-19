@@ -189,3 +189,74 @@ func TestValidateTransformations_ReplaceField(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateTransformations_HeadersToPayload(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("valid mappings", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "headersToPayload",
+			Config: mustRawConfigForValidation(HeadersToPayloadTransformation{
+				Mappings: []string{"X-Request-Id:requestId", "X-Language:metadata.language"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{Type: "headersToPayload"}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for missing config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "headersToPayload transformation configuration is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty mappings", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type:   "headersToPayload",
+			Config: mustRawConfigForValidation(HeadersToPayloadTransformation{}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty mappings")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "at least one mapping is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("invalid mapping format", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "headersToPayload",
+			Config: mustRawConfigForValidation(HeadersToPayloadTransformation{
+				Mappings: []string{"bad-format"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for invalid mapping")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "headerName:fieldPath") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+}

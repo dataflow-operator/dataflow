@@ -282,6 +282,28 @@ func TestCreateTransformer_ReplaceField(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_HeadersToPayload(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid headersToPayload transformation",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.HeadersToPayload,
+				Config: mustConfig(v1.HeadersToPayloadTransformation{
+					Mappings: []string{"X-Request-Id:requestId"},
+				}),
+			},
+		},
+		{
+			name: "headersToPayload without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.HeadersToPayload,
+			},
+			wantErr:     true,
+			errContains: "headersToPayload transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",

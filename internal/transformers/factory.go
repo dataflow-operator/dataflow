@@ -46,6 +46,9 @@ var transformerRegistry = map[string]transformerEntry{
 		}),
 	},
 	transformtypes.ReplaceField: {create: createTransformer[v1.ReplaceFieldTransformation](transformtypes.ReplaceField, func(cfg *v1.ReplaceFieldTransformation) Transformer { return NewReplaceFieldTransformer(cfg) })},
+	transformtypes.HeadersToPayload: {create: createTransformer[v1.HeadersToPayloadTransformation](transformtypes.HeadersToPayload, func(cfg *v1.HeadersToPayloadTransformation) Transformer {
+		return NewHeadersToPayloadTransformer(cfg)
+	})},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.

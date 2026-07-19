@@ -16,10 +16,6 @@ limitations under the License.
 
 package transformers
 
-// TODO: HeaderFromTransformation is not yet implemented in API
-// All tests are commented out until the type is added to the API
-
-/*
 import (
 	"context"
 	"encoding/json"
@@ -31,10 +27,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHeaderFromTransformer_Transform(t *testing.T) {
+func TestHeadersToPayloadTransformer_Transform(t *testing.T) {
 	tests := []struct {
 		name      string
-		config    *v1.HeaderFromTransformation
+		config    *v1.HeadersToPayloadTransformation
 		input     map[string]interface{}
 		headers   map[string]string
 		want      map[string]interface{}
@@ -42,7 +38,7 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 	}{
 		{
 			name: "extract single header to simple field",
-			config: &v1.HeaderFromTransformation{
+			config: &v1.HeadersToPayloadTransformation{
 				Mappings: []string{"X-Request-Id:requestId"},
 			},
 			input: map[string]interface{}{
@@ -58,7 +54,7 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 		},
 		{
 			name: "extract header to nested field",
-			config: &v1.HeaderFromTransformation{
+			config: &v1.HeadersToPayloadTransformation{
 				Mappings: []string{"X-Language:metadata.language"},
 			},
 			input: map[string]interface{}{
@@ -76,7 +72,7 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 		},
 		{
 			name: "extract multiple headers",
-			config: &v1.HeaderFromTransformation{
+			config: &v1.HeadersToPayloadTransformation{
 				Mappings: []string{"X-Request-Id:requestId", "X-User-Id:userId"},
 			},
 			input: map[string]interface{}{
@@ -94,7 +90,7 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 		},
 		{
 			name: "non-existent header",
-			config: &v1.HeaderFromTransformation{
+			config: &v1.HeadersToPayloadTransformation{
 				Mappings: []string{"X-Missing:field"},
 			},
 			input: map[string]interface{}{
@@ -109,7 +105,7 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 		},
 		{
 			name: "no headers in metadata",
-			config: &v1.HeaderFromTransformation{
+			config: &v1.HeadersToPayloadTransformation{
 				Mappings: []string{"X-Request-Id:requestId"},
 			},
 			input: map[string]interface{}{
@@ -122,7 +118,7 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 		},
 		{
 			name: "extract header with JSONPath prefix",
-			config: &v1.HeaderFromTransformation{
+			config: &v1.HeadersToPayloadTransformation{
 				Mappings: []string{"X-Request-Id:$.requestId"},
 			},
 			input: map[string]interface{}{
@@ -140,7 +136,7 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			transformer := NewHeaderFromTransformer(tt.config)
+			transformer := NewHeadersToPayloadTransformer(tt.config)
 
 			jsonData, err := json.Marshal(tt.input)
 			require.NoError(t, err)
@@ -164,7 +160,6 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 			err = json.Unmarshal(output[0].Data, &outputData)
 			require.NoError(t, err)
 
-			// Compare expected fields
 			for key, expectedValue := range tt.want {
 				actualValue, exists := outputData[key]
 				assert.True(t, exists, "field %s should exist", key)
@@ -174,12 +169,12 @@ func TestHeaderFromTransformer_Transform(t *testing.T) {
 	}
 }
 
-func TestHeaderFromTransformer_InvalidFormat(t *testing.T) {
-	config := &v1.HeaderFromTransformation{
+func TestHeadersToPayloadTransformer_InvalidFormat(t *testing.T) {
+	config := &v1.HeadersToPayloadTransformation{
 		Mappings: []string{"invalid-format"},
 	}
 
-	transformer := NewHeaderFromTransformer(config)
+	transformer := NewHeadersToPayloadTransformer(config)
 
 	jsonData, err := json.Marshal(map[string]interface{}{"field": "value"})
 	require.NoError(t, err)
@@ -193,35 +188,67 @@ func TestHeaderFromTransformer_InvalidFormat(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid header mapping format")
 }
 
-func TestHeaderFromTransformer_InvalidHeadersType(t *testing.T) {
-	config := &v1.HeaderFromTransformation{
+func TestHeadersToPayloadTransformer_InvalidHeadersType(t *testing.T) {
+	config := &v1.HeadersToPayloadTransformation{
 		Mappings: []string{"X-Request-Id:requestId"},
 	}
 
-	transformer := NewHeaderFromTransformer(config)
+	transformer := NewHeadersToPayloadTransformer(config)
 
 	jsonData, err := json.Marshal(map[string]interface{}{"field": "value"})
 	require.NoError(t, err)
 
 	message := types.NewMessage(jsonData)
-	// Set headers as wrong type
 	message.Metadata["headers"] = "not-a-map"
 
 	output, err := transformer.Transform(context.Background(), message)
 
 	require.NoError(t, err)
 	require.Len(t, output, 1)
-	// Should return original message unchanged
 	assert.Equal(t, message.Data, output[0].Data)
 }
 
-func TestNewHeaderFromTransformer(t *testing.T) {
-	config := &v1.HeaderFromTransformation{
+func TestHeadersToPayloadTransformer_HeadersAsInterfaceMap(t *testing.T) {
+	transformer := NewHeadersToPayloadTransformer(&v1.HeadersToPayloadTransformation{
+		Mappings: []string{"X-Request-Id:requestId"},
+	})
+
+	jsonData, err := json.Marshal(map[string]interface{}{"data": "value"})
+	require.NoError(t, err)
+
+	message := types.NewMessage(jsonData)
+	message.Metadata["headers"] = map[string]interface{}{
+		"X-Request-Id": "req-789",
+	}
+
+	output, err := transformer.Transform(context.Background(), message)
+	require.NoError(t, err)
+	require.Len(t, output, 1)
+
+	var outputData map[string]interface{}
+	require.NoError(t, json.Unmarshal(output[0].Data, &outputData))
+	assert.Equal(t, "req-789", outputData["requestId"])
+}
+
+func TestHeadersToPayloadTransformer_BinaryPassthrough(t *testing.T) {
+	transformer := NewHeadersToPayloadTransformer(&v1.HeadersToPayloadTransformation{
+		Mappings: []string{"X-Request-Id:requestId"},
+	})
+	message := types.NewMessage([]byte("not-json"))
+	message.Metadata["headers"] = map[string]string{"X-Request-Id": "req"}
+
+	output, err := transformer.Transform(context.Background(), message)
+	require.NoError(t, err)
+	require.Len(t, output, 1)
+	assert.Equal(t, []byte("not-json"), output[0].Data)
+}
+
+func TestNewHeadersToPayloadTransformer(t *testing.T) {
+	config := &v1.HeadersToPayloadTransformation{
 		Mappings: []string{"X-Header:field"},
 	}
 
-	transformer := NewHeaderFromTransformer(config)
+	transformer := NewHeadersToPayloadTransformer(config)
 	assert.NotNil(t, transformer)
 	assert.Equal(t, config, transformer.config)
 }
-*/

@@ -1342,7 +1342,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -1404,6 +1404,11 @@ func (t *TransformationSpec) GetDebeziumUnwrapConfig() (*DebeziumUnwrapTransform
 // GetReplaceFieldConfig returns ReplaceField transformation config.
 func (t *TransformationSpec) GetReplaceFieldConfig() (*ReplaceFieldTransformation, error) {
 	return getTypedConfig[ReplaceFieldTransformation](t.Config)
+}
+
+// GetHeadersToPayloadConfig returns HeadersToPayload transformation config.
+func (t *TransformationSpec) GetHeadersToPayloadConfig() (*HeadersToPayloadTransformation, error) {
+	return getTypedConfig[HeadersToPayloadTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -1514,6 +1519,13 @@ type ReplaceFieldTransformation struct {
 	// Exclude removes the listed field paths.
 	// +optional
 	Exclude []string `json:"exclude,omitempty"`
+}
+
+// HeadersToPayloadTransformation copies Kafka/message headers from Metadata into the JSON payload.
+// Mappings use headerName:fieldPath (JSONPath without requiring $.). Missing headers are skipped.
+type HeadersToPayloadTransformation struct {
+	// Mappings is a list of headerName:fieldPath entries (e.g. "X-Request-Id:requestId").
+	Mappings []string `json:"mappings"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow
