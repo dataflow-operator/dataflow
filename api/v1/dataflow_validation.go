@@ -1108,6 +1108,27 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "hoistField transformation configuration is required"))
 			}
+		case transformtypes.Cast:
+			if hasConfig {
+				var cfg CastTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid cast config: "+err.Error()))
+				} else if len(cfg.Spec) == 0 {
+					all = append(all, field.Required(idx.Child("config", "spec"), "spec is required and must be non-empty"))
+				} else {
+					for path, typ := range cfg.Spec {
+						if normalizeJSONPathField(path) == "" {
+							all = append(all, field.Invalid(idx.Child("config", "spec"), path, "spec keys must be non-empty JSONPaths"))
+							continue
+						}
+						if !isValidCastType(typ) {
+							all = append(all, field.NotSupported(idx.Child("config", "spec").Key(path), typ, validCastTypes))
+						}
+					}
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "cast transformation configuration is required"))
+			}
 		}
 	}
 	return all
@@ -1144,6 +1165,17 @@ func normalizeJSONPathField(field string) string {
 	default:
 		return field
 	}
+}
+
+var validCastTypes = []string{"string", "int64", "float64", "bool", "null"}
+
+func isValidCastType(typ string) bool {
+	for _, allowed := range validCastTypes {
+		if typ == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // isValidColonMapping reports whether s is in left:right form with non-empty sides.

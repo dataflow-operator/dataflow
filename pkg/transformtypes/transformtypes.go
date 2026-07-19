@@ -39,6 +39,7 @@ const (
 	StructFlatten    = "structFlatten"
 	ExtractField     = "extractField"
 	HoistField       = "hoistField"
+	Cast             = "cast"
 )
 
 // keys is built from constants only — add a new transformer: new const, append here, register in factory.
@@ -58,6 +59,7 @@ var keys = []string{
 	StructFlatten,
 	ExtractField,
 	HoistField,
+	Cast,
 }
 
 var keySet map[string]struct{}

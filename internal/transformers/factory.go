@@ -58,6 +58,9 @@ var transformerRegistry = map[string]transformerEntry{
 	transformtypes.HoistField: {create: createTransformer[v1.HoistFieldTransformation](transformtypes.HoistField, func(cfg *v1.HoistFieldTransformation) Transformer {
 		return NewHoistFieldTransformer(cfg)
 	})},
+	transformtypes.Cast: {create: createTransformer[v1.CastTransformation](transformtypes.Cast, func(cfg *v1.CastTransformation) Transformer {
+		return NewCastTransformer(cfg)
+	})},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.

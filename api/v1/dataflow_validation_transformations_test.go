@@ -482,3 +482,113 @@ func TestValidateTransformations_HoistField(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateTransformations_Cast(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "cast",
+			Config: mustRawConfigForValidation(CastTransformation{
+				Spec: map[string]string{
+					"id":     "int64",
+					"amount": "float64",
+					"active": "bool",
+					"note":   "string",
+					"gone":   "null",
+				},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("valid with JSONPath prefix", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "cast",
+			Config: mustRawConfigForValidation(CastTransformation{
+				Spec: map[string]string{
+					"$.row.id": "int64",
+				},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{Type: "cast"}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for missing config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "cast transformation configuration is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty spec", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type:   "cast",
+			Config: mustRawConfigForValidation(CastTransformation{}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty spec")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "spec is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("unsupported type", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "cast",
+			Config: mustRawConfigForValidation(CastTransformation{
+				Spec: map[string]string{"id": "uint64"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for unsupported cast type")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "uint64") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty path key", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "cast",
+			Config: mustRawConfigForValidation(CastTransformation{
+				Spec: map[string]string{"$": "int64"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty path")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "non-empty JSONPaths") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+}

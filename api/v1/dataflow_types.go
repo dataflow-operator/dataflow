@@ -1342,7 +1342,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField, cast
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -1424,6 +1424,11 @@ func (t *TransformationSpec) GetExtractFieldConfig() (*ExtractFieldTransformatio
 // GetHoistFieldConfig returns HoistField transformation config.
 func (t *TransformationSpec) GetHoistFieldConfig() (*HoistFieldTransformation, error) {
 	return getTypedConfig[HoistFieldTransformation](t.Config)
+}
+
+// GetCastConfig returns Cast transformation config.
+func (t *TransformationSpec) GetCastConfig() (*CastTransformation, error) {
+	return getTypedConfig[CastTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -1564,6 +1569,14 @@ type ExtractFieldTransformation struct {
 type HoistFieldTransformation struct {
 	// Field is the wrapper key name (required). Must not contain dots.
 	Field string `json:"field"`
+}
+
+// CastTransformation converts field values to target types by JSONPath.
+// Failed conversion of an existing value is a transform error (message skipped, not written to sink).
+type CastTransformation struct {
+	// Spec maps JSONPath → target type. Required, non-empty.
+	// Types: string | int64 | float64 | bool | null
+	Spec map[string]string `json:"spec"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow

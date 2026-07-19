@@ -371,6 +371,28 @@ func TestCreateTransformer_HoistField(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_Cast(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid cast transformation",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.Cast,
+				Config: mustConfig(v1.CastTransformation{Spec: map[string]string{
+					"id": "int64",
+				}}),
+			},
+		},
+		{
+			name: "cast without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.Cast,
+			},
+			wantErr:     true,
+			errContains: "cast transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",
