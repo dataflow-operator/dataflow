@@ -1342,7 +1342,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -1414,6 +1414,16 @@ func (t *TransformationSpec) GetHeadersToPayloadConfig() (*HeadersToPayloadTrans
 // GetStructFlattenConfig returns StructFlatten transformation config.
 func (t *TransformationSpec) GetStructFlattenConfig() (*StructFlattenTransformation, error) {
 	return getTypedConfig[StructFlattenTransformation](t.Config)
+}
+
+// GetExtractFieldConfig returns ExtractField transformation config.
+func (t *TransformationSpec) GetExtractFieldConfig() (*ExtractFieldTransformation, error) {
+	return getTypedConfig[ExtractFieldTransformation](t.Config)
+}
+
+// GetHoistFieldConfig returns HoistField transformation config.
+func (t *TransformationSpec) GetHoistFieldConfig() (*HoistFieldTransformation, error) {
+	return getTypedConfig[HoistFieldTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -1540,6 +1550,20 @@ type StructFlattenTransformation struct {
 	// Delimiter between nested key segments. Default: "."
 	// +optional
 	Delimiter string `json:"delimiter,omitempty"`
+}
+
+// ExtractFieldTransformation replaces the message payload with the value of one field
+// (Kafka Connect ExtractField$Value style). The root may become a non-object JSON value.
+type ExtractFieldTransformation struct {
+	// Field is the JSONPath to the value that becomes the new root (required).
+	Field string `json:"field"`
+}
+
+// HoistFieldTransformation wraps the entire payload under a single top-level key
+// (inverse of extractField). Field must be a simple key name without dots.
+type HoistFieldTransformation struct {
+	// Field is the wrapper key name (required). Must not contain dots.
+	Field string `json:"field"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow

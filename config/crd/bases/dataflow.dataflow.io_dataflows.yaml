@@ -1252,7 +1252,8 @@ spec:
                     type:
                       description: 'Type of transformation: timestamp, flatten, filter,
                         mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap,
-                        replaceField, headersToPayload, structFlatten'
+                        replaceField, headersToPayload, structFlatten, extractField,
+                        hoistField'
                       type: string
                   required:
                   - type

@@ -1081,6 +1081,33 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "structFlatten transformation configuration is required"))
 			}
+		case transformtypes.ExtractField:
+			if hasConfig {
+				var cfg ExtractFieldTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid extractField config: "+err.Error()))
+				} else if normalizeJSONPathField(cfg.Field) == "" {
+					all = append(all, field.Required(idx.Child("config", "field"), "field is required"))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "extractField transformation configuration is required"))
+			}
+		case transformtypes.HoistField:
+			if hasConfig {
+				var cfg HoistFieldTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid hoistField config: "+err.Error()))
+				} else {
+					fieldName := strings.TrimSpace(cfg.Field)
+					if fieldName == "" {
+						all = append(all, field.Required(idx.Child("config", "field"), "field is required"))
+					} else if strings.Contains(fieldName, ".") {
+						all = append(all, field.Invalid(idx.Child("config", "field"), cfg.Field, "field must be a simple top-level key without dots"))
+					}
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "hoistField transformation configuration is required"))
+			}
 		}
 	}
 	return all
@@ -1104,6 +1131,19 @@ func validateStructFlattenDelimiter(raw []byte) error {
 		return fmt.Errorf("delimiter must be a non-empty string")
 	}
 	return nil
+}
+
+// normalizeJSONPathField strips a leading $. or $ prefix (same as runtime normalizeFieldPath).
+func normalizeJSONPathField(field string) string {
+	field = strings.TrimSpace(field)
+	switch {
+	case strings.HasPrefix(field, "$."):
+		return field[2:]
+	case strings.HasPrefix(field, "$"):
+		return field[1:]
+	default:
+		return field
+	}
 }
 
 // isValidColonMapping reports whether s is in left:right form with non-empty sides.

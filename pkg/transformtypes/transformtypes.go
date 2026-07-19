@@ -37,6 +37,8 @@ const (
 	ReplaceField     = "replaceField"
 	HeadersToPayload = "headersToPayload"
 	StructFlatten    = "structFlatten"
+	ExtractField     = "extractField"
+	HoistField       = "hoistField"
 )
 
 // keys is built from constants only — add a new transformer: new const, append here, register in factory.
@@ -54,6 +56,8 @@ var keys = []string{
 	ReplaceField,
 	HeadersToPayload,
 	StructFlatten,
+	ExtractField,
+	HoistField,
 }
 
 var keySet map[string]struct{}

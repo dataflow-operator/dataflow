@@ -331,6 +331,46 @@ func TestCreateTransformer_StructFlatten(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_ExtractField(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid extractField transformation",
+			transformation: &v1.TransformationSpec{
+				Type:   transformtypes.ExtractField,
+				Config: mustConfig(v1.ExtractFieldTransformation{Field: "payload.after"}),
+			},
+		},
+		{
+			name: "extractField without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.ExtractField,
+			},
+			wantErr:     true,
+			errContains: "extractField transformation configuration is required",
+		},
+	})
+}
+
+func TestCreateTransformer_HoistField(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid hoistField transformation",
+			transformation: &v1.TransformationSpec{
+				Type:   transformtypes.HoistField,
+				Config: mustConfig(v1.HoistFieldTransformation{Field: "record"}),
+			},
+		},
+		{
+			name: "hoistField without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.HoistField,
+			},
+			wantErr:     true,
+			errContains: "hoistField transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",

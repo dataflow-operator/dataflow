@@ -52,6 +52,12 @@ var transformerRegistry = map[string]transformerEntry{
 	transformtypes.StructFlatten: {create: createTransformer[v1.StructFlattenTransformation](transformtypes.StructFlatten, func(cfg *v1.StructFlattenTransformation) Transformer {
 		return NewStructFlattenTransformer(cfg)
 	})},
+	transformtypes.ExtractField: {create: createTransformer[v1.ExtractFieldTransformation](transformtypes.ExtractField, func(cfg *v1.ExtractFieldTransformation) Transformer {
+		return NewExtractFieldTransformer(cfg)
+	})},
+	transformtypes.HoistField: {create: createTransformer[v1.HoistFieldTransformation](transformtypes.HoistField, func(cfg *v1.HoistFieldTransformation) Transformer {
+		return NewHoistFieldTransformer(cfg)
+	})},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.

@@ -326,3 +326,159 @@ func TestValidateTransformations_StructFlatten(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateTransformations_ExtractField(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "extractField",
+			Config: mustRawConfigForValidation(ExtractFieldTransformation{
+				Field: "payload.after",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("valid with JSONPath prefix", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "extractField",
+			Config: mustRawConfigForValidation(ExtractFieldTransformation{
+				Field: "$.payload.after",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{Type: "extractField"}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for missing config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "extractField transformation configuration is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty field", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type:   "extractField",
+			Config: mustRawConfigForValidation(ExtractFieldTransformation{}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty field")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "field is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("field only dollar prefix", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "extractField",
+			Config: mustRawConfigForValidation(ExtractFieldTransformation{
+				Field: "$",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty path after normalize")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "field is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+}
+
+func TestValidateTransformations_HoistField(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "hoistField",
+			Config: mustRawConfigForValidation(HoistFieldTransformation{
+				Field: "record",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{Type: "hoistField"}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for missing config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "hoistField transformation configuration is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty field", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type:   "hoistField",
+			Config: mustRawConfigForValidation(HoistFieldTransformation{}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty field")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "field is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("field with dots", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "hoistField",
+			Config: mustRawConfigForValidation(HoistFieldTransformation{
+				Field: "payload.after",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for dotted field")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "simple top-level key without dots") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+}
