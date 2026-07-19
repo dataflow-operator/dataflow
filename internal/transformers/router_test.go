@@ -89,3 +89,28 @@ func TestRouterTransformer_Transform_WithLogger_SameBehavior(t *testing.T) {
 		assert.Equal(t, "value", result[0].Metadata["custom"])
 	})
 }
+
+func TestRouterTransformer_Transform_Neq(t *testing.T) {
+	transformer := NewRouterTransformer(&v1.RouterTransformation{
+		Routes: []v1.RouteRule{
+			{Condition: "$.type != 'spam'", Sink: v1.SinkSpec{Type: "kafka"}},
+		},
+	})
+	ctx := context.Background()
+
+	t.Run("neq matches non-spam", func(t *testing.T) {
+		data, _ := json.Marshal(map[string]interface{}{"type": "order"})
+		result, err := transformer.Transform(ctx, types.NewMessage(data))
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		assert.Equal(t, "$.type != 'spam'", result[0].Metadata["routed_condition"])
+	})
+
+	t.Run("neq does not match spam", func(t *testing.T) {
+		data, _ := json.Marshal(map[string]interface{}{"type": "spam"})
+		result, err := transformer.Transform(ctx, types.NewMessage(data))
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		assert.NotContains(t, result[0].Metadata, "routed_condition")
+	})
+}

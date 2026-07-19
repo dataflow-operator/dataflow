@@ -1430,7 +1430,8 @@ type FlattenTransformation struct {
 
 // FilterTransformation filters messages based on conditions
 type FilterTransformation struct {
-	// Condition is a JSONPath expression that must evaluate to true
+	// Condition keeps the message when it matches. Same syntax as router conditions:
+	// truthiness ("$.active"), equality ("$.status == 'active'"), or inequality ("$.status != 'deleted'").
 	Condition string `json:"condition"`
 }
 
@@ -1456,7 +1457,7 @@ type RouterTransformation struct {
 
 // RouteRule defines a routing rule
 type RouteRule struct {
-	// Condition is a JSONPath expression that must evaluate to true
+	// Condition matches when truthy ("$.level"), equal ("$.type == 'order'"), or not equal ("$.type != 'spam'").
 	Condition string `json:"condition"`
 
 	// Sink is the sink configuration for this route

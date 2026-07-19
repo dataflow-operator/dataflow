@@ -138,6 +138,91 @@ func TestFilterTransformer_Transform(t *testing.T) {
 			},
 			wantCount: 0,
 		},
+		{
+			name: "filter eq match",
+			config: &v1.FilterTransformation{
+				Condition: "$.status == 'active'",
+			},
+			input: map[string]interface{}{
+				"id":     1,
+				"status": "active",
+			},
+			wantCount: 1,
+		},
+		{
+			name: "filter eq mismatch",
+			config: &v1.FilterTransformation{
+				Condition: "$.status == 'active'",
+			},
+			input: map[string]interface{}{
+				"id":     1,
+				"status": "inactive",
+			},
+			wantCount: 0,
+		},
+		{
+			name: "filter neq match",
+			config: &v1.FilterTransformation{
+				Condition: "$.status != 'deleted'",
+			},
+			input: map[string]interface{}{
+				"id":     1,
+				"status": "active",
+			},
+			wantCount: 1,
+		},
+		{
+			name: "filter neq mismatch",
+			config: &v1.FilterTransformation{
+				Condition: "$.status != 'deleted'",
+			},
+			input: map[string]interface{}{
+				"id":     1,
+				"status": "deleted",
+			},
+			wantCount: 0,
+		},
+		{
+			name: "filter eq missing field",
+			config: &v1.FilterTransformation{
+				Condition: "$.status == 'active'",
+			},
+			input: map[string]interface{}{
+				"id": 1,
+			},
+			wantCount: 0,
+		},
+		{
+			name: "filter neq missing field",
+			config: &v1.FilterTransformation{
+				Condition: "$.status != 'deleted'",
+			},
+			input: map[string]interface{}{
+				"id": 1,
+			},
+			wantCount: 0,
+		},
+		{
+			name: "filter eq unquoted bool",
+			config: &v1.FilterTransformation{
+				Condition: "$.enabled == true",
+			},
+			input: map[string]interface{}{
+				"id":      1,
+				"enabled": true,
+			},
+			wantCount: 1,
+		},
+		{
+			name: "filter eq with dollar prefix truthy path still works via comparison",
+			config: &v1.FilterTransformation{
+				Condition: `$.type == "order"`,
+			},
+			input: map[string]interface{}{
+				"type": "order",
+			},
+			wantCount: 1,
+		},
 	}
 
 	for _, tt := range tests {

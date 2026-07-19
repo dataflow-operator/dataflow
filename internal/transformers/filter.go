@@ -21,7 +21,6 @@ import (
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/types"
-	"github.com/tidwall/gjson"
 )
 
 // FilterTransformer filters messages based on conditions
@@ -36,22 +35,12 @@ func NewFilterTransformer(config *v1.FilterTransformation) *FilterTransformer {
 	}
 }
 
-// Transform filters messages based on the condition
+// Transform filters messages based on the condition.
+// Condition syntax matches router: truthiness ("$.active"), equality ("$.status == 'active'"),
+// or inequality ("$.status != 'deleted'"). Non-matching messages are dropped.
 func (f *FilterTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	// Evaluate the condition using JSONPath
-	result := gjson.GetBytes(message.Data, f.config.Condition)
-
-	// Check if condition evaluates to true
-	// For JSONPath, we check if the result exists and is truthy
-	if !result.Exists() {
-		// Condition doesn't match, filter out the message
+	if !evaluateCondition(message.Data, f.config.Condition) {
 		return []*types.Message{}, nil
 	}
-
-	if !isTruthy(result.Value()) {
-		return []*types.Message{}, nil
-	}
-
-	// Condition matches, return the message
 	return []*types.Message{message}, nil
 }

@@ -101,49 +101,60 @@ func TestTransformersIntegration(t *testing.T) {
 	})
 
 	t.Run("Filter Transformer", func(t *testing.T) {
-		// Filter uses JSONPath which returns the field value
-		// Verify the value exists and is truthy
 		transformer := transformers.NewFilterTransformer(&v1.FilterTransformation{
-			Condition: "value", // JSONPath to value field
+			Condition: "value",
 		})
 
-		// Test 1: message passes filter (value exists and is not 0)
-		testData1 := map[string]interface{}{
-			"id":    1,
-			"value": 20,
-		}
+		testData1 := map[string]interface{}{"id": 1, "value": 20}
 		jsonData1, err := json.Marshal(testData1)
 		require.NoError(t, err)
-
-		message1 := types.NewMessage(jsonData1)
-		result1, err := transformer.Transform(ctx, message1)
+		result1, err := transformer.Transform(ctx, types.NewMessage(jsonData1))
 		require.NoError(t, err)
 		require.Len(t, result1, 1)
 
-		// Test 2: message does not pass filter (value is 0)
-		testData2 := map[string]interface{}{
-			"id":    2,
-			"value": 0,
-		}
+		testData2 := map[string]interface{}{"id": 2, "value": 0}
 		jsonData2, err := json.Marshal(testData2)
 		require.NoError(t, err)
-
-		message2 := types.NewMessage(jsonData2)
-		result2, err := transformer.Transform(ctx, message2)
+		result2, err := transformer.Transform(ctx, types.NewMessage(jsonData2))
 		require.NoError(t, err)
 		require.Len(t, result2, 0)
 
-		// Test 3: field missing — message is filtered out
-		testData3 := map[string]interface{}{
-			"id": 3,
-		}
+		testData3 := map[string]interface{}{"id": 3}
 		jsonData3, err := json.Marshal(testData3)
 		require.NoError(t, err)
-
-		message3 := types.NewMessage(jsonData3)
-		result3, err := transformer.Transform(ctx, message3)
+		result3, err := transformer.Transform(ctx, types.NewMessage(jsonData3))
 		require.NoError(t, err)
 		require.Len(t, result3, 0)
+	})
+
+	t.Run("Filter Transformer comparison predicates", func(t *testing.T) {
+		eq := transformers.NewFilterTransformer(&v1.FilterTransformation{
+			Condition: "$.status == 'active'",
+		})
+		neq := transformers.NewFilterTransformer(&v1.FilterTransformation{
+			Condition: "$.status != 'deleted'",
+		})
+
+		active, err := json.Marshal(map[string]interface{}{"status": "active"})
+		require.NoError(t, err)
+		deleted, err := json.Marshal(map[string]interface{}{"status": "deleted"})
+		require.NoError(t, err)
+
+		passEq, err := eq.Transform(ctx, types.NewMessage(active))
+		require.NoError(t, err)
+		require.Len(t, passEq, 1)
+
+		dropEq, err := eq.Transform(ctx, types.NewMessage(deleted))
+		require.NoError(t, err)
+		require.Len(t, dropEq, 0)
+
+		passNeq, err := neq.Transform(ctx, types.NewMessage(active))
+		require.NoError(t, err)
+		require.Len(t, passNeq, 1)
+
+		dropNeq, err := neq.Transform(ctx, types.NewMessage(deleted))
+		require.NoError(t, err)
+		require.Len(t, dropNeq, 0)
 	})
 
 	t.Run("Mask Transformer", func(t *testing.T) {
