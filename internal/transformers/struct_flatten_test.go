@@ -51,12 +51,12 @@ func TestStructFlattenTransformer_Transform(t *testing.T) {
 				"active": true
 			}`,
 			want: map[string]interface{}{
-				"content.id":           float64(42),
-				"content.name.first":   "David",
-				"content.name.middle":  nil,
-				"content.name.last":    "Wong",
-				"content.tags":         []interface{}{"a", "b"},
-				"active":               true,
+				"content.id":          float64(42),
+				"content.name.first":  "David",
+				"content.name.middle": nil,
+				"content.name.last":   "Wong",
+				"content.tags":        []interface{}{"a", "b"},
+				"active":              true,
 			},
 		},
 		{
