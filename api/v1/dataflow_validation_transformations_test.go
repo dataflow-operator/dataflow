@@ -49,6 +49,8 @@ func TestValidateTransformations_DebeziumUnwrap(t *testing.T) {
 				InferDeleteFromTombstone: true,
 				IncludeSourceInMetadata:  true,
 				SnapshotOperation:        "update",
+				AddOperationFields:       true,
+				AddSourceFields:          []string{"table", "lsn"},
 			}),
 		}}
 		errs := ValidateDataFlowSpec(&spec)
@@ -82,6 +84,23 @@ func TestValidateTransformations_DebeziumUnwrap(t *testing.T) {
 			t.Fatal("expected validation error for snapshotOperation")
 		}
 		if !strings.Contains(errs.ToAggregate().Error(), "Unsupported value") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty addSourceFields entry", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "debeziumUnwrap",
+			Config: mustRawConfigForValidation(DebeziumUnwrapTransformation{
+				AddSourceFields: []string{"table", "  "},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty addSourceFields entry")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "source field name must not be empty") {
 			t.Fatalf("unexpected error: %v", errs.ToAggregate())
 		}
 	})

@@ -245,6 +245,8 @@ func TestCreateTransformer_DebeziumUnwrap(t *testing.T) {
 				Config: mustConfig(v1.DebeziumUnwrapTransformation{
 					InferDeleteFromTombstone: true,
 					IncludeSourceInMetadata:  true,
+					AddOperationFields:       true,
+					AddSourceFields:          []string{"table", "lsn"},
 				}),
 			},
 		},

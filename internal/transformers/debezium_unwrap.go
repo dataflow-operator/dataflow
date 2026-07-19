@@ -61,6 +61,8 @@ func (t *DebeziumUnwrapTransformer) Transform(ctx context.Context, message *type
 	if err != nil {
 		return nil, err
 	}
+	record = t.enrichRecord(record, op, operation, payload)
+
 	data, err := json.Marshal(record)
 	if err != nil {
 		return nil, fmt.Errorf("debezium unwrap: marshal record: %w", err)
@@ -126,6 +128,47 @@ func payloadRecord(payload map[string]interface{}, key string) (map[string]inter
 	return record, nil
 }
 
+// enrichRecord optionally copies NRSE op markers and selected source fields into the row.
+// Defaults leave the record unchanged (backwards compatible).
+func (t *DebeziumUnwrapTransformer) enrichRecord(
+	record map[string]interface{},
+	debeziumOp string,
+	operation string,
+	payload map[string]interface{},
+) map[string]interface{} {
+	if t == nil || t.config == nil {
+		return record
+	}
+	needClone := t.config.AddOperationFields || len(t.config.AddSourceFields) > 0
+	if !needClone {
+		return record
+	}
+
+	out := cloneRecord(record)
+	if t.config.AddOperationFields {
+		out["__op"] = debeziumOp
+		if operation == "delete" {
+			out["__deleted"] = "true"
+		} else {
+			out["__deleted"] = "false"
+		}
+	}
+	if len(t.config.AddSourceFields) > 0 && payload != nil {
+		if source, ok := payload["source"].(map[string]interface{}); ok {
+			for _, k := range t.config.AddSourceFields {
+				k = strings.TrimSpace(k)
+				if k == "" {
+					continue
+				}
+				if v, ok := source[k]; ok {
+					out["source_"+k] = v
+				}
+			}
+		}
+	}
+	return out
+}
+
 func (t *DebeziumUnwrapTransformer) transformTombstone(message *types.Message) ([]*types.Message, error) {
 	if t == nil || t.config == nil || !t.config.InferDeleteFromTombstone {
 		return []*types.Message{}, nil
@@ -143,6 +186,9 @@ func (t *DebeziumUnwrapTransformer) transformTombstone(message *types.Message) (
 	if payload, ok := key["payload"].(map[string]interface{}); ok {
 		record = payload
 	}
+	// Tombstones have no envelope op; inferred deletes use Debezium "d".
+	record = t.enrichRecord(record, "d", "delete", nil)
+
 	data, err := json.Marshal(record)
 	if err != nil {
 		return nil, fmt.Errorf("debezium unwrap: marshal tombstone key: %w", err)
@@ -160,6 +206,17 @@ func (t *DebeziumUnwrapTransformer) transformTombstone(message *types.Message) (
 }
 
 func cloneMetadata(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return make(map[string]interface{})
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func cloneRecord(src map[string]interface{}) map[string]interface{} {
 	if src == nil {
 		return make(map[string]interface{})
 	}

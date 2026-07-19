@@ -1026,8 +1026,15 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 				var cfg DebeziumUnwrapTransformation
 				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
 					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid debeziumUnwrap config: "+err.Error()))
-				} else if cfg.SnapshotOperation != "" && cfg.SnapshotOperation != "insert" && cfg.SnapshotOperation != "update" {
-					all = append(all, field.NotSupported(idx.Child("config", "snapshotOperation"), cfg.SnapshotOperation, []string{"insert", "update"}))
+				} else {
+					if cfg.SnapshotOperation != "" && cfg.SnapshotOperation != "insert" && cfg.SnapshotOperation != "update" {
+						all = append(all, field.NotSupported(idx.Child("config", "snapshotOperation"), cfg.SnapshotOperation, []string{"insert", "update"}))
+					}
+					for j, name := range cfg.AddSourceFields {
+						if strings.TrimSpace(name) == "" {
+							all = append(all, field.Required(idx.Child("config", "addSourceFields").Index(j), "source field name must not be empty"))
+						}
+					}
 				}
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "debeziumUnwrap transformation configuration is required"))

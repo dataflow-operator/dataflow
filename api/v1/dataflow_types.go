@@ -1528,6 +1528,18 @@ type DebeziumUnwrapTransformation struct {
 	// SnapshotOperation defines operation for Debezium snapshot records (op="r"): insert (default) or update.
 	// +optional
 	SnapshotOperation string `json:"snapshotOperation,omitempty"`
+
+	// AddOperationFields writes NRSE-style __op and __deleted into the row payload.
+	// __op is the original Debezium op (c/u/d/r); __deleted is "true" for deletes (including tombstone-inferred), otherwise "false".
+	// Default false (backwards compatible).
+	// +optional
+	AddOperationFields bool `json:"addOperationFields,omitempty"`
+
+	// AddSourceFields copies selected payload.source keys into the row as source_<key>.
+	// Empty list = off. Missing keys in source are skipped.
+	// Example: ["table","lsn","ts_ms"] → source_table, source_lsn, source_ts_ms.
+	// +optional
+	AddSourceFields []string `json:"addSourceFields,omitempty"`
 }
 
 // ReplaceFieldTransformation renames fields and optionally filters by include/exclude.
