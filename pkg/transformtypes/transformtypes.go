@@ -40,6 +40,7 @@ const (
 	ExtractField     = "extractField"
 	HoistField       = "hoistField"
 	Cast             = "cast"
+	Timezone         = "timezone"
 )
 
 // keys is built from constants only — add a new transformer: new const, append here, register in factory.
@@ -60,6 +61,7 @@ var keys = []string{
 	ExtractField,
 	HoistField,
 	Cast,
+	Timezone,
 }
 
 var keySet map[string]struct{}

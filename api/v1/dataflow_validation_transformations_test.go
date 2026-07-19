@@ -592,3 +592,133 @@ func TestValidateTransformations_Cast(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateTransformations_Timezone(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "timezone",
+			Config: mustRawConfigForValidation(TimezoneTransformation{
+				Timezone:       "Europe/Moscow",
+				Fields:         []string{"created_at", "updated_at"},
+				SourceTimezone: "UTC",
+				Format:         "RFC3339",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("valid with offset", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "timezone",
+			Config: mustRawConfigForValidation(TimezoneTransformation{
+				Timezone: "+03:00",
+				Fields:   []string{"$.ts"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{Type: "timezone"}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for missing config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "timezone transformation configuration is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty fields", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "timezone",
+			Config: mustRawConfigForValidation(TimezoneTransformation{
+				Timezone: "UTC",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty fields")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "fields is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("invalid timezone", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "timezone",
+			Config: mustRawConfigForValidation(TimezoneTransformation{
+				Timezone: "Not/AZone",
+				Fields:   []string{"ts"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for invalid timezone")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "IANA timezone") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("unsupported format", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "timezone",
+			Config: mustRawConfigForValidation(TimezoneTransformation{
+				Timezone: "UTC",
+				Fields:   []string{"ts"},
+				Format:   "Kitchen",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for unsupported format")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "Kitchen") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("invalid sourceTimezone", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "timezone",
+			Config: mustRawConfigForValidation(TimezoneTransformation{
+				Timezone:       "UTC",
+				Fields:         []string{"ts"},
+				SourceTimezone: "Not/AZone",
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for invalid sourceTimezone")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "sourceTimezone") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+}

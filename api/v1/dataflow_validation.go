@@ -1129,6 +1129,38 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "cast transformation configuration is required"))
 			}
+		case transformtypes.Timezone:
+			if hasConfig {
+				var cfg TimezoneTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid timezone config: "+err.Error()))
+				} else {
+					if strings.TrimSpace(cfg.Timezone) == "" {
+						all = append(all, field.Required(idx.Child("config", "timezone"), "timezone is required"))
+					} else if _, err := LoadTimezoneLocation(cfg.Timezone); err != nil {
+						all = append(all, field.Invalid(idx.Child("config", "timezone"), cfg.Timezone, "must be a valid IANA timezone or ±HH:MM offset"))
+					}
+					if len(cfg.Fields) == 0 {
+						all = append(all, field.Required(idx.Child("config", "fields"), "fields is required and must be non-empty"))
+					} else {
+						for i, f := range cfg.Fields {
+							if normalizeJSONPathField(f) == "" {
+								all = append(all, field.Invalid(idx.Child("config", "fields").Index(i), f, "field path must be a non-empty JSONPath"))
+							}
+						}
+					}
+					if src := strings.TrimSpace(cfg.SourceTimezone); src != "" {
+						if _, err := LoadTimezoneLocation(src); err != nil {
+							all = append(all, field.Invalid(idx.Child("config", "sourceTimezone"), cfg.SourceTimezone, "must be a valid IANA timezone or ±HH:MM offset"))
+						}
+					}
+					if format := strings.TrimSpace(cfg.Format); format != "" && !isValidTimezoneFormat(format) {
+						all = append(all, field.NotSupported(idx.Child("config", "format"), cfg.Format, validTimezoneFormats))
+					}
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "timezone transformation configuration is required"))
+			}
 		}
 	}
 	return all
@@ -1172,6 +1204,17 @@ var validCastTypes = []string{"string", "int64", "float64", "bool", "null"}
 func isValidCastType(typ string) bool {
 	for _, allowed := range validCastTypes {
 		if typ == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+var validTimezoneFormats = []string{"RFC3339", "RFC3339Nano", "UnixMilli"}
+
+func isValidTimezoneFormat(format string) bool {
+	for _, allowed := range validTimezoneFormats {
+		if format == allowed {
 			return true
 		}
 	}

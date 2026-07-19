@@ -1342,7 +1342,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField, cast
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField, cast, timezone
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -1429,6 +1429,11 @@ func (t *TransformationSpec) GetHoistFieldConfig() (*HoistFieldTransformation, e
 // GetCastConfig returns Cast transformation config.
 func (t *TransformationSpec) GetCastConfig() (*CastTransformation, error) {
 	return getTypedConfig[CastTransformation](t.Config)
+}
+
+// GetTimezoneConfig returns Timezone transformation config.
+func (t *TransformationSpec) GetTimezoneConfig() (*TimezoneTransformation, error) {
+	return getTypedConfig[TimezoneTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -1577,6 +1582,25 @@ type CastTransformation struct {
 	// Spec maps JSONPath → target type. Required, non-empty.
 	// Types: string | int64 | float64 | bool | null
 	Spec map[string]string `json:"spec"`
+}
+
+// TimezoneTransformation converts temporal fields to a target timezone.
+// Unparseable values are a transform error (message skipped, not written to sink).
+// Does not interact with spec.maintenance.timezone or the timestamp transform.
+type TimezoneTransformation struct {
+	// Timezone is the target IANA timezone or fixed UTC offset, e.g. "Europe/Moscow" or "+03:00" (required).
+	Timezone string `json:"timezone"`
+
+	// Fields is the list of JSONPaths to convert (required, non-empty).
+	Fields []string `json:"fields"`
+
+	// SourceTimezone is assumed when a value has no offset. Default: "UTC".
+	// +optional
+	SourceTimezone string `json:"sourceTimezone,omitempty"`
+
+	// Format is the output layout. Default: RFC3339Nano. Also: RFC3339, UnixMilli.
+	// +optional
+	Format string `json:"format,omitempty"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow

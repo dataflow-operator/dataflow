@@ -393,6 +393,30 @@ func TestCreateTransformer_Cast(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_Timezone(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid timezone transformation",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.Timezone,
+				Config: mustConfig(v1.TimezoneTransformation{
+					Timezone: "Europe/Moscow",
+					Fields:   []string{"created_at", "updated_at"},
+					Format:   "RFC3339",
+				}),
+			},
+		},
+		{
+			name: "timezone without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.Timezone,
+			},
+			wantErr:     true,
+			errContains: "timezone transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",
