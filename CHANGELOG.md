@@ -1,3 +1,9 @@
+## 1.7.0 (2026-07-19)
+
+## Commits
+
+- 935ad83 feat: enhance DeepCopy functionality for DebeziumUnwrapTransformation
+
 ## 1.6.0 (2026-07-19)
 
 ## Commits
