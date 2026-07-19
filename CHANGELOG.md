@@ -1,5 +1,13 @@
 ## Commits
 
+- 899e6b4 feat: add ReplaceField transformation support
+- c0d4126 feat: add HeadersToPayload transformation support
+- 1cbf85b feat: enhance Filter and Router transformations with comparison predicates
+- 78455ef feat: add StructFlatten transformation support
+- 149315d feat: add DeepCopy methods for StructFlattenTransformation
+
+## Commits
+
 - ecf1564 feat: add maintenance window support to DataFlow
 
 ## Commits
