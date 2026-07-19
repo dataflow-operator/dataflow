@@ -259,6 +259,29 @@ func TestCreateTransformer_DebeziumUnwrap(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_ReplaceField(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid replaceField transformation",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.ReplaceField,
+				Config: mustConfig(v1.ReplaceFieldTransformation{
+					Renames: []string{"oldName:newName"},
+					Include: []string{"id", "name"},
+				}),
+			},
+		},
+		{
+			name: "replaceField without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.ReplaceField,
+			},
+			wantErr:     true,
+			errContains: "replaceField transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",

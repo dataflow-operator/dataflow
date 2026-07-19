@@ -34,6 +34,7 @@ const (
 	SnakeCase      = "snakeCase"
 	CamelCase      = "camelCase"
 	DebeziumUnwrap = "debeziumUnwrap"
+	ReplaceField   = "replaceField"
 )
 
 // keys is built from constants only — add a new transformer: new const, append here, register in factory.
@@ -48,6 +49,7 @@ var keys = []string{
 	SnakeCase,
 	CamelCase,
 	DebeziumUnwrap,
+	ReplaceField,
 }
 
 var keySet map[string]struct{}

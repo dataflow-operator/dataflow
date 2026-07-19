@@ -86,3 +86,106 @@ func TestValidateTransformations_DebeziumUnwrap(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateTransformations_ReplaceField(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("valid renames", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "replaceField",
+			Config: mustRawConfigForValidation(ReplaceFieldTransformation{
+				Renames: []string{"old:new", "a.b:c"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("valid include", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "replaceField",
+			Config: mustRawConfigForValidation(ReplaceFieldTransformation{
+				Include: []string{"id", "user.name"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{Type: "replaceField"}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for missing config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "replaceField transformation configuration is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type:   "replaceField",
+			Config: mustRawConfigForValidation(ReplaceFieldTransformation{}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty replaceField config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "at least one of renames, include, or exclude is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("include and exclude mutually exclusive", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "replaceField",
+			Config: mustRawConfigForValidation(ReplaceFieldTransformation{
+				Include: []string{"a"},
+				Exclude: []string{"b"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for include+exclude")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "mutually exclusive") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("invalid rename format", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "replaceField",
+			Config: mustRawConfigForValidation(ReplaceFieldTransformation{
+				Renames: []string{"bad-format"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for invalid rename")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "oldPath:newPath") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+}

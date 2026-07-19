@@ -16,10 +16,6 @@ limitations under the License.
 
 package transformers
 
-// TODO: ReplaceFieldTransformation is not yet implemented in API
-// All tests are commented out until the type is added to the API
-
-/*
 import (
 	"context"
 	"encoding/json"
@@ -139,6 +135,64 @@ func TestReplaceFieldTransformer_Transform(t *testing.T) {
 				"field": "value",
 			},
 		},
+		{
+			name: "include preserves nesting",
+			config: &v1.ReplaceFieldTransformation{
+				Include: []string{"user.id", "user.name", "status"},
+			},
+			input: map[string]interface{}{
+				"user": map[string]interface{}{
+					"id":    float64(1),
+					"name":  "John",
+					"email": "john@example.com",
+				},
+				"status": "active",
+				"extra":  "drop-me",
+			},
+			want: map[string]interface{}{
+				"user": map[string]interface{}{
+					"id":   float64(1),
+					"name": "John",
+				},
+				"status": "active",
+			},
+		},
+		{
+			name: "exclude removes fields",
+			config: &v1.ReplaceFieldTransformation{
+				Exclude: []string{"password", "user.secret"},
+			},
+			input: map[string]interface{}{
+				"id":       float64(1),
+				"password": "secret",
+				"user": map[string]interface{}{
+					"name":   "John",
+					"secret": "x",
+				},
+			},
+			want: map[string]interface{}{
+				"id": float64(1),
+				"user": map[string]interface{}{
+					"name": "John",
+				},
+			},
+		},
+		{
+			name: "include then rename",
+			config: &v1.ReplaceFieldTransformation{
+				Include: []string{"oldName", "keep"},
+				Renames: []string{"oldName:newName"},
+			},
+			input: map[string]interface{}{
+				"oldName": "value",
+				"keep":    "yes",
+				"drop":    "no",
+			},
+			want: map[string]interface{}{
+				"newName": "value",
+				"keep":    "yes",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -163,12 +217,7 @@ func TestReplaceFieldTransformer_Transform(t *testing.T) {
 			err = json.Unmarshal(output[0].Data, &outputData)
 			require.NoError(t, err)
 
-			// Compare expected fields
-			for key, expectedValue := range tt.want {
-				actualValue, exists := outputData[key]
-				assert.True(t, exists, "field %s should exist", key)
-				assert.Equal(t, expectedValue, actualValue, "field %s should match", key)
-			}
+			assert.Equal(t, tt.want, outputData)
 		})
 	}
 }
@@ -190,6 +239,17 @@ func TestReplaceFieldTransformer_InvalidFormat(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid rename format")
 }
 
+func TestReplaceFieldTransformer_BinaryPassthrough(t *testing.T) {
+	transformer := NewReplaceFieldTransformer(&v1.ReplaceFieldTransformation{
+		Renames: []string{"a:b"},
+	})
+	message := types.NewMessage([]byte("not-json"))
+	output, err := transformer.Transform(context.Background(), message)
+	require.NoError(t, err)
+	require.Len(t, output, 1)
+	assert.Equal(t, []byte("not-json"), output[0].Data)
+}
+
 func TestNewReplaceFieldTransformer(t *testing.T) {
 	config := &v1.ReplaceFieldTransformation{
 		Renames: []string{"old:new"},
@@ -199,4 +259,3 @@ func TestNewReplaceFieldTransformer(t *testing.T) {
 	assert.NotNil(t, transformer)
 	assert.Equal(t, config, transformer.config)
 }
-*/

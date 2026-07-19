@@ -45,6 +45,7 @@ var transformerRegistry = map[string]transformerEntry{
 			return NewDebeziumUnwrapTransformer(cfg)
 		}),
 	},
+	transformtypes.ReplaceField: {create: createTransformer[v1.ReplaceFieldTransformation](transformtypes.ReplaceField, func(cfg *v1.ReplaceFieldTransformation) Transformer { return NewReplaceFieldTransformer(cfg) })},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.

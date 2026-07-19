@@ -1342,7 +1342,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -1399,6 +1399,11 @@ func (t *TransformationSpec) GetCamelCaseConfig() (*CamelCaseTransformation, err
 // GetDebeziumUnwrapConfig returns DebeziumUnwrap transformation config.
 func (t *TransformationSpec) GetDebeziumUnwrapConfig() (*DebeziumUnwrapTransformation, error) {
 	return getTypedConfig[DebeziumUnwrapTransformation](t.Config)
+}
+
+// GetReplaceFieldConfig returns ReplaceField transformation config.
+func (t *TransformationSpec) GetReplaceFieldConfig() (*ReplaceFieldTransformation, error) {
+	return getTypedConfig[ReplaceFieldTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -1492,6 +1497,23 @@ type DebeziumUnwrapTransformation struct {
 	// SnapshotOperation defines operation for Debezium snapshot records (op="r"): insert (default) or update.
 	// +optional
 	SnapshotOperation string `json:"snapshotOperation,omitempty"`
+}
+
+// ReplaceFieldTransformation renames fields and optionally filters by include/exclude.
+// Unlike select, include preserves nested structure (no key flattening).
+// Include and Exclude are mutually exclusive. At least one of Renames, Include, or Exclude is required.
+type ReplaceFieldTransformation struct {
+	// Renames is a list of oldPath:newPath mappings (JSONPath without requiring $.).
+	// +optional
+	Renames []string `json:"renames,omitempty"`
+
+	// Include keeps only the listed field paths, preserving nesting.
+	// +optional
+	Include []string `json:"include,omitempty"`
+
+	// Exclude removes the listed field paths.
+	// +optional
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow

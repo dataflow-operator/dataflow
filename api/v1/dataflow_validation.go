@@ -1032,9 +1032,39 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "debeziumUnwrap transformation configuration is required"))
 			}
+		case transformtypes.ReplaceField:
+			if hasConfig {
+				var cfg ReplaceFieldTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid replaceField config: "+err.Error()))
+				} else {
+					if len(cfg.Include) > 0 && len(cfg.Exclude) > 0 {
+						all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "include and exclude are mutually exclusive"))
+					}
+					if len(cfg.Renames) == 0 && len(cfg.Include) == 0 && len(cfg.Exclude) == 0 {
+						all = append(all, field.Required(idx.Child("config"), "at least one of renames, include, or exclude is required"))
+					}
+					for j, rename := range cfg.Renames {
+						if !isValidReplaceFieldRename(rename) {
+							all = append(all, field.Invalid(idx.Child("config", "renames").Index(j), rename, "rename must be in oldPath:newPath format"))
+						}
+					}
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "replaceField transformation configuration is required"))
+			}
 		}
 	}
 	return all
+}
+
+// isValidReplaceFieldRename reports whether rename is in oldPath:newPath form with non-empty sides.
+func isValidReplaceFieldRename(rename string) bool {
+	oldPath, newPath, ok := strings.Cut(rename, ":")
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(oldPath) != "" && strings.TrimSpace(newPath) != ""
 }
 
 func validateResources(r *corev1.ResourceRequirements, f *field.Path) field.ErrorList {
