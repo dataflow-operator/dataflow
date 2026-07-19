@@ -1,3 +1,13 @@
+## 1.6.0 (2026-07-19)
+
+## Commits
+
+- 69da110 feat: add ExtractField and HoistField transformation support
+- 4a493a5 feat: add Cast transformation support
+- a930e26 feat: add Timezone transformation support
+- ce30c31 feat: enhance release notes generation with repository URL normalization
+- b651b6a feat: enhance DebeziumUnwrap transformation with operation and source field options
+
 ## Commits
 
 - 899e6b4 feat: add ReplaceField transformation support
