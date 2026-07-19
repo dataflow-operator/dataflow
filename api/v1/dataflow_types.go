@@ -1342,7 +1342,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -1409,6 +1409,11 @@ func (t *TransformationSpec) GetReplaceFieldConfig() (*ReplaceFieldTransformatio
 // GetHeadersToPayloadConfig returns HeadersToPayload transformation config.
 func (t *TransformationSpec) GetHeadersToPayloadConfig() (*HeadersToPayloadTransformation, error) {
 	return getTypedConfig[HeadersToPayloadTransformation](t.Config)
+}
+
+// GetStructFlattenConfig returns StructFlatten transformation config.
+func (t *TransformationSpec) GetStructFlattenConfig() (*StructFlattenTransformation, error) {
+	return getTypedConfig[StructFlattenTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -1527,6 +1532,14 @@ type ReplaceFieldTransformation struct {
 type HeadersToPayloadTransformation struct {
 	// Mappings is a list of headerName:fieldPath entries (e.g. "X-Request-Id:requestId").
 	Mappings []string `json:"mappings"`
+}
+
+// StructFlattenTransformation flattens nested JSON objects into a single-level map.
+// Unlike flatten (array explode 1→N), this is 1→1 and preserves arrays as values.
+type StructFlattenTransformation struct {
+	// Delimiter between nested key segments. Default: "."
+	// +optional
+	Delimiter string `json:"delimiter,omitempty"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow

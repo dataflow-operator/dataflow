@@ -36,6 +36,7 @@ const (
 	DebeziumUnwrap   = "debeziumUnwrap"
 	ReplaceField     = "replaceField"
 	HeadersToPayload = "headersToPayload"
+	StructFlatten    = "structFlatten"
 )
 
 // keys is built from constants only — add a new transformer: new const, append here, register in factory.
@@ -52,6 +53,7 @@ var keys = []string{
 	DebeziumUnwrap,
 	ReplaceField,
 	HeadersToPayload,
+	StructFlatten,
 }
 
 var keySet map[string]struct{}

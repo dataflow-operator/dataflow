@@ -49,6 +49,9 @@ var transformerRegistry = map[string]transformerEntry{
 	transformtypes.HeadersToPayload: {create: createTransformer[v1.HeadersToPayloadTransformation](transformtypes.HeadersToPayload, func(cfg *v1.HeadersToPayloadTransformation) Transformer {
 		return NewHeadersToPayloadTransformer(cfg)
 	})},
+	transformtypes.StructFlatten: {create: createTransformer[v1.StructFlattenTransformation](transformtypes.StructFlatten, func(cfg *v1.StructFlattenTransformation) Transformer {
+		return NewStructFlattenTransformer(cfg)
+	})},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.

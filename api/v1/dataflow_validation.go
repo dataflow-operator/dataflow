@@ -1070,9 +1070,40 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "headersToPayload transformation configuration is required"))
 			}
+		case transformtypes.StructFlatten:
+			if hasConfig {
+				var cfg StructFlattenTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid structFlatten config: "+err.Error()))
+				} else if err := validateStructFlattenDelimiter(t.Config.Raw); err != nil {
+					all = append(all, field.Invalid(idx.Child("config", "delimiter"), cfg.Delimiter, err.Error()))
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "structFlatten transformation configuration is required"))
+			}
 		}
 	}
 	return all
+}
+
+// validateStructFlattenDelimiter rejects an explicitly empty delimiter while allowing omitted delimiter (default ".").
+func validateStructFlattenDelimiter(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil
+	}
+	delimRaw, ok := fields["delimiter"]
+	if !ok {
+		return nil
+	}
+	var delim string
+	if err := json.Unmarshal(delimRaw, &delim); err != nil {
+		return fmt.Errorf("delimiter must be a string")
+	}
+	if strings.TrimSpace(delim) == "" {
+		return fmt.Errorf("delimiter must be a non-empty string")
+	}
+	return nil
 }
 
 // isValidColonMapping reports whether s is in left:right form with non-empty sides.

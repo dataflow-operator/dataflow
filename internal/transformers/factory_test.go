@@ -304,6 +304,33 @@ func TestCreateTransformer_HeadersToPayload(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_StructFlatten(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid structFlatten transformation",
+			transformation: &v1.TransformationSpec{
+				Type:   transformtypes.StructFlatten,
+				Config: mustConfig(v1.StructFlattenTransformation{Delimiter: "_"}),
+			},
+		},
+		{
+			name: "structFlatten with empty config",
+			transformation: &v1.TransformationSpec{
+				Type:   transformtypes.StructFlatten,
+				Config: mustConfig(v1.StructFlattenTransformation{}),
+			},
+		},
+		{
+			name: "structFlatten without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.StructFlatten,
+			},
+			wantErr:     true,
+			errContains: "structFlatten transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",
