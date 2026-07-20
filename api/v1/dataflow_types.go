@@ -1342,7 +1342,7 @@ type SASLConfig struct {
 // TransformationSpec defines a transformation to apply (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type TransformationSpec struct {
-	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField, cast, timezone
+	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField, cast, timezone, insertField
 	Type string `json:"type"`
 
 	// Config holds transformation configuration. Structure depends on type.
@@ -1434,6 +1434,11 @@ func (t *TransformationSpec) GetCastConfig() (*CastTransformation, error) {
 // GetTimezoneConfig returns Timezone transformation config.
 func (t *TransformationSpec) GetTimezoneConfig() (*TimezoneTransformation, error) {
 	return getTypedConfig[TimezoneTransformation](t.Config)
+}
+
+// GetInsertFieldConfig returns InsertField transformation config.
+func (t *TransformationSpec) GetInsertFieldConfig() (*InsertFieldTransformation, error) {
+	return getTypedConfig[InsertFieldTransformation](t.Config)
 }
 
 // TimestampTransformation adds a timestamp field
@@ -1613,6 +1618,16 @@ type TimezoneTransformation struct {
 	// Format is the output layout. Default: RFC3339Nano. Also: RFC3339, UnixMilli.
 	// +optional
 	Format string `json:"format,omitempty"`
+}
+
+// InsertFieldTransformation inserts or overwrites JSON fields with literals,
+// metadata placeholders (${metadata.topic|partition|offset|timestamp}), ${now}, or json:<raw>.
+// Distinct from timestamp (single now field) and headersToPayload (headers → body only).
+// Non-JSON payloads are passed through. Missing metadata keys yield an empty string.
+type InsertFieldTransformation struct {
+	// Fields maps JSONPath → value. Required, non-empty.
+	// Values: literal string, "${metadata.<key>}", "${now}", or "json:<raw JSON>".
+	Fields map[string]string `json:"fields"`
 }
 
 // DataFlowStatus defines the observed state of DataFlow

@@ -419,6 +419,31 @@ func TestCreateTransformer_Timezone(t *testing.T) {
 	})
 }
 
+func TestCreateTransformer_InsertField(t *testing.T) {
+	runCreateTransformerTests(t, []transformerTestCase{
+		{
+			name: "valid insertField transformation",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.InsertField,
+				Config: mustConfig(v1.InsertFieldTransformation{Fields: map[string]string{
+					"pipeline":      "orders-cdc",
+					"source_topic":  "${metadata.topic}",
+					"ingested_at":   "${now}",
+					"flags.active":  "json:true",
+				}}),
+			},
+		},
+		{
+			name: "insertField without config",
+			transformation: &v1.TransformationSpec{
+				Type: transformtypes.InsertField,
+			},
+			wantErr:     true,
+			errContains: "insertField transformation configuration is required",
+		},
+	})
+}
+
 func TestCreateTransformer_UnsupportedType(t *testing.T) {
 	transformation := &v1.TransformationSpec{
 		Type: "unsupported",

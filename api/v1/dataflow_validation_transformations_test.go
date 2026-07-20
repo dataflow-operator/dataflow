@@ -741,3 +741,112 @@ func TestValidateTransformations_Timezone(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateTransformations_InsertField(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "insertField",
+			Config: mustRawConfigForValidation(InsertFieldTransformation{
+				Fields: map[string]string{
+					"pipeline":          "orders-cdc",
+					"source_topic":      "${metadata.topic}",
+					"ingested_at":       "${now}",
+					"flags.reprocessed": "json:false",
+				},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("valid with JSONPath prefix", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "insertField",
+			Config: mustRawConfigForValidation(InsertFieldTransformation{
+				Fields: map[string]string{
+					"$.pipeline": "orders-cdc",
+				},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{Type: "insertField"}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for missing config")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "insertField transformation configuration is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty fields", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type:   "insertField",
+			Config: mustRawConfigForValidation(InsertFieldTransformation{}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty fields")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "fields is required") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("invalid json value", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "insertField",
+			Config: mustRawConfigForValidation(InsertFieldTransformation{
+				Fields: map[string]string{"bad": "json:{not"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for invalid json value")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "valid JSON") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+
+	t.Run("empty path key", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "insertField",
+			Config: mustRawConfigForValidation(InsertFieldTransformation{
+				Fields: map[string]string{"$": "x"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for empty path")
+		}
+		if !strings.Contains(errs.ToAggregate().Error(), "non-empty JSONPaths") {
+			t.Fatalf("unexpected error: %v", errs.ToAggregate())
+		}
+	})
+}

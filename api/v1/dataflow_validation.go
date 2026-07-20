@@ -1168,6 +1168,30 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			} else {
 				all = append(all, field.Required(idx.Child("config"), "timezone transformation configuration is required"))
 			}
+		case transformtypes.InsertField:
+			if hasConfig {
+				var cfg InsertFieldTransformation
+				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
+					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid insertField config: "+err.Error()))
+				} else if len(cfg.Fields) == 0 {
+					all = append(all, field.Required(idx.Child("config", "fields"), "fields is required and must be non-empty"))
+				} else {
+					for path, value := range cfg.Fields {
+						if normalizeJSONPathField(path) == "" {
+							all = append(all, field.Invalid(idx.Child("config", "fields"), path, "fields keys must be non-empty JSONPaths"))
+							continue
+						}
+						if strings.HasPrefix(value, "json:") {
+							raw := strings.TrimPrefix(value, "json:")
+							if !json.Valid([]byte(raw)) {
+								all = append(all, field.Invalid(idx.Child("config", "fields").Key(path), value, "json: value must be valid JSON"))
+							}
+						}
+					}
+				}
+			} else {
+				all = append(all, field.Required(idx.Child("config"), "insertField transformation configuration is required"))
+			}
 		}
 	}
 	return all

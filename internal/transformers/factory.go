@@ -64,6 +64,9 @@ var transformerRegistry = map[string]transformerEntry{
 	transformtypes.Timezone: {create: createTransformer[v1.TimezoneTransformation](transformtypes.Timezone, func(cfg *v1.TimezoneTransformation) Transformer {
 		return NewTimezoneTransformer(cfg)
 	})},
+	transformtypes.InsertField: {create: createTransformer[v1.InsertFieldTransformation](transformtypes.InsertField, func(cfg *v1.InsertFieldTransformation) Transformer {
+		return NewInsertFieldTransformer(cfg)
+	})},
 }
 
 // createTransformer returns a factory function that unmarshals raw config into T and calls newFn.
