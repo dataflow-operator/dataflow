@@ -1,3 +1,9 @@
+## 1.8.0 (2026-07-20)
+
+## Commits
+
+- bc0da6b feat: add InsertField transformation support
+
 ## 1.7.0 (2026-07-19)
 
 ## Commits
