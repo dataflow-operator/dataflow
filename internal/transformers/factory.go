@@ -19,6 +19,7 @@ package transformers
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/pkg/transformtypes"
@@ -84,10 +85,19 @@ func createTransformer[T any](typeName string, newFn func(*T) Transformer) func(
 }
 
 // CreateTransformer creates a transformer based on the transformation spec.
+// When transformation.When is set, the result is wrapped so a false condition
+// skips this step (passthrough) without dropping the message.
 func CreateTransformer(transformation *v1.TransformationSpec) (Transformer, error) {
 	entry, ok := transformerRegistry[transformation.Type]
 	if !ok {
 		return nil, fmt.Errorf("unsupported transformation type: %s", transformation.Type)
 	}
-	return entry.create(transformation.Config)
+	t, err := entry.create(transformation.Config)
+	if err != nil {
+		return nil, err
+	}
+	if when := strings.TrimSpace(transformation.When); when != "" {
+		t = &whenTransformer{when: when, inner: t}
+	}
+	return t, nil
 }

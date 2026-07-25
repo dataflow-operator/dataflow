@@ -36,10 +36,10 @@ func NewFilterTransformer(config *v1.FilterTransformation) *FilterTransformer {
 }
 
 // Transform filters messages based on the condition.
-// Condition syntax matches router: truthiness ("$.active"), equality ("$.status == 'active'"),
-// or inequality ("$.status != 'deleted'"). Non-matching messages are dropped.
+// Condition syntax matches router/when (engine v2): truthiness, == / !=, metadata.*,
+// ! / && / ||, and parentheses. Non-matching messages are dropped.
 func (f *FilterTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	if !evaluateCondition(message.Data, f.config.Condition) {
+	if !evaluateCondition(message.Data, message.Metadata, f.config.Condition) {
 		return []*types.Message{}, nil
 	}
 	return []*types.Message{message}, nil

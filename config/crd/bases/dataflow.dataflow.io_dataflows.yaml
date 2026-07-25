@@ -1255,6 +1255,12 @@ spec:
                         replaceField, headersToPayload, structFlatten, extractField,
                         hoistField, cast, timezone, insertField'
                       type: string
+                    when:
+                      description: |-
+                        When is an optional predicate. If set and false, this transformation is skipped
+                        (message passes through unchanged). Unlike filter, a false when does not drop the message.
+                        Same condition syntax as filter/router: truthiness, == / !=, metadata.*, ! / && / ||, parentheses.
+                      type: string
                   required:
                   - type
                   type: object

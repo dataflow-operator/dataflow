@@ -44,8 +44,8 @@ func (r *RouterTransformer) SetLogger(logger logr.Logger) {
 }
 
 // Transform routes messages based on conditions.
-// Returns messages with routing metadata. Condition syntax matches filter:
-// truthiness, ==, and !=.
+// Returns messages with routing metadata. Condition syntax matches filter/when
+// (engine v2): truthiness, == / !=, metadata.*, ! / && / ||, and parentheses.
 func (r *RouterTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
 	r.logger.V(1).Info("Router processing message",
 		"routesCount", len(r.config.Routes),
@@ -57,7 +57,7 @@ func (r *RouterTransformer) Transform(ctx context.Context, message *types.Messag
 			"routeIndex", i,
 			"condition", condition)
 
-		if !evaluateCondition(message.Data, condition) {
+		if !evaluateCondition(message.Data, message.Metadata, condition) {
 			r.logger.V(1).Info("Router condition did not match",
 				"condition", condition)
 			continue

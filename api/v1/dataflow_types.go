@@ -1345,6 +1345,12 @@ type TransformationSpec struct {
 	// Type of transformation: timestamp, flatten, filter, mask, router, select, remove, snakeCase, camelCase, debeziumUnwrap, replaceField, headersToPayload, structFlatten, extractField, hoistField, cast, timezone, insertField
 	Type string `json:"type"`
 
+	// When is an optional predicate. If set and false, this transformation is skipped
+	// (message passes through unchanged). Unlike filter, a false when does not drop the message.
+	// Same condition syntax as filter/router: truthiness, == / !=, metadata.*, ! / && / ||, parentheses.
+	// +optional
+	When string `json:"when,omitempty"`
+
 	// Config holds transformation configuration. Structure depends on type.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -1460,8 +1466,9 @@ type FlattenTransformation struct {
 
 // FilterTransformation filters messages based on conditions
 type FilterTransformation struct {
-	// Condition keeps the message when it matches. Same syntax as router conditions:
-	// truthiness ("$.active"), equality ("$.status == 'active'"), or inequality ("$.status != 'deleted'").
+	// Condition keeps the message when it matches. Same syntax as router/when conditions:
+	// truthiness ("$.active"), equality ("$.status == 'active'"), inequality ("$.status != 'deleted'"),
+	// metadata ("metadata.topic == 'orders'"), combinators ("&&" / "||" / "!"), and parentheses.
 	Condition string `json:"condition"`
 }
 
@@ -1487,7 +1494,8 @@ type RouterTransformation struct {
 
 // RouteRule defines a routing rule
 type RouteRule struct {
-	// Condition matches when truthy ("$.level"), equal ("$.type == 'order'"), or not equal ("$.type != 'spam'").
+	// Condition matches when truthy ("$.level"), equal ("$.type == 'order'"), not equal ("$.type != 'spam'"),
+	// or with metadata / && / || / ! (same syntax as filter and transformations[].when).
 	Condition string `json:"condition"`
 
 	// Sink is the sink configuration for this route

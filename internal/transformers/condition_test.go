@@ -23,11 +23,17 @@ import (
 )
 
 func TestEvaluateCondition(t *testing.T) {
-	data := []byte(`{"status":"active","type":"order","count":5,"enabled":true,"empty":"","zero":0,"nested":{"ok":true}}`)
+	data := []byte(`{"status":"active","type":"order","count":5,"enabled":true,"empty":"","zero":0,"nested":{"ok":true},"payload":{"op":"u"}}`)
+	meta := map[string]interface{}{
+		"topic":     "dbserver1.public.orders",
+		"partition": int32(3),
+		"offset":    int64(42),
+	}
 
 	tests := []struct {
 		name      string
 		condition string
+		meta      map[string]interface{}
 		want      bool
 	}{
 		{name: "truthy string", condition: "$.status", want: true},
@@ -51,11 +57,40 @@ func TestEvaluateCondition(t *testing.T) {
 		{name: "neq missing field", condition: "$.missing != 'x'", want: false},
 		{name: "neq double quotes", condition: `$.type != "user"`, want: true},
 		{name: "neq no spaces", condition: "$.status!='active'", want: false},
+
+		{name: "metadata truthy", condition: "metadata.topic", meta: meta, want: true},
+		{name: "metadata missing", condition: "metadata.missing", meta: meta, want: false},
+		{name: "metadata eq", condition: "metadata.topic == 'dbserver1.public.orders'", meta: meta, want: true},
+		{name: "metadata eq mismatch", condition: "metadata.topic == 'other'", meta: meta, want: false},
+		{name: "metadata partition number", condition: "metadata.partition == 3", meta: meta, want: true},
+		{name: "metadata nil map", condition: "metadata.topic", meta: nil, want: false},
+		{name: "payload path named metadata uses gjson", condition: "$.payload.op == 'u'", want: true},
+
+		{name: "and all true", condition: "$.status && $.enabled", want: true},
+		{name: "and short-circuit false", condition: "$.missing && $.enabled", want: false},
+		{name: "and with comparisons", condition: "$.status == 'active' && $.type == 'order'", want: true},
+		{name: "and sample style", condition: "$.status && $.type && $.count", want: true},
+		{name: "or first true", condition: "$.status == 'active' || $.status == 'deleted'", want: true},
+		{name: "or second true", condition: "$.status == 'deleted' || $.type == 'order'", want: true},
+		{name: "or both false", condition: "$.status == 'x' || $.type == 'y'", want: false},
+		{name: "and tighter than or", condition: "$.missing || $.status == 'active' && $.enabled", want: true},
+		{name: "mixed metadata and payload", condition: "metadata.topic == 'dbserver1.public.orders' && $.payload.op == 'u'", meta: meta, want: true},
+
+		{name: "not truthy false", condition: "!$.empty", want: true},
+		{name: "not truthy true", condition: "!$.enabled", want: false},
+		{name: "not comparison", condition: "!$.status == 'deleted'", want: true},
+		{name: "not neq still works", condition: "$.status != 'deleted'", want: true},
+		{name: "parens or then and", condition: "($.status == 'x' || $.type == 'order') && $.enabled", want: true},
+		{name: "parens group false", condition: "($.status == 'x' || $.type == 'y') && $.enabled", want: false},
+		{name: "not with parens", condition: "!($.status == 'deleted')", want: true},
+		{name: "and inside quotes not split", condition: `$.status == "a && b"`, want: false},
+		{name: "empty condition", condition: "", want: false},
+		{name: "whitespace condition", condition: "   ", want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, evaluateCondition(data, tt.condition))
+			assert.Equal(t, tt.want, evaluateCondition(data, tt.meta, tt.condition))
 		})
 	}
 }
@@ -88,4 +123,10 @@ func TestExtractComparisonValue(t *testing.T) {
 	assert.Equal(t, "deleted", extractComparisonValue(" != 'deleted'", comparisonNeq))
 	assert.Equal(t, "", extractComparisonValue(" == ", comparisonEq))
 	assert.Equal(t, "", extractComparisonValue(" != 'unterminated", comparisonNeq))
+}
+
+func TestSplitTopLevel(t *testing.T) {
+	assert.Equal(t, []string{"a", "b"}, splitTopLevel("a && b", "&&"))
+	assert.Equal(t, []string{"a == 'x && y'", "b"}, splitTopLevel("a == 'x && y' && b", "&&"))
+	assert.Equal(t, []string{"(a && b)", "c"}, splitTopLevel("(a && b) || c", "||"))
 }

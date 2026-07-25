@@ -850,3 +850,54 @@ func TestValidateTransformations_InsertField(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateTransformations_WhenPredicate(t *testing.T) {
+	baseSpec := DataFlowSpec{
+		Source: SourceSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSourceSpec{Brokers: []string{"broker:9092"}, Topic: "src"}),
+		},
+		Sink: SinkSpec{
+			Type:   "kafka",
+			Config: mustRawConfigForValidation(KafkaSinkSpec{Brokers: []string{"broker:9092"}, Topic: "dst"}),
+		},
+	}
+
+	t.Run("when accepted on cast", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{{
+			Type: "cast",
+			When: "metadata.topic == 'dbserver1.public.orders' && $.id",
+			Config: mustRawConfigForValidation(CastTransformation{
+				Spec: map[string]string{"id": "int64"},
+			}),
+		}}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+
+	t.Run("when with filter and or", func(t *testing.T) {
+		spec := baseSpec
+		spec.Transformations = []TransformationSpec{
+			{
+				Type: "filter",
+				Config: mustRawConfigForValidation(FilterTransformation{
+					Condition: "$.event_id && $.user_id",
+				}),
+			},
+			{
+				Type: "mask",
+				When: "$.payload.op == 'u' || $.payload.op == 'c'",
+				Config: mustRawConfigForValidation(MaskTransformation{
+					Fields: []string{"email"},
+				}),
+			},
+		}
+		errs := ValidateDataFlowSpec(&spec)
+		if len(errs) != 0 {
+			t.Fatalf("expected no validation errors, got %v", errs)
+		}
+	})
+}
