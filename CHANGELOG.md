@@ -1,3 +1,9 @@
+## 1.10.0 (2026-07-25)
+
+## Commits
+
+- 6981e3f feat: add support for collapsing sink batches based on message acknowledgment
+
 ## 1.9.0 (2026-07-25)
 
 ## Commits
