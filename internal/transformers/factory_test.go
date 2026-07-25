@@ -426,10 +426,10 @@ func TestCreateTransformer_InsertField(t *testing.T) {
 			transformation: &v1.TransformationSpec{
 				Type: transformtypes.InsertField,
 				Config: mustConfig(v1.InsertFieldTransformation{Fields: map[string]string{
-					"pipeline":      "orders-cdc",
-					"source_topic":  "${metadata.topic}",
-					"ingested_at":   "${now}",
-					"flags.active":  "json:true",
+					"pipeline":     "orders-cdc",
+					"source_topic": "${metadata.topic}",
+					"ingested_at":  "${now}",
+					"flags.active": "json:true",
 				}}),
 			},
 		},

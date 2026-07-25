@@ -42,8 +42,8 @@ func TestInsertFieldTransformer_Transform(t *testing.T) {
 		{
 			name: "literal and nested json",
 			config: &v1.InsertFieldTransformation{Fields: map[string]string{
-				"pipeline":           "orders-cdc",
-				"flags.reprocessed":  "json:false",
+				"pipeline":          "orders-cdc",
+				"flags.reprocessed": "json:false",
 			}},
 			input: `{"id":1,"Name":"A"}`,
 			want: map[string]interface{}{

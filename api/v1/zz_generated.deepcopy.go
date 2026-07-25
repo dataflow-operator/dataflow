@@ -354,6 +354,11 @@ func (in *DataFlowSpec) DeepCopyInto(out *DataFlowSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.TransformWorkers != nil {
+		in, out := &in.TransformWorkers, &out.TransformWorkers
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Replicas != nil {
 		in, out := &in.Replicas, &out.Replicas
 		*out = new(int32)

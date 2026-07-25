@@ -45,9 +45,23 @@ func ValidateDataFlowSpec(spec *DataFlowSpec) field.ErrorList {
 	all = append(all, validateTransformations(spec.Transformations, f.Child("transformations"))...)
 	all = append(all, validateResources(spec.Resources, f.Child("resources"))...)
 	all = append(all, validateReplicas(spec, f)...)
+	all = append(all, validateTransformWorkers(spec, f)...)
 	all = append(all, validateAckGranularity(spec, f)...)
 	all = append(all, validateIdempotency(spec, f)...)
 	all = append(all, validateMaintenance(spec.Maintenance, f.Child("maintenance"))...)
+	return all
+}
+
+func validateTransformWorkers(spec *DataFlowSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	if spec == nil || spec.TransformWorkers == nil {
+		return all
+	}
+	w := *spec.TransformWorkers
+	if w < 1 || w > 64 {
+		all = append(all, field.Invalid(f.Child("transformWorkers"), w,
+			"transformWorkers must be between 1 and 64"))
+	}
 	return all
 }
 

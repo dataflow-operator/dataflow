@@ -69,6 +69,62 @@ func TestValidateReplicas_postgresqlRejected(t *testing.T) {
 	}
 }
 
+func TestValidateTransformWorkers(t *testing.T) {
+	base := func() *DataFlowSpec {
+		return &DataFlowSpec{
+			Source: SourceSpec{
+				Type:   "kafka",
+				Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b"}, Topic: "t"}),
+			},
+			Sink: SinkSpec{
+				Type:   "kafka",
+				Config: mustConfig(KafkaSinkSpec{Brokers: []string{"b"}, Topic: "out"}),
+			},
+		}
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		spec := base()
+		w := int32(8)
+		spec.TransformWorkers = &w
+		if errs := ValidateDataFlowSpec(spec); len(errs) != 0 {
+			t.Fatalf("expected no errors, got %v", errs)
+		}
+	})
+
+	t.Run("too low", func(t *testing.T) {
+		spec := base()
+		w := int32(0)
+		spec.TransformWorkers = &w
+		errs := ValidateDataFlowSpec(spec)
+		found := false
+		for _, e := range errs {
+			if e.Field == "spec.transformWorkers" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected error on spec.transformWorkers, got %v", errs)
+		}
+	})
+
+	t.Run("too high", func(t *testing.T) {
+		spec := base()
+		w := int32(65)
+		spec.TransformWorkers = &w
+		errs := ValidateDataFlowSpec(spec)
+		found := false
+		for _, e := range errs {
+			if e.Field == "spec.transformWorkers" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected error on spec.transformWorkers, got %v", errs)
+		}
+	})
+}
+
 func TestValidateNessieSource_incrementalQueryForbidden(t *testing.T) {
 	inc := true
 	n := &NessieSourceSpec{

@@ -19,6 +19,8 @@ package connectors
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -284,4 +286,109 @@ func TestRunBatchWriteLoop_FlushError(t *testing.T) {
 		},
 	})
 	require.ErrorIs(t, err, wantErr)
+}
+
+func TestRunBatchWriteLoop_DoubleBufferOverlap(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan *types.Message, 8)
+
+	flushGate := make(chan struct{})
+	firstFlushStarted := make(chan struct{})
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	var received atomic.Int32
+	var flushOrder []int
+	var flushMu sync.Mutex
+	var ackOrder []int
+
+	for i := 1; i <= 4; i++ {
+		ch <- types.NewMessage([]byte(fmt.Sprintf(`{"n":%d}`, i)))
+	}
+	close(ch)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunBatchWriteLoop(ctx, ch, BatchWriteConfig{MaxBatchSize: 2, FlushInterval: 0}, BatchWriteOptions{
+			Logger: logr.Discard(),
+			OnMessage: func(*types.Message) bool {
+				received.Add(1)
+				return true
+			},
+			OnFlush: func(_ context.Context, msgs []*types.Message) error {
+				cur := inFlight.Add(1)
+				for {
+					old := maxInFlight.Load()
+					if cur <= old || maxInFlight.CompareAndSwap(old, cur) {
+						break
+					}
+				}
+				defer inFlight.Add(-1)
+
+				n := len(msgs)
+				flushMu.Lock()
+				flushOrder = append(flushOrder, n)
+				first := len(flushOrder) == 1
+				flushMu.Unlock()
+
+				if first {
+					close(firstFlushStarted)
+					<-flushGate
+				}
+				return nil
+			},
+			OnAck: func(msgs []*types.Message) {
+				flushMu.Lock()
+				ackOrder = append(ackOrder, len(msgs))
+				flushMu.Unlock()
+			},
+		})
+	}()
+
+	select {
+	case <-firstFlushStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first flush")
+	}
+
+	// While first flush is blocked, the loop should keep reading and fill the next batch.
+	require.Eventually(t, func() bool {
+		return received.Load() >= 4
+	}, 2*time.Second, 5*time.Millisecond, "second batch must accumulate during in-flight flush")
+	close(flushGate)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for loop exit")
+	}
+
+	assert.Equal(t, int32(1), maxInFlight.Load(), "at most one OnFlush in flight")
+	flushMu.Lock()
+	defer flushMu.Unlock()
+	assert.Equal(t, []int{2, 2}, flushOrder)
+	assert.Equal(t, []int{2, 2}, ackOrder, "OnAck order follows flush order")
+}
+
+func TestRunBatchWriteLoop_DoubleBufferFlushErrorStops(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan *types.Message, 4)
+	ch <- types.NewMessage([]byte(`1`))
+	ch <- types.NewMessage([]byte(`2`))
+	ch <- types.NewMessage([]byte(`3`))
+	close(ch)
+
+	wantErr := errors.New("boom")
+	var flushes atomic.Int32
+	err := RunBatchWriteLoop(ctx, ch, BatchWriteConfig{MaxBatchSize: 1, FlushInterval: 0}, BatchWriteOptions{
+		Logger: logr.Discard(),
+		OnFlush: func(_ context.Context, _ []*types.Message) error {
+			if flushes.Add(1) == 1 {
+				return wantErr
+			}
+			return nil
+		},
+	})
+	require.ErrorIs(t, err, wantErr)
+	assert.Equal(t, int32(1), flushes.Load())
 }

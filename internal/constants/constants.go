@@ -24,3 +24,9 @@ const DefaultSingleValueChannelBufferSize = 1
 
 // MaxBatchSizeWhenTimerOnly is the maximum batch size when flush is only by timer (batchSize=0), to avoid unbounded memory growth.
 const MaxBatchSizeWhenTimerOnly = 10000
+
+// DefaultTransformWorkers is the default number of parallel transform goroutines per processor pod.
+const DefaultTransformWorkers = 1
+
+// MaxTransformWorkers caps spec.transformWorkers to bound memory and scheduler overhead.
+const MaxTransformWorkers = 64

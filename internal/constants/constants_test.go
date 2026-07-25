@@ -38,3 +38,12 @@ func TestMaxBatchSizeWhenTimerOnly(t *testing.T) {
 		t.Errorf("MaxBatchSizeWhenTimerOnly should be 10000 for OOM protection, got %d", MaxBatchSizeWhenTimerOnly)
 	}
 }
+
+func TestTransformWorkersConstants(t *testing.T) {
+	if DefaultTransformWorkers != 1 {
+		t.Errorf("DefaultTransformWorkers must be 1, got %d", DefaultTransformWorkers)
+	}
+	if MaxTransformWorkers < DefaultTransformWorkers {
+		t.Errorf("MaxTransformWorkers (%d) must be >= DefaultTransformWorkers (%d)", MaxTransformWorkers, DefaultTransformWorkers)
+	}
+}

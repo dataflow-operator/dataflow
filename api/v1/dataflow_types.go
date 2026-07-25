@@ -112,6 +112,15 @@ type DataFlowSpec struct {
 	// +optional
 	ChannelBufferSize *int32 `json:"channelBufferSize,omitempty"`
 
+	// TransformWorkers is the number of parallel goroutines applying transformations inside one processor pod.
+	// Output order to the sink and source ack order are preserved via a reorder buffer.
+	// Default: 1 (sequential). Raise for CPU-heavy transform chains; keep 1 when transforms are cheap.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
+	// +kubebuilder:default:=1
+	// +optional
+	TransformWorkers *int32 `json:"transformWorkers,omitempty"`
+
 	// Replicas is the number of processor pods (Deployment replicas).
 	// Only supported for Kafka sources (consumer group coordinates partition assignment).
 	// For polling sources (postgresql, clickhouse, trino, nessie) must be 1 or unset.

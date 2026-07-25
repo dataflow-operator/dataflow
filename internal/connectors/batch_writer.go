@@ -122,7 +122,17 @@ func BatchFlushLogFields(batchSize int, duration time.Duration, reason string, t
 	}
 }
 
+type batchFlushResult struct {
+	err      error
+	n        int
+	reason   string
+	duration time.Duration
+}
+
 // RunBatchWriteLoop reads messages, batches them, and flushes on size, timer, shutdown, or channel close.
+//
+// Double-buffer: at most one OnFlush runs asynchronously while the loop continues accumulating the
+// next batch (bounded to one in-flight flush + one active batch). Flush/ack order is preserved.
 func RunBatchWriteLoop(
 	ctx context.Context,
 	messages <-chan *types.Message,
@@ -133,33 +143,13 @@ func RunBatchWriteLoop(
 	var batch []*types.Message
 	var flushTimer *time.Timer
 	var totalFlushed int
+	var flushDone <-chan batchFlushResult
 
 	stopTimer := func() {
 		if flushTimer != nil {
 			flushTimer.Stop()
 			flushTimer = nil
 		}
-	}
-
-	doFlush := func(toFlush []*types.Message, reason string) error {
-		stopTimer()
-		if len(toFlush) == 0 {
-			return nil
-		}
-		flushStart := time.Now()
-		batchCtx, cancel := BatchWriteContextWithTimeout(ctx, opts.FlushTimeout)
-		defer cancel()
-		if err := opts.OnFlush(batchCtx, toFlush); err != nil {
-			return err
-		}
-		if opts.OnAck != nil {
-			opts.OnAck(toFlush)
-		}
-		totalFlushed += len(toFlush)
-		fields := append([]any{}, opts.LogFields...)
-		fields = append(fields, BatchFlushLogFields(len(toFlush), time.Since(flushStart), reason, totalFlushed)...)
-		opts.Logger.Info("Batch flushed", fields...)
-		return nil
 	}
 
 	logFlushError := func(err error, event string, msg *types.Message, batchSize int) {
@@ -173,89 +163,148 @@ func RunBatchWriteLoop(
 		opts.Logger.Error(err, event, fields...)
 	}
 
+	applyFlushResult := func(res batchFlushResult) error {
+		if res.err != nil {
+			return res.err
+		}
+		totalFlushed += res.n
+		fields := append([]any{}, opts.LogFields...)
+		fields = append(fields, BatchFlushLogFields(res.n, res.duration, res.reason, totalFlushed)...)
+		opts.Logger.Info("Batch flushed", fields...)
+		return nil
+	}
+
+	waitInFlight := func() error {
+		if flushDone == nil {
+			return nil
+		}
+		res := <-flushDone
+		flushDone = nil
+		return applyFlushResult(res)
+	}
+
+	startAsyncFlush := func(toFlush []*types.Message, reason string) {
+		stopTimer()
+		ch := make(chan batchFlushResult, 1)
+		flushDone = ch
+		go func(msgs []*types.Message, reason string) {
+			flushStart := time.Now()
+			batchCtx, cancel := BatchWriteContextWithTimeout(ctx, opts.FlushTimeout)
+			defer cancel()
+			err := opts.OnFlush(batchCtx, msgs)
+			if err == nil && opts.OnAck != nil {
+				opts.OnAck(msgs)
+			}
+			ch <- batchFlushResult{
+				err:      err,
+				n:        len(msgs),
+				reason:   reason,
+				duration: time.Since(flushStart),
+			}
+		}(toFlush, reason)
+	}
+
+	// requestFlush waits for any in-flight flush (preserving order), then starts a new async flush.
+	requestFlush := func(toFlush []*types.Message, reason string) error {
+		if len(toFlush) == 0 {
+			return nil
+		}
+		if err := waitInFlight(); err != nil {
+			return err
+		}
+		startAsyncFlush(toFlush, reason)
+		return nil
+	}
+
+	// syncFlush drains in-flight work then flushes synchronously (shutdown / channel close).
+	syncFlush := func(toFlush []*types.Message, reason string) error {
+		if err := waitInFlight(); err != nil {
+			return err
+		}
+		if len(toFlush) == 0 {
+			return nil
+		}
+		stopTimer()
+		flushStart := time.Now()
+		batchCtx, cancel := BatchWriteContextWithTimeout(ctx, opts.FlushTimeout)
+		defer cancel()
+		if err := opts.OnFlush(batchCtx, toFlush); err != nil {
+			return err
+		}
+		if opts.OnAck != nil {
+			opts.OnAck(toFlush)
+		}
+		return applyFlushResult(batchFlushResult{
+			n:        len(toFlush),
+			reason:   reason,
+			duration: time.Since(flushStart),
+		})
+	}
+
+	appendMessage := func(msg *types.Message) error {
+		if opts.OnMessage != nil && !opts.OnMessage(msg) {
+			return nil
+		}
+		batch = append(batch, msg)
+		if len(batch) < cfg.MaxBatchSize {
+			return nil
+		}
+		toFlush := batch
+		batch = nil
+		if err := requestFlush(toFlush, "size"); err != nil {
+			logFlushError(err, "Failed to write batch", msg, len(toFlush))
+			return err
+		}
+		return nil
+	}
+
 	for {
 		if useTimer && len(batch) > 0 && flushTimer == nil {
 			flushTimer = time.NewTimer(cfg.FlushInterval)
 		}
 
-		if useTimer && flushTimer != nil {
-			select {
-			case <-ctx.Done():
+		var timerC <-chan time.Time
+		if flushTimer != nil {
+			timerC = flushTimer.C
+		}
+
+		select {
+		case <-ctx.Done():
+			stopTimer()
+			if err := syncFlush(batch, "shutdown"); err != nil {
+				return err
+			}
+			return ctx.Err()
+
+		case res := <-flushDone:
+			flushDone = nil
+			if err := applyFlushResult(res); err != nil {
+				logFlushError(err, "Failed to write batch", nil, res.n)
+				return err
+			}
+
+		case <-timerC:
+			flushTimer = nil
+			if len(batch) == 0 {
+				continue
+			}
+			toFlush := batch
+			batch = nil
+			if err := requestFlush(toFlush, "timer"); err != nil {
+				logFlushError(err, "Failed to write batch on timer", nil, len(toFlush))
+				return err
+			}
+
+		case msg, ok := <-messages:
+			if !ok {
 				stopTimer()
-				if len(batch) > 0 {
-					opts.Logger.Info("Context cancelled, flushing batch", append(opts.LogFields, "batchSize", len(batch))...)
-					if err := doFlush(batch, "shutdown"); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case <-flushTimer.C:
-				flushTimer = nil
-				if len(batch) == 0 {
-					continue
-				}
-				toFlush := batch
-				batch = nil
-				if err := doFlush(toFlush, "timer"); err != nil {
-					logFlushError(err, "Failed to write batch on timer", nil, len(toFlush))
+				if err := syncFlush(batch, "channel_closed"); err != nil {
 					return err
 				}
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					if len(batch) > 0 {
-						if err := doFlush(batch, "channel_closed"); err != nil {
-							return err
-						}
-					}
-					return nil
-				}
-				if opts.OnMessage != nil && !opts.OnMessage(msg) {
-					continue
-				}
-				batch = append(batch, msg)
-				if len(batch) >= cfg.MaxBatchSize {
-					toFlush := batch
-					batch = nil
-					if err := doFlush(toFlush, "size"); err != nil {
-						logFlushError(err, "Failed to write batch", msg, len(toFlush))
-						return err
-					}
-				}
+				return nil
 			}
-		} else {
-			select {
-			case <-ctx.Done():
-				stopTimer()
-				if len(batch) > 0 {
-					opts.Logger.Info("Context cancelled, flushing batch", append(opts.LogFields, "batchSize", len(batch))...)
-					if err := doFlush(batch, "shutdown"); err != nil {
-						return err
-					}
-				}
-				return ctx.Err()
-			case msg, ok := <-messages:
-				if !ok {
-					stopTimer()
-					if len(batch) > 0 {
-						if err := doFlush(batch, "channel_closed"); err != nil {
-							return err
-						}
-					}
-					return nil
-				}
-				if opts.OnMessage != nil && !opts.OnMessage(msg) {
-					continue
-				}
-				batch = append(batch, msg)
-				if len(batch) >= cfg.MaxBatchSize {
-					toFlush := batch
-					batch = nil
-					if err := doFlush(toFlush, "size"); err != nil {
-						logFlushError(err, "Failed to write batch", msg, len(toFlush))
-						return err
-					}
-				}
+			if err := appendMessage(msg); err != nil {
+				return err
 			}
 		}
 	}
