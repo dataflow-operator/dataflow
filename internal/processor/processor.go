@@ -341,6 +341,9 @@ func (p *Processor) initConnector(connector interface{}, logger logr.Logger) {
 	if ag, ok := connector.(interface{ SetAckGranularity(string) }); ok {
 		ag.SetAckGranularity(v1.AckGranularityOrDefault(p.spec))
 	}
+	if cb, ok := connector.(interface{ SetCollapseBatchOnMessageAck(bool) }); ok {
+		cb.SetCollapseBatchOnMessageAck(v1.CollapseBatchOnMessageAckOrDefault(p.spec))
+	}
 }
 
 // writeMessages writes messages to appropriate sink(s)

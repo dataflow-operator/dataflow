@@ -509,7 +509,7 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := ApplyAckGranularity(NewBatchWriteConfig(t.config.BatchSize, t.config.BatchFlushIntervalSeconds, 1), t.ackGranularityIsMessage())
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(t.config.BatchSize, t.config.BatchFlushIntervalSeconds, 1), t.shouldCollapseBatchForAck())
 	batchSize := 1
 	if t.config.BatchSize != nil {
 		batchSize = int(*t.config.BatchSize)

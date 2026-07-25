@@ -38,3 +38,33 @@ func TestAckGranularityIsMessage(t *testing.T) {
 	assert.False(t, AckGranularityIsMessage(&DataFlowSpec{}))
 	assert.True(t, AckGranularityIsMessage(&DataFlowSpec{AckGranularity: AckGranularityMessage}))
 }
+
+func TestCollapseBatchOnMessageAckOrDefault(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, CollapseBatchOnMessageAckOrDefault(nil))
+	assert.True(t, CollapseBatchOnMessageAckOrDefault(&DataFlowSpec{}))
+
+	f := false
+	assert.False(t, CollapseBatchOnMessageAckOrDefault(&DataFlowSpec{CollapseBatchOnMessageAck: &f}))
+	tr := true
+	assert.True(t, CollapseBatchOnMessageAckOrDefault(&DataFlowSpec{CollapseBatchOnMessageAck: &tr}))
+}
+
+func TestShouldCollapseSinkBatch(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, ShouldCollapseSinkBatch(nil))
+	assert.False(t, ShouldCollapseSinkBatch(&DataFlowSpec{}))
+
+	f := false
+	assert.True(t, ShouldCollapseSinkBatch(&DataFlowSpec{AckGranularity: AckGranularityMessage}))
+	assert.False(t, ShouldCollapseSinkBatch(&DataFlowSpec{
+		AckGranularity:            AckGranularityMessage,
+		CollapseBatchOnMessageAck: &f,
+	}))
+	assert.False(t, ShouldCollapseSinkBatch(&DataFlowSpec{
+		AckGranularity:            AckGranularityBatch,
+		CollapseBatchOnMessageAck: &f,
+	}))
+}

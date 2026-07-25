@@ -35,3 +35,17 @@ func AckGranularityOrDefault(spec *DataFlowSpec) string {
 func AckGranularityIsMessage(spec *DataFlowSpec) bool {
 	return AckGranularityOrDefault(spec) == AckGranularityMessage
 }
+
+// CollapseBatchOnMessageAckOrDefault reports whether message-ack must force MaxBatchSize=1.
+// Default true preserves legacy coupling; false keeps sink batchSize with per-message source commit.
+func CollapseBatchOnMessageAckOrDefault(spec *DataFlowSpec) bool {
+	if spec != nil && spec.CollapseBatchOnMessageAck != nil {
+		return *spec.CollapseBatchOnMessageAck
+	}
+	return true
+}
+
+// ShouldCollapseSinkBatch reports whether sinks must force MaxBatchSize=1 for the given spec.
+func ShouldCollapseSinkBatch(spec *DataFlowSpec) bool {
+	return AckGranularityIsMessage(spec) && CollapseBatchOnMessageAckOrDefault(spec)
+}

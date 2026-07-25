@@ -339,6 +339,11 @@ func (in *DataFlowSpec) DeepCopyInto(out *DataFlowSpec) {
 		*out = new(metav1.Duration)
 		**out = **in
 	}
+	if in.CollapseBatchOnMessageAck != nil {
+		in, out := &in.CollapseBatchOnMessageAck, &out.CollapseBatchOnMessageAck
+		*out = new(bool)
+		**out = **in
+	}
 	if in.CheckpointReset != nil {
 		in, out := &in.CheckpointReset, &out.CheckpointReset
 		*out = new(bool)

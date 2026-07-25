@@ -96,6 +96,15 @@ type DataFlowSpec struct {
 	// +optional
 	AckGranularity string `json:"ackGranularity,omitempty"`
 
+	// CollapseBatchOnMessageAck forces sink MaxBatchSize=1 when ackGranularity is message.
+	// Default: true (legacy coupling of ack semantics and write-batch size).
+	// Set false to keep sink.config.batchSize while still committing source offsets
+	// per message after a successful bulk write (watermark-style message ack).
+	// Ignored when ackGranularity is batch.
+	// +kubebuilder:default:=true
+	// +optional
+	CollapseBatchOnMessageAck *bool `json:"collapseBatchOnMessageAck,omitempty"`
+
 	// CheckpointReset clears persisted source checkpoint on the next processor start (one-shot).
 	// Alternatively set annotation dataflow.dataflow.io/reset-checkpoint: "true" on the DataFlow.
 	// +optional

@@ -173,10 +173,11 @@ func (c *connectorMetadata) SetMetadata(namespace, name string) {
 
 // progressRecorder is an optional callback invoked after successful pipeline progress (e.g. sink flush + ack).
 type progressRecorder struct {
-	onProgress         func()
-	batchAckSyncer     checkpoint.BatchAckSyncer
-	ackGranularity     string
-	checkpointReporter checkpointSaveReporter
+	onProgress                func()
+	batchAckSyncer            checkpoint.BatchAckSyncer
+	ackGranularity            string
+	collapseBatchOnMessageAck *bool // nil → true (legacy) when message-ack
+	checkpointReporter        checkpointSaveReporter
 }
 
 func (p *progressRecorder) setReporter(r checkpointSaveReporter) {
@@ -202,8 +203,25 @@ func (p *progressRecorder) SetAckGranularity(granularity string) {
 	p.ackGranularity = v1.AckGranularityBatch
 }
 
+// SetCollapseBatchOnMessageAck controls whether message-ack forces MaxBatchSize=1.
+// Wire from CRD via processor (default true when unset on the spec).
+func (p *progressRecorder) SetCollapseBatchOnMessageAck(collapse bool) {
+	p.collapseBatchOnMessageAck = &collapse
+}
+
 func (p *progressRecorder) ackGranularityIsMessage() bool {
 	return p.ackGranularity == v1.AckGranularityMessage
+}
+
+// shouldCollapseBatchForAck reports whether sink batching must be forced to 1.
+func (p *progressRecorder) shouldCollapseBatchForAck() bool {
+	if !p.ackGranularityIsMessage() {
+		return false
+	}
+	if p.collapseBatchOnMessageAck != nil {
+		return *p.collapseBatchOnMessageAck
+	}
+	return true
 }
 
 func (p *progressRecorder) notifyProgress() {

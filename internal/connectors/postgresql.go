@@ -651,7 +651,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 	if batchSize == 0 {
 		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
 	}
-	if p.ackGranularityIsMessage() {
+	if p.shouldCollapseBatchForAck() {
 		maxBatchSize = 1
 	}
 

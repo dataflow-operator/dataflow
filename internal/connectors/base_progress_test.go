@@ -150,3 +150,22 @@ func TestAckAfterSuccessfulWrite_MessageGranularity(t *testing.T) {
 	assert.Equal(t, int32(2), progressCalls.Load())
 	assert.Equal(t, int32(2), syncer.calls.Load())
 }
+
+func TestShouldCollapseBatchForAck(t *testing.T) {
+	t.Parallel()
+
+	rec := &progressRecorder{}
+	assert.False(t, rec.shouldCollapseBatchForAck())
+
+	rec.SetAckGranularity("message")
+	assert.True(t, rec.shouldCollapseBatchForAck(), "default collapses when message-ack")
+
+	rec.SetCollapseBatchOnMessageAck(false)
+	assert.False(t, rec.shouldCollapseBatchForAck())
+
+	rec.SetCollapseBatchOnMessageAck(true)
+	assert.True(t, rec.shouldCollapseBatchForAck())
+
+	rec.SetAckGranularity("batch")
+	assert.False(t, rec.shouldCollapseBatchForAck(), "batch ack never collapses via this helper")
+}

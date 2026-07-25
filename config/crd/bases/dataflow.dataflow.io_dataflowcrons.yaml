@@ -989,6 +989,15 @@ spec:
                   Shrinks the duplicate window on pod crash from the debounce interval to roughly one batch.
                   Default: false (debounced save only). Recommended for migration and cron workloads.
                 type: boolean
+              collapseBatchOnMessageAck:
+                default: true
+                description: |-
+                  CollapseBatchOnMessageAck forces sink MaxBatchSize=1 when ackGranularity is message.
+                  Default: true (legacy coupling of ack semantics and write-batch size).
+                  Set false to keep sink.config.batchSize while still committing source offsets
+                  per message after a successful bulk write (watermark-style message ack).
+                  Ignored when ackGranularity is batch.
+                type: boolean
               concurrencyPolicy:
                 type: string
               errors:

@@ -65,9 +65,10 @@ func NewBatchWriteConfig(batchSize, flushIntervalSec *int32, defaultBatchSize in
 	}
 }
 
-// ApplyAckGranularity forces single-message batches when per-message ack is enabled.
-func ApplyAckGranularity(cfg BatchWriteConfig, messageAck bool) BatchWriteConfig {
-	if messageAck {
+// ApplyAckGranularity forces single-message batches when collapseBatch is true
+// (typically message-ack with collapseBatchOnMessageAck enabled / default).
+func ApplyAckGranularity(cfg BatchWriteConfig, collapseBatch bool) BatchWriteConfig {
+	if collapseBatch {
 		cfg.MaxBatchSize = 1
 	}
 	return cfg

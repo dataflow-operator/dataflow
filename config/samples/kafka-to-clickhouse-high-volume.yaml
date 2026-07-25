@@ -5,8 +5,9 @@ metadata:
 spec:
   # Высоконагруженный поток: увеличиваем буфер канала
   channelBufferSize: 1000
-  # Для high-volume потоков используем message-level ack
+  # Message-level source commit without collapsing ClickHouse bulk inserts
   ackGranularity: message
+  collapseBatchOnMessageAck: false
   source:
     type: kafka
     config:

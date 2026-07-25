@@ -400,7 +400,7 @@ func (c *IcebergSinkConnector) Write(ctx context.Context, messages <-chan *types
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100), c.ackGranularityIsMessage())
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100), c.shouldCollapseBatchForAck())
 	return RunBatchWriteLoop(ctx, messages, cfg, BatchWriteOptions{
 		Logger:    c.logger,
 		LogFields: []any{"table", c.config.Table},
