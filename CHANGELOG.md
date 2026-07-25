@@ -1,3 +1,10 @@
+## 1.9.0 (2026-07-25)
+
+## Commits
+
+- 8ce4ee5 feat: add "when" predicate support to transformations
+- 82f8008 feat: add TransformWorkers configuration and validation
+
 ## 1.8.0 (2026-07-20)
 
 ## Commits
