@@ -943,8 +943,10 @@ type KafkaSinkConnector struct {
 	connectorLogger
 	connectorMetadata
 	progressRecorder
-	config   *v1.KafkaSinkSpec
-	producer sarama.SyncProducer
+	config        *v1.KafkaSinkSpec
+	producer      sarama.SyncProducer
+	asyncProducer sarama.AsyncProducer
+	async         bool
 }
 
 // NewKafkaSinkConnector creates a new Kafka sink connector
@@ -966,10 +968,12 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Version = sarama.V2_8_0_0
 	saramaConfig.Producer.Return.Successes = true
-	saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
-	saramaConfig.Producer.Idempotent = true     // Prevents duplicate messages on retry
-	saramaConfig.Net.MaxOpenRequests = 1        // Required for idempotent producer ordering
+	saramaConfig.Producer.Return.Errors = true
 	saramaConfig.ClientID = "dataflow-operator" // Required for SASL authentication
+
+	if err := applyKafkaProducerConfig(k.config, saramaConfig); err != nil {
+		return err
+	}
 
 	if err := applyKafkaNetworkConfig(k.config.TLS, k.config.SASL, k.config.SecurityProtocol, saramaConfig, k.logger); err != nil {
 		return err
@@ -980,34 +984,153 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 		return fmt.Errorf("no Kafka brokers specified")
 	}
 
-	producer, err := sarama.NewSyncProducer(k.config.Brokers, saramaConfig)
-	if err != nil {
-		k.RecordError("connect", "producer_error")
-		saslMechanism := "none"
-		if k.config.SASL != nil {
-			saslMechanism = k.config.SASL.Mechanism
-			if saslMechanism == "" {
-				saslMechanism = "plain"
-			}
+	k.async = k.config != nil && k.config.Async != nil && *k.config.Async
+	if k.async {
+		producer, err := sarama.NewAsyncProducer(k.config.Brokers, saramaConfig)
+		if err != nil {
+			return k.producerConnectError(err)
 		}
-		k.logger.Error(err, "Failed to create producer",
-			"brokers", k.config.Brokers)
-		return fmt.Errorf("failed to create producer (brokers: %v, tls: %v, tlsSkipVerify: %v, sasl: %v, saslMechanism: %s, username: %s): %w",
-			k.config.Brokers, k.config.TLS != nil,
-			k.config.TLS != nil && k.config.TLS.InsecureSkipVerify,
-			k.config.SASL != nil, saslMechanism,
-			func() string {
-				if k.config.SASL != nil {
-					return k.config.SASL.Username
-				}
-				return ""
-			}(), err)
+		k.asyncProducer = producer
+	} else {
+		producer, err := sarama.NewSyncProducer(k.config.Brokers, saramaConfig)
+		if err != nil {
+			return k.producerConnectError(err)
+		}
+		k.producer = producer
 	}
-	k.producer = producer
-	k.logger.Info("Successfully connected to Kafka", "brokers", k.config.Brokers, "topic", k.config.Topic)
+	k.logger.Info("Successfully connected to Kafka",
+		"brokers", k.config.Brokers,
+		"topic", k.config.Topic,
+		"async", k.async,
+		"compression", kafkaProducerCompressionLabel(k.config),
+		"requiredAcks", kafkaProducerRequiredAcksLabel(k.config),
+	)
 	k.SetConnectionStatus(true)
 
 	return nil
+}
+
+func (k *KafkaSinkConnector) producerConnectError(err error) error {
+	k.RecordError("connect", "producer_error")
+	saslMechanism := "none"
+	if k.config.SASL != nil {
+		saslMechanism = k.config.SASL.Mechanism
+		if saslMechanism == "" {
+			saslMechanism = "plain"
+		}
+	}
+	k.logger.Error(err, "Failed to create producer",
+		"brokers", k.config.Brokers)
+	return fmt.Errorf("failed to create producer (brokers: %v, tls: %v, tlsSkipVerify: %v, sasl: %v, saslMechanism: %s, username: %s): %w",
+		k.config.Brokers, k.config.TLS != nil,
+		k.config.TLS != nil && k.config.TLS.InsecureSkipVerify,
+		k.config.SASL != nil, saslMechanism,
+		func() string {
+			if k.config.SASL != nil {
+				return k.config.SASL.Username
+			}
+			return ""
+		}(), err)
+}
+
+// applyKafkaProducerConfig maps KafkaSinkSpec producer tuning onto Sarama defaults.
+// Unset fields preserve historical DataFlow behavior: WaitForAll + Idempotent + MaxOpenRequests=1.
+func applyKafkaProducerConfig(spec *v1.KafkaSinkSpec, cfg *sarama.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("sarama config is nil")
+	}
+
+	idempotent := true
+	if spec != nil && spec.Idempotent != nil {
+		idempotent = *spec.Idempotent
+	}
+	cfg.Producer.Idempotent = idempotent
+
+	acks := "all"
+	if spec != nil && spec.RequiredAcks != "" {
+		acks = strings.ToLower(spec.RequiredAcks)
+	}
+	switch acks {
+	case "all":
+		cfg.Producer.RequiredAcks = sarama.WaitForAll
+	case "local":
+		cfg.Producer.RequiredAcks = sarama.WaitForLocal
+	case "none":
+		cfg.Producer.RequiredAcks = sarama.NoResponse
+	default:
+		return fmt.Errorf("unsupported requiredAcks %q (want all|local|none)", acks)
+	}
+
+	if idempotent {
+		if cfg.Producer.RequiredAcks != sarama.WaitForAll {
+			return fmt.Errorf("idempotent producer requires requiredAcks: all")
+		}
+		cfg.Net.MaxOpenRequests = 1
+		if spec != nil && spec.MaxOpenRequests != nil && *spec.MaxOpenRequests != 1 {
+			return fmt.Errorf("idempotent producer requires maxOpenRequests: 1")
+		}
+	} else if spec != nil && spec.MaxOpenRequests != nil {
+		if *spec.MaxOpenRequests < 1 {
+			return fmt.Errorf("maxOpenRequests must be >= 1")
+		}
+		cfg.Net.MaxOpenRequests = int(*spec.MaxOpenRequests)
+	}
+
+	compression := "none"
+	if spec != nil && spec.Compression != "" {
+		compression = strings.ToLower(spec.Compression)
+	}
+	switch compression {
+	case "none", "":
+		cfg.Producer.Compression = sarama.CompressionNone
+	case "gzip":
+		cfg.Producer.Compression = sarama.CompressionGZIP
+	case "snappy":
+		cfg.Producer.Compression = sarama.CompressionSnappy
+	case "lz4":
+		cfg.Producer.Compression = sarama.CompressionLZ4
+	case "zstd":
+		cfg.Producer.Compression = sarama.CompressionZSTD
+	default:
+		return fmt.Errorf("unsupported compression %q (want none|gzip|snappy|lz4|zstd)", compression)
+	}
+
+	if spec == nil {
+		return nil
+	}
+	if spec.FlushMessages != nil {
+		if *spec.FlushMessages < 0 {
+			return fmt.Errorf("flushMessages must be >= 0")
+		}
+		cfg.Producer.Flush.Messages = int(*spec.FlushMessages)
+	}
+	if spec.FlushBytes != nil {
+		if *spec.FlushBytes < 0 {
+			return fmt.Errorf("flushBytes must be >= 0")
+		}
+		cfg.Producer.Flush.Bytes = int(*spec.FlushBytes)
+	}
+	if spec.FlushFrequency != nil {
+		if spec.FlushFrequency.Duration < 0 {
+			return fmt.Errorf("flushFrequency must be >= 0")
+		}
+		cfg.Producer.Flush.Frequency = spec.FlushFrequency.Duration
+	}
+	return nil
+}
+
+func kafkaProducerCompressionLabel(spec *v1.KafkaSinkSpec) string {
+	if spec == nil || spec.Compression == "" {
+		return "none"
+	}
+	return strings.ToLower(spec.Compression)
+}
+
+func kafkaProducerRequiredAcksLabel(spec *v1.KafkaSinkSpec) string {
+	if spec == nil || spec.RequiredAcks == "" {
+		return "all"
+	}
+	return strings.ToLower(spec.RequiredAcks)
 }
 
 // XDGSCRAMClient implements sarama.SCRAMClient for SCRAM authentication
@@ -1046,10 +1169,19 @@ var SHA512 scram.HashGeneratorFcn = func() hash.Hash { return sha512.New() }
 
 // Write writes messages to Kafka
 func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.Message) error {
+	if k.async {
+		if k.asyncProducer == nil {
+			return fmt.Errorf("not connected, call Connect first")
+		}
+		return k.writeAsync(ctx, messages)
+	}
 	if k.producer == nil {
 		return fmt.Errorf("not connected, call Connect first")
 	}
+	return k.writeSync(ctx, messages)
+}
 
+func (k *KafkaSinkConnector) writeSync(ctx context.Context, messages <-chan *types.Message) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -1059,15 +1191,7 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 				return nil
 			}
 
-			kafkaMsg := &sarama.ProducerMessage{
-				Topic: k.config.Topic,
-				Value: sarama.ByteEncoder(msg.Data),
-			}
-
-			// Add key from metadata if present
-			if key, ok := msg.Metadata["key"].(string); ok {
-				kafkaMsg.Key = sarama.StringEncoder(key)
-			}
+			kafkaMsg := k.buildProducerMessage(msg)
 
 			var partition int32
 			var offset int64
@@ -1094,6 +1218,98 @@ func (k *KafkaSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 	}
 }
 
+func (k *KafkaSinkConnector) writeAsync(ctx context.Context, messages <-chan *types.Message) error {
+	var wg sync.WaitGroup
+	produceErr := make(chan error, 1)
+
+	successes := k.asyncProducer.Successes()
+	errorsCh := k.asyncProducer.Errors()
+	go func() {
+		for successes != nil || errorsCh != nil {
+			select {
+			case success, ok := <-successes:
+				if !ok {
+					successes = nil
+					continue
+				}
+				msg, ok := success.Metadata.(*types.Message)
+				if !ok || msg == nil {
+					k.RecordError("write", "success_metadata_error")
+					select {
+					case produceErr <- fmt.Errorf("async producer success missing message metadata"):
+					default:
+					}
+					wg.Done()
+					continue
+				}
+				msg.Metadata["partition"] = success.Partition
+				msg.Metadata["offset"] = success.Offset
+				k.RecordMessageWritten(getRouteFromMessage(msg))
+				k.AckMessageAndNotifyProgress(msg)
+				wg.Done()
+			case errMsg, ok := <-errorsCh:
+				if !ok {
+					errorsCh = nil
+					continue
+				}
+				k.RecordError("write", "send_error")
+				err := errMsg.Err
+				if err == nil {
+					err = fmt.Errorf("async producer error")
+				}
+				select {
+				case produceErr <- fmt.Errorf("failed to send message: %w", err):
+				default:
+				}
+				wg.Done()
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-produceErr:
+			return err
+		case msg, ok := <-messages:
+			if !ok {
+				wg.Wait()
+				select {
+				case err := <-produceErr:
+					return err
+				default:
+					return nil
+				}
+			}
+
+			kafkaMsg := k.buildProducerMessage(msg)
+			kafkaMsg.Metadata = msg
+			wg.Add(1)
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return ctx.Err()
+			case err := <-produceErr:
+				wg.Done()
+				return err
+			case k.asyncProducer.Input() <- kafkaMsg:
+			}
+		}
+	}
+}
+
+func (k *KafkaSinkConnector) buildProducerMessage(msg *types.Message) *sarama.ProducerMessage {
+	kafkaMsg := &sarama.ProducerMessage{
+		Topic: k.config.Topic,
+		Value: sarama.ByteEncoder(msg.Data),
+	}
+	if key, ok := msg.Metadata["key"].(string); ok {
+		kafkaMsg.Key = sarama.StringEncoder(key)
+	}
+	return kafkaMsg
+}
+
 // Close closes the Kafka connection
 func (k *KafkaSinkConnector) Close() error {
 	if k.guardClose() {
@@ -1102,9 +1318,16 @@ func (k *KafkaSinkConnector) Close() error {
 	defer k.Unlock()
 
 	k.logger.Info("Closing Kafka sink connection", "brokers", k.config.Brokers, "topic", k.config.Topic)
+	k.SetConnectionStatus(false)
+	if k.asyncProducer != nil {
+		err := k.asyncProducer.Close()
+		k.asyncProducer = nil
+		return err
+	}
 	if k.producer != nil {
-		k.SetConnectionStatus(false)
-		return k.producer.Close()
+		err := k.producer.Close()
+		k.producer = nil
+		return err
 	}
 	return nil
 }

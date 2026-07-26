@@ -52,3 +52,61 @@ func TestValidateKafkaConsumerTiming(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateKafkaProducerTuning(t *testing.T) {
+	path := field.NewPath("spec").Child("sink").Child("config")
+
+	t.Run("defaults valid", func(t *testing.T) {
+		spec := &KafkaSinkSpec{}
+		if errs := validateKafkaProducerTuning(spec, path); len(errs) != 0 {
+			t.Fatalf("expected no errors, got %v", errs)
+		}
+	})
+
+	t.Run("async high throughput profile", func(t *testing.T) {
+		idempotent := true
+		async := true
+		flushMsgs := int32(100)
+		spec := &KafkaSinkSpec{
+			RequiredAcks:   "all",
+			Compression:    "snappy",
+			Idempotent:     &idempotent,
+			Async:          &async,
+			FlushMessages:  &flushMsgs,
+			FlushFrequency: &metav1.Duration{Duration: 50 * time.Millisecond},
+		}
+		if errs := validateKafkaProducerTuning(spec, path); len(errs) != 0 {
+			t.Fatalf("expected no errors, got %v", errs)
+		}
+	})
+
+	t.Run("idempotent rejects local acks", func(t *testing.T) {
+		spec := &KafkaSinkSpec{RequiredAcks: "local"}
+		errs := validateKafkaProducerTuning(spec, path)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error for requiredAcks=local with idempotent default")
+		}
+	})
+
+	t.Run("non-idempotent allows local acks and higher maxOpenRequests", func(t *testing.T) {
+		idempotent := false
+		maxOpen := int32(5)
+		spec := &KafkaSinkSpec{
+			Idempotent:      &idempotent,
+			RequiredAcks:    "local",
+			MaxOpenRequests: &maxOpen,
+			Compression:     "lz4",
+		}
+		if errs := validateKafkaProducerTuning(spec, path); len(errs) != 0 {
+			t.Fatalf("expected no errors, got %v", errs)
+		}
+	})
+
+	t.Run("rejects unknown compression", func(t *testing.T) {
+		spec := &KafkaSinkSpec{Compression: "brotli"}
+		errs := validateKafkaProducerTuning(spec, path)
+		if len(errs) == 0 {
+			t.Fatal("expected validation error")
+		}
+	})
+}

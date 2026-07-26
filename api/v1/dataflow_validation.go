@@ -684,6 +684,57 @@ func validateKafkaSink(k *KafkaSinkSpec, f *field.Path) field.ErrorList {
 		all = append(all, validateSecretRef(k.TopicSecretRef, f.Child("topicSecretRef"))...)
 	}
 	all = append(all, validateKafkaSecurityProtocol(k.SecurityProtocol, k.TLS, k.SASL, f.Child("securityProtocol"))...)
+	all = append(all, validateKafkaProducerTuning(k, f)...)
+	return all
+}
+
+func validateKafkaProducerTuning(k *KafkaSinkSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	if k.RequiredAcks != "" {
+		switch strings.ToLower(k.RequiredAcks) {
+		case "all", "local", "none":
+		default:
+			all = append(all, field.NotSupported(f.Child("requiredAcks"), k.RequiredAcks, []string{"all", "local", "none"}))
+		}
+	}
+	if k.Compression != "" {
+		switch strings.ToLower(k.Compression) {
+		case "none", "gzip", "snappy", "lz4", "zstd":
+		default:
+			all = append(all, field.NotSupported(f.Child("compression"), k.Compression, []string{"none", "gzip", "snappy", "lz4", "zstd"}))
+		}
+	}
+	if k.MaxOpenRequests != nil && *k.MaxOpenRequests < 1 {
+		all = append(all, field.Invalid(f.Child("maxOpenRequests"), *k.MaxOpenRequests, "must be greater than or equal to 1"))
+	}
+	if k.FlushMessages != nil && *k.FlushMessages < 0 {
+		all = append(all, field.Invalid(f.Child("flushMessages"), *k.FlushMessages, "must be greater than or equal to zero"))
+	}
+	if k.FlushBytes != nil && *k.FlushBytes < 0 {
+		all = append(all, field.Invalid(f.Child("flushBytes"), *k.FlushBytes, "must be greater than or equal to zero"))
+	}
+	if k.FlushFrequency != nil && k.FlushFrequency.Duration < 0 {
+		all = append(all, field.Invalid(f.Child("flushFrequency"), k.FlushFrequency.Duration.String(), "must be greater than or equal to zero"))
+	}
+
+	idempotent := true
+	if k.Idempotent != nil {
+		idempotent = *k.Idempotent
+	}
+	if idempotent {
+		acks := strings.ToLower(k.RequiredAcks)
+		if acks == "" {
+			acks = "all"
+		}
+		if acks != "all" {
+			all = append(all, field.Invalid(f.Child("requiredAcks"), k.RequiredAcks,
+				"idempotent producer requires requiredAcks: all (or omit for default)"))
+		}
+		if k.MaxOpenRequests != nil && *k.MaxOpenRequests != 1 {
+			all = append(all, field.Invalid(f.Child("maxOpenRequests"), *k.MaxOpenRequests,
+				"idempotent producer requires maxOpenRequests: 1"))
+		}
+	}
 	return all
 }
 

@@ -317,6 +317,90 @@ func TestApplyKafkaConsumerConfig(t *testing.T) {
 	})
 }
 
+func TestApplyKafkaProducerConfig(t *testing.T) {
+	t.Run("defaults match historical WaitForAll+idempotent", func(t *testing.T) {
+		cfg := sarama.NewConfig()
+		if err := applyKafkaProducerConfig(&v1.KafkaSinkSpec{}, cfg); err != nil {
+			t.Fatalf("applyKafkaProducerConfig: %v", err)
+		}
+		if cfg.Producer.RequiredAcks != sarama.WaitForAll {
+			t.Errorf("RequiredAcks = %v, want WaitForAll", cfg.Producer.RequiredAcks)
+		}
+		if !cfg.Producer.Idempotent {
+			t.Error("Idempotent = false, want true")
+		}
+		if cfg.Net.MaxOpenRequests != 1 {
+			t.Errorf("MaxOpenRequests = %d, want 1", cfg.Net.MaxOpenRequests)
+		}
+		if cfg.Producer.Compression != sarama.CompressionNone {
+			t.Errorf("Compression = %v, want none", cfg.Producer.Compression)
+		}
+	})
+
+	t.Run("maps compression flush and async-oriented knobs", func(t *testing.T) {
+		flushMsgs := int32(100)
+		flushBytes := int32(65536)
+		spec := &v1.KafkaSinkSpec{
+			Compression:    "snappy",
+			RequiredAcks:   "all",
+			FlushMessages:  &flushMsgs,
+			FlushBytes:     &flushBytes,
+			FlushFrequency: &metav1.Duration{Duration: 50 * time.Millisecond},
+		}
+		cfg := sarama.NewConfig()
+		if err := applyKafkaProducerConfig(spec, cfg); err != nil {
+			t.Fatalf("applyKafkaProducerConfig: %v", err)
+		}
+		if cfg.Producer.Compression != sarama.CompressionSnappy {
+			t.Errorf("Compression = %v, want snappy", cfg.Producer.Compression)
+		}
+		if cfg.Producer.Flush.Messages != 100 {
+			t.Errorf("Flush.Messages = %d, want 100", cfg.Producer.Flush.Messages)
+		}
+		if cfg.Producer.Flush.Bytes != 65536 {
+			t.Errorf("Flush.Bytes = %d, want 65536", cfg.Producer.Flush.Bytes)
+		}
+		if cfg.Producer.Flush.Frequency != 50*time.Millisecond {
+			t.Errorf("Flush.Frequency = %v, want 50ms", cfg.Producer.Flush.Frequency)
+		}
+	})
+
+	t.Run("non-idempotent allows local acks and higher maxOpenRequests", func(t *testing.T) {
+		idempotent := false
+		maxOpen := int32(5)
+		spec := &v1.KafkaSinkSpec{
+			Idempotent:      &idempotent,
+			RequiredAcks:    "local",
+			MaxOpenRequests: &maxOpen,
+			Compression:     "lz4",
+		}
+		cfg := sarama.NewConfig()
+		if err := applyKafkaProducerConfig(spec, cfg); err != nil {
+			t.Fatalf("applyKafkaProducerConfig: %v", err)
+		}
+		if cfg.Producer.Idempotent {
+			t.Error("Idempotent = true, want false")
+		}
+		if cfg.Producer.RequiredAcks != sarama.WaitForLocal {
+			t.Errorf("RequiredAcks = %v, want WaitForLocal", cfg.Producer.RequiredAcks)
+		}
+		if cfg.Net.MaxOpenRequests != 5 {
+			t.Errorf("MaxOpenRequests = %d, want 5", cfg.Net.MaxOpenRequests)
+		}
+		if cfg.Producer.Compression != sarama.CompressionLZ4 {
+			t.Errorf("Compression = %v, want lz4", cfg.Producer.Compression)
+		}
+	})
+
+	t.Run("rejects idempotent with local acks", func(t *testing.T) {
+		cfg := sarama.NewConfig()
+		err := applyKafkaProducerConfig(&v1.KafkaSinkSpec{RequiredAcks: "local"}, cfg)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
 func TestIsKafkaRequestTimedOutError(t *testing.T) {
 	tests := []struct {
 		name string

@@ -1100,6 +1100,51 @@ type KafkaSinkSpec struct {
 	// TopicSecretRef references a Kubernetes secret for topic
 	// +optional
 	TopicSecretRef *SecretRef `json:"topicSecretRef,omitempty"`
+
+	// RequiredAcks is the broker ack level for produce: all (default), local, or none.
+	// Idempotent producer (default) requires all.
+	// +optional
+	// +kubebuilder:validation:Enum=all;local;none
+	RequiredAcks string `json:"requiredAcks,omitempty"`
+
+	// Compression codec for produce batches: none (default), gzip, snappy, lz4, zstd.
+	// +optional
+	// +kubebuilder:validation:Enum=none;gzip;snappy;lz4;zstd
+	Compression string `json:"compression,omitempty"`
+
+	// Idempotent enables the idempotent producer (default true).
+	// When true, requiredAcks must be all and maxOpenRequests must be 1.
+	// +optional
+	Idempotent *bool `json:"idempotent,omitempty"`
+
+	// MaxOpenRequests is the max in-flight produce requests per connection.
+	// Default 1 when idempotent is true; otherwise Sarama default applies unless set.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	MaxOpenRequests *int32 `json:"maxOpenRequests,omitempty"`
+
+	// Async uses AsyncProducer instead of SyncProducer for higher throughput.
+	// When true, flushMessages / flushBytes / flushFrequency take effect for batching.
+	// Default false (SyncProducer, historical behavior).
+	// +optional
+	Async *bool `json:"async,omitempty"`
+
+	// FlushMessages triggers a produce flush after this many messages (Sarama Producer.Flush.Messages).
+	// Most effective with async: true.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	FlushMessages *int32 `json:"flushMessages,omitempty"`
+
+	// FlushBytes triggers a produce flush after this many accumulated bytes.
+	// Most effective with async: true.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	FlushBytes *int32 `json:"flushBytes,omitempty"`
+
+	// FlushFrequency triggers a produce flush after this duration even if size thresholds are not met.
+	// Most effective with async: true.
+	// +optional
+	FlushFrequency *metav1.Duration `json:"flushFrequency,omitempty"`
 }
 
 // PostgreSQLSinkSpec defines PostgreSQL sink configuration
