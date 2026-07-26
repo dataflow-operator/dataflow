@@ -121,36 +121,19 @@ func (c *ClickHouseSinkConnector) flushBatchFlattened(ctx context.Context, msgs 
 
 	colNames := append([]string{"data"}, c.metaColumnNames...)
 	colNames = append(colNames, "created_at")
-	placeholders := make([]string, len(colNames))
-	for i := range placeholders {
-		placeholders[i] = "?"
-	}
 	colsQuoted := make([]string, len(colNames))
 	for i, col := range colNames {
 		colsQuoted[i] = fmt.Sprintf("`%s`", col)
 	}
-	insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", c.config.Table, strings.Join(colsQuoted, ", "), strings.Join(placeholders, ", "))
 
-	tx, err := c.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	stmt, err := tx.PrepareContext(ctx, insertQuery)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer stmt.Close()
-
+	rows := make([][]interface{}, 0, len(msgs))
 	for _, m := range msgs {
 		dataStr, err := extractPayloadDataStr(m)
 		if err != nil {
-			tx.Rollback()
 			return err
 		}
 		meta, err := parseMetadataMapFromMessage(m)
 		if err != nil {
-			tx.Rollback()
 			return err
 		}
 		logSkippedUnknownMetadataKeys(meta, knownCols, c.flattenMetadataPrefix(), c.logger)
@@ -161,13 +144,9 @@ func (c *ClickHouseSinkConnector) flushBatchFlattened(ctx context.Context, msgs 
 			args = append(args, flattenMetadataValueForSQL(meta[key]))
 		}
 		args = append(args, nil) // created_at default
-		if _, err := stmt.ExecContext(ctx, args...); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to exec flatten insert: %w", err)
-		}
+		rows = append(rows, args)
 	}
-	// Source ack runs in OnAck after Commit succeeds (at-least-once).
-	return tx.Commit()
+	return c.execClickHouseBulk(ctx, strings.Join(colsQuoted, ", "), rows)
 }
 
 func (c *ClickHouseSinkConnector) connectFlattenMetadata(ctx context.Context) error {

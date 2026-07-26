@@ -1131,7 +1131,7 @@ type KafkaSinkSpec struct {
 	// +kubebuilder:validation:Enum=all;local;none
 	RequiredAcks string `json:"requiredAcks,omitempty"`
 
-	// Compression codec for produce batches: none (default), gzip, snappy, lz4, zstd.
+	// Compression codec for produce batches: none, gzip, snappy (default), lz4, zstd.
 	// +optional
 	// +kubebuilder:validation:Enum=none;gzip;snappy;lz4;zstd
 	Compression string `json:"compression,omitempty"`
@@ -1147,14 +1147,15 @@ type KafkaSinkSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	MaxOpenRequests *int32 `json:"maxOpenRequests,omitempty"`
 
-	// Async uses AsyncProducer instead of SyncProducer for higher throughput.
-	// When true, flushMessages / flushBytes / flushFrequency take effect for batching.
-	// Default false (SyncProducer, historical behavior).
+	// Async uses AsyncProducer instead of SyncProducer for higher throughput (default true).
+	// Set async: false for SyncProducer (historical per-message RTT behavior).
+	// When true, flushMessages / flushBytes / flushFrequency take effect for batching
+	// (defaults: flushMessages=100, flushFrequency=100ms when unset).
 	// +optional
 	Async *bool `json:"async,omitempty"`
 
 	// FlushMessages triggers a produce flush after this many messages (Sarama Producer.Flush.Messages).
-	// Most effective with async: true.
+	// Default 100 when async is enabled and this field is omitted.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	FlushMessages *int32 `json:"flushMessages,omitempty"`
@@ -1166,7 +1167,7 @@ type KafkaSinkSpec struct {
 	FlushBytes *int32 `json:"flushBytes,omitempty"`
 
 	// FlushFrequency triggers a produce flush after this duration even if size thresholds are not met.
-	// Most effective with async: true.
+	// Default 100ms when async is enabled and this field is omitted.
 	// +optional
 	FlushFrequency *metav1.Duration `json:"flushFrequency,omitempty"`
 }

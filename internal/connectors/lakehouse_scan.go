@@ -18,11 +18,7 @@ package connectors
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/iceberg-go/table"
 	"github.com/dataflow-operator/dataflow/internal/types"
 )
 
@@ -54,74 +50,6 @@ type lakehouseEmitStats struct {
 	NextOffset int64 // skipRows + Emitted when HitLimit; 0 when complete
 }
 
-// collectIcebergScanPage reads up to one poll page from an Iceberg snapshot via ToArrowRecords.
-// skipRows discards the first N rows (pagination resume). Messages are returned so the caller
-// can attach Ack only when HitLimit is false (snapshot fully drained).
-func collectIcebergScanPage(
-	ctx context.Context,
-	tbl *table.Table,
-	snapshotID *int64,
-	namespace, tableName string,
-	limits lakehousePollLimits,
-	skipRows int64,
-) ([]*types.Message, lakehouseEmitStats, error) {
-	var stats lakehouseEmitStats
-	opts := make([]table.ScanOption, 0, 2)
-	if snapshotID != nil {
-		opts = append(opts, table.WithSnapshotID(*snapshotID))
-	}
-	if limits.maxRows > 0 {
-		opts = append(opts, table.WithLimit(skipRows+limits.maxRows))
-	}
-
-	schema, itr, err := tbl.Scan(opts...).ToArrowRecords(ctx)
-	if err != nil {
-		return nil, stats, err
-	}
-
-	msgs := make([]*types.Message, 0, 256)
-	var skipped int64
-	for rec, iterErr := range itr {
-		if iterErr != nil {
-			return nil, stats, iterErr
-		}
-		batchTable := array.NewTableFromRecords(schema, []arrow.RecordBatch{rec})
-		batchMsgs := arrowTableToMessages(batchTable, namespace, tableName, false)
-		batchTable.Release()
-		rec.Release()
-
-		for _, msg := range batchMsgs {
-			if skipped < skipRows {
-				skipped++
-				continue
-			}
-			if limits.maxRows > 0 && int64(len(msgs)) >= limits.maxRows {
-				stats.HitLimit = true
-				stats.Emitted = len(msgs)
-				stats.NextOffset = skipRows + int64(len(msgs))
-				return msgs, stats, nil
-			}
-			if limits.maxBytes > 0 && stats.Bytes+int64(len(msg.Data)) > limits.maxBytes && len(msgs) > 0 {
-				stats.HitLimit = true
-				stats.Emitted = len(msgs)
-				stats.NextOffset = skipRows + int64(len(msgs))
-				return msgs, stats, nil
-			}
-			msgs = append(msgs, msg)
-			stats.Bytes += int64(len(msg.Data))
-		}
-	}
-
-	stats.Emitted = len(msgs)
-	if limits.maxRows > 0 && int64(len(msgs)) >= limits.maxRows {
-		stats.HitLimit = true
-		stats.NextOffset = skipRows + int64(len(msgs))
-		return msgs, stats, nil
-	}
-	stats.NextOffset = 0
-	return msgs, stats, nil
-}
-
 func sendLakehouseMessages(
 	ctx context.Context,
 	msgChan chan *types.Message,
@@ -139,29 +67,4 @@ func sendLakehouseMessages(
 		}
 	}
 	return nil
-}
-
-// countAddedDataFiles returns how many data files appear in current but not in parent.
-func countAddedDataFiles(ctx context.Context, tbl *table.Table, currentID int64, parentID *int64) (added int, err error) {
-	curTasks, err := tbl.Scan(table.WithSnapshotID(currentID)).PlanFiles(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("plan files snapshot %d: %w", currentID, err)
-	}
-	if parentID == nil {
-		return len(curTasks), nil
-	}
-	parentTasks, err := tbl.Scan(table.WithSnapshotID(*parentID)).PlanFiles(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("plan files parent snapshot %d: %w", *parentID, err)
-	}
-	parentPaths := make(map[string]struct{}, len(parentTasks))
-	for _, t := range parentTasks {
-		parentPaths[t.File.FilePath()] = struct{}{}
-	}
-	for _, t := range curTasks {
-		if _, ok := parentPaths[t.File.FilePath()]; !ok {
-			added++
-		}
-	}
-	return added, nil
 }

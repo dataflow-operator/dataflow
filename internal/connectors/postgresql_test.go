@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -322,12 +321,12 @@ func TestPostgreSQLSinkConnector_trySoftDelete(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewPostgreSQLSinkConnector(tt.config)
-			batch := &pgx.Batch{}
+			queued := make([]queuedSQL, 0)
 			batchMsgs := make([]*types.Message, 0)
 			count := 0
-			got := p.trySoftDelete(tt.msg, batch, &batchMsgs, &count)
+			got := p.trySoftDelete(tt.msg, &queued, &batchMsgs, &count)
 			assert.Equal(t, tt.wantHandled, got)
-			assert.Equal(t, tt.wantBatchLen, batch.Len())
+			assert.Equal(t, tt.wantBatchLen, len(queued))
 			if tt.wantHandled {
 				assert.Len(t, batchMsgs, 1)
 				assert.Equal(t, 1, count)

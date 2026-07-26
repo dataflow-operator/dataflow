@@ -664,7 +664,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 	flushInterval := time.Duration(flushIntervalSec) * time.Second
 
 	p.logger.Info("Starting to write messages to PostgreSQL", "table", p.config.Table, "batchSize", batchSize, "flushIntervalSeconds", flushIntervalSec)
-	batch := &pgx.Batch{}
+	queued := make([]queuedSQL, 0, maxBatchSize)
 	batchMessages := make([]*types.Message, 0, maxBatchSize)
 	count := 0
 	messageCount := 0
@@ -686,7 +686,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		batchCtx, cancel := BatchWriteContext(ctx)
 		defer cancel()
 		if err := retry.OnTimeout(batchCtx, retry.DefaultMaxAttempts, retry.DefaultInitialBackoff, func() error {
-			return p.executeBatch(batchCtx, batch)
+			return p.executeQueued(batchCtx, queued)
 		}); err != nil {
 			p.RecordError("write", "batch_error")
 			return err
@@ -695,7 +695,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			p.RecordMessageWritten(getRouteFromMessage(m))
 		}
 		p.AckAfterSuccessfulWrite(batchMessages)
-		batch = &pgx.Batch{}
+		queued = make([]queuedSQL, 0, maxBatchSize)
 		batchMessages = make([]*types.Message, 0, maxBatchSize)
 		count = 0
 		return nil
@@ -710,8 +710,8 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			select {
 			case <-ctx.Done():
 				stopTimer()
-				if batch.Len() > 0 {
-					p.logger.Info("Context cancelled, flushing batch", "batchSize", batch.Len(), "table", p.config.Table)
+				if count > 0 {
+					p.logger.Info("Context cancelled, flushing batch", "batchSize", count, "table", p.config.Table)
 					if err := doFlush(); err != nil {
 						return err
 					}
@@ -729,8 +729,8 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			case msg, ok := <-messages:
 				if !ok {
 					stopTimer()
-					if batch.Len() > 0 {
-						p.logger.Info("Message channel closed, flushing batch", "batchSize", batch.Len(), "totalMessages", messageCount, "table", p.config.Table)
+					if count > 0 {
+						p.logger.Info("Message channel closed, flushing batch", "batchSize", count, "totalMessages", messageCount, "table", p.config.Table)
 						if err := doFlush(); err != nil {
 							return err
 						}
@@ -739,7 +739,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 					return nil
 				}
 				messageCount++
-				if p.trySoftDelete(msg, batch, &batchMessages, &count) {
+				if p.trySoftDelete(msg, &queued, &batchMessages, &count) {
 					if count >= maxBatchSize {
 						if err := doFlush(); err != nil {
 							p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
@@ -767,7 +767,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 					continue
 				}
 
-				batch.Queue(query, values...)
+				queued = append(queued, queuedSQL{query: query, values: values})
 				batchMessages = append(batchMessages, msg)
 				count++
 
@@ -783,8 +783,8 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			select {
 			case <-ctx.Done():
 				stopTimer()
-				if batch.Len() > 0 {
-					p.logger.Info("Context cancelled, flushing batch", "batchSize", batch.Len(), "table", p.config.Table)
+				if count > 0 {
+					p.logger.Info("Context cancelled, flushing batch", "batchSize", count, "table", p.config.Table)
 					if err := doFlush(); err != nil {
 						return err
 					}
@@ -793,8 +793,8 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 			case msg, ok := <-messages:
 				if !ok {
 					stopTimer()
-					if batch.Len() > 0 {
-						p.logger.Info("Message channel closed, flushing batch", "batchSize", batch.Len(), "totalMessages", messageCount, "table", p.config.Table)
+					if count > 0 {
+						p.logger.Info("Message channel closed, flushing batch", "batchSize", count, "totalMessages", messageCount, "table", p.config.Table)
 						if err := doFlush(); err != nil {
 							return err
 						}
@@ -804,7 +804,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 				}
 
 				messageCount++
-				if p.trySoftDelete(msg, batch, &batchMessages, &count) {
+				if p.trySoftDelete(msg, &queued, &batchMessages, &count) {
 					if count >= maxBatchSize {
 						if err := doFlush(); err != nil {
 							p.logger.Error(err, "Failed to execute batch", "batchSize", count, "table", p.config.Table)
@@ -832,7 +832,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 					continue
 				}
 
-				batch.Queue(query, values...)
+				queued = append(queued, queuedSQL{query: query, values: values})
 				batchMessages = append(batchMessages, msg)
 				count++
 
@@ -849,7 +849,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 }
 
 // trySoftDelete handles operation=delete with SoftDeleteColumn. Returns true if message was handled.
-func (p *PostgreSQLSinkConnector) trySoftDelete(msg *types.Message, batch *pgx.Batch, batchMessages *[]*types.Message, count *int) bool {
+func (p *PostgreSQLSinkConnector) trySoftDelete(msg *types.Message, queued *[]queuedSQL, batchMessages *[]*types.Message, count *int) bool {
 	if p.config.SoftDeleteColumn == nil || *p.config.SoftDeleteColumn == "" {
 		return false
 	}
@@ -877,7 +877,7 @@ func (p *PostgreSQLSinkConnector) trySoftDelete(msg *types.Message, batch *pgx.B
 	}
 	quotedTable := QuotePostgreSQLTableRef(p.config.Table)
 	query := fmt.Sprintf("UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s = $1", quotedTable, quotePostgreSQLIdentifier(*p.config.SoftDeleteColumn), quotePostgreSQLIdentifier(conflictKey))
-	batch.Queue(query, idVal)
+	*queued = append(*queued, queuedSQL{query: query, values: []interface{}{idVal}})
 	*batchMessages = append(*batchMessages, msg)
 	*count++
 	p.logger.V(1).Info("Soft delete queued", "id", idVal, "table", p.config.Table)
@@ -992,12 +992,53 @@ func (p *PostgreSQLSinkConnector) buildInsertForMessage(ctx context.Context, dat
 	return query, values, nil
 }
 
+// executeQueued writes queued statements preferring COPY FROM for plain INSERTs,
+// then multi-VALUES, otherwise pgx.Batch (mixed UPDATE/INSERT or heterogeneous shapes).
+func (p *PostgreSQLSinkConnector) executeQueued(ctx context.Context, stmts []queuedSQL) error {
+	if len(stmts) == 0 {
+		return nil
+	}
+	batchStart := time.Now()
+	p.logger.V(1).Info("Executing batch", "batchSize", len(stmts), "table", p.config.Table)
+
+	if columns, rows, ok := canPostgreSQLCopy(stmts); ok {
+		schema, table := ParseTableRef(p.config.Table)
+		ident := pgx.Identifier{schema, table}
+		if _, err := p.conn.CopyFrom(ctx, ident, columns, pgx.CopyFromRows(rows)); err != nil {
+			p.logger.Error(err, "COPY FROM failed", "batchSize", len(stmts), "table", p.config.Table)
+			return fmt.Errorf("copy from error: %w", err)
+		}
+		p.firstWriteOnce.Do(func() {
+			p.logger.Info("First message written to sink", "table", p.config.Table)
+		})
+		p.logger.V(1).Info("Batch executed successfully", "count", len(stmts), "mode", "copy", "table", p.config.Table, logkeys.DurationMS, time.Since(batchStart).Milliseconds())
+		return nil
+	}
+
+	if query, args, ok := buildPostgreSQLMultiValuesInsert(stmts); ok {
+		if _, err := p.conn.Exec(ctx, query, args...); err != nil {
+			p.logger.Error(err, "Multi-VALUES insert failed", "batchSize", len(stmts), "table", p.config.Table)
+			return fmt.Errorf("multi-values insert error: %w", err)
+		}
+		p.firstWriteOnce.Do(func() {
+			p.logger.Info("First message written to sink", "table", p.config.Table)
+		})
+		p.logger.V(1).Info("Batch executed successfully", "count", len(stmts), "mode", "multi_values", "table", p.config.Table, logkeys.DurationMS, time.Since(batchStart).Milliseconds())
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+	for _, st := range stmts {
+		batch.Queue(st.query, st.values...)
+	}
+	return p.executeBatch(ctx, batch)
+}
+
 func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.Batch) error {
 	if batch.Len() == 0 {
 		return nil
 	}
 	batchStart := time.Now()
-	p.logger.V(1).Info("Executing batch", "batchSize", batch.Len(), "table", p.config.Table)
 
 	tx, err := p.conn.Begin(ctx)
 	if err != nil {
@@ -1029,7 +1070,7 @@ func (p *PostgreSQLSinkConnector) executeBatch(ctx context.Context, batch *pgx.B
 	p.firstWriteOnce.Do(func() {
 		p.logger.Info("First message written to sink", "table", p.config.Table)
 	})
-	p.logger.V(1).Info("Batch executed successfully", "count", batch.Len(), "table", p.config.Table, logkeys.DurationMS, time.Since(batchStart).Milliseconds())
+	p.logger.V(1).Info("Batch executed successfully", "count", batch.Len(), "mode", "pgx_batch", "table", p.config.Table, logkeys.DurationMS, time.Since(batchStart).Milliseconds())
 	return nil
 }
 

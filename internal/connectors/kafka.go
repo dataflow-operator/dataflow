@@ -368,6 +368,32 @@ func (k *KafkaSourceConnector) normalizeAvroArrays(data interface{}) interface{}
 	}
 }
 
+// avroNeedsArrayNormalize reports whether data contains hamba/avro wrapped {"array":[...]} nodes.
+func avroNeedsArrayNormalize(data interface{}) bool {
+	switch v := data.(type) {
+	case map[string]interface{}:
+		if len(v) == 1 {
+			if arrayVal, ok := v["array"]; ok {
+				if _, ok := arrayVal.([]interface{}); ok {
+					return true
+				}
+			}
+		}
+		for _, val := range v {
+			if avroNeedsArrayNormalize(val) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if avroNeedsArrayNormalize(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // getCachedSchema gets schema from cache or fetches from Registry
 func (k *KafkaSourceConnector) getCachedSchema(ctx context.Context, schemaID int32) (avro.Schema, error) {
 	// Check cache first
@@ -466,14 +492,14 @@ func (k *KafkaSourceConnector) deserializeAvro(ctx context.Context, data []byte)
 		return nil, fmt.Errorf("failed to unmarshal Avro data: %w", err)
 	}
 
-	// Normalize Avro arrays: hamba/avro wraps arrays in objects with "array" field
-	// Convert {"array": [...]} back to [...] for all fields
-	normalized := k.normalizeAvroArrays(result)
-	if normalizedMap, ok := normalized.(map[string]interface{}); ok {
-		result = normalizedMap
-	} else {
-		// This shouldn't happen for top-level objects, but handle it gracefully
-		k.logger.V(1).Info("Normalized result is not a map, using original result")
+	// Normalize Avro arrays only when hamba wrapped {"array":[...]} nodes are present.
+	if avroNeedsArrayNormalize(result) {
+		normalized := k.normalizeAvroArrays(result)
+		if normalizedMap, ok := normalized.(map[string]interface{}); ok {
+			result = normalizedMap
+		} else {
+			k.logger.V(1).Info("Normalized result is not a map, using original result")
+		}
 	}
 
 	// Convert to JSON
@@ -984,7 +1010,7 @@ func (k *KafkaSinkConnector) Connect(ctx context.Context) error {
 		return fmt.Errorf("no Kafka brokers specified")
 	}
 
-	k.async = k.config != nil && k.config.Async != nil && *k.config.Async
+	k.async = kafkaSinkAsyncOrDefault(k.config)
 	if k.async {
 		producer, err := sarama.NewAsyncProducer(k.config.Brokers, saramaConfig)
 		if err != nil {
@@ -1034,7 +1060,8 @@ func (k *KafkaSinkConnector) producerConnectError(err error) error {
 }
 
 // applyKafkaProducerConfig maps KafkaSinkSpec producer tuning onto Sarama defaults.
-// Unset fields preserve historical DataFlow behavior: WaitForAll + Idempotent + MaxOpenRequests=1.
+// Unset fields: WaitForAll + Idempotent + MaxOpenRequests=1 + CompressionSnappy;
+// AsyncProducer defaults (when async unset/true): Flush.Messages=100, Flush.Frequency=100ms.
 func applyKafkaProducerConfig(spec *v1.KafkaSinkSpec, cfg *sarama.Config) error {
 	if cfg == nil {
 		return fmt.Errorf("sarama config is nil")
@@ -1076,12 +1103,9 @@ func applyKafkaProducerConfig(spec *v1.KafkaSinkSpec, cfg *sarama.Config) error 
 		cfg.Net.MaxOpenRequests = int(*spec.MaxOpenRequests)
 	}
 
-	compression := "none"
-	if spec != nil && spec.Compression != "" {
-		compression = strings.ToLower(spec.Compression)
-	}
+	compression := kafkaSinkCompressionOrDefault(spec)
 	switch compression {
-	case "none", "":
+	case "none":
 		cfg.Producer.Compression = sarama.CompressionNone
 	case "gzip":
 		cfg.Producer.Compression = sarama.CompressionGZIP
@@ -1093,6 +1117,15 @@ func applyKafkaProducerConfig(spec *v1.KafkaSinkSpec, cfg *sarama.Config) error 
 		cfg.Producer.Compression = sarama.CompressionZSTD
 	default:
 		return fmt.Errorf("unsupported compression %q (want none|gzip|snappy|lz4|zstd)", compression)
+	}
+
+	if kafkaSinkAsyncOrDefault(spec) {
+		if spec == nil || spec.FlushMessages == nil {
+			cfg.Producer.Flush.Messages = 100
+		}
+		if spec == nil || spec.FlushFrequency == nil {
+			cfg.Producer.Flush.Frequency = 100 * time.Millisecond
+		}
 	}
 
 	if spec == nil {
@@ -1119,11 +1152,22 @@ func applyKafkaProducerConfig(spec *v1.KafkaSinkSpec, cfg *sarama.Config) error 
 	return nil
 }
 
-func kafkaProducerCompressionLabel(spec *v1.KafkaSinkSpec) string {
+func kafkaSinkAsyncOrDefault(spec *v1.KafkaSinkSpec) bool {
+	if spec == nil || spec.Async == nil {
+		return true
+	}
+	return *spec.Async
+}
+
+func kafkaSinkCompressionOrDefault(spec *v1.KafkaSinkSpec) string {
 	if spec == nil || spec.Compression == "" {
-		return "none"
+		return "snappy"
 	}
 	return strings.ToLower(spec.Compression)
+}
+
+func kafkaProducerCompressionLabel(spec *v1.KafkaSinkSpec) string {
+	return kafkaSinkCompressionOrDefault(spec)
 }
 
 func kafkaProducerRequiredAcksLabel(spec *v1.KafkaSinkSpec) string {

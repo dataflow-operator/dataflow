@@ -132,6 +132,15 @@ tasks:
     cmds:
       - bash scripts/sync-crd-to-helm.sh
 
+  schemas:
+    desc: Generate JSON Schemas (CRD + connector/transform configs) into ../schemas
+    cmds:
+      - |
+        go run ./hack/genschemas \
+          -out ../schemas \
+          -crd-dir ./config/crd/bases \
+          -chart ../helm-charts/charts/dataflow-operator/Chart.yaml
+
   # Deployment tasks
   install:
     desc: Install CRDs into the K8s cluster specified in ~/.kube/config

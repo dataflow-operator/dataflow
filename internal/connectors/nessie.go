@@ -309,7 +309,7 @@ func (c *NessieSourceConnector) readOnceFullScan(ctx context.Context, msgChan ch
 		}
 	}
 
-	msgs, stats, err := collectIcebergScanPage(ctx, tbl, snapID, c.config.Namespace, c.config.Table, limits, skip)
+	msgs, stats, err := collectIcebergScanPage(ctx, tbl, snapID, nil, c.config.Namespace, c.config.Table, limits, skip)
 	if err != nil {
 		c.RecordError("read", "scan_error")
 		return fmt.Errorf("nessie scan: %w", err)
@@ -407,7 +407,7 @@ func (c *NessieSourceConnector) readOnceIncremental(ctx context.Context, msgChan
 				"added_data_files", added)
 		}
 
-		msgs, stats, err := collectIcebergScanPage(ctx, tbl, &snapID, c.config.Namespace, c.config.Table, limits, skip)
+		msgs, stats, err := collectIcebergScanPage(ctx, tbl, &snapID, snap.ParentSnapshotID, c.config.Namespace, c.config.Table, limits, skip)
 		if err != nil {
 			c.RecordError("read", "scan_error")
 			return fmt.Errorf("nessie scan snapshot %d: %w", snapID, err)

@@ -318,7 +318,7 @@ func TestApplyKafkaConsumerConfig(t *testing.T) {
 }
 
 func TestApplyKafkaProducerConfig(t *testing.T) {
-	t.Run("defaults match historical WaitForAll+idempotent", func(t *testing.T) {
+	t.Run("defaults match WaitForAll+idempotent+snappy+async flush", func(t *testing.T) {
 		cfg := sarama.NewConfig()
 		if err := applyKafkaProducerConfig(&v1.KafkaSinkSpec{}, cfg); err != nil {
 			t.Fatalf("applyKafkaProducerConfig: %v", err)
@@ -332,8 +332,35 @@ func TestApplyKafkaProducerConfig(t *testing.T) {
 		if cfg.Net.MaxOpenRequests != 1 {
 			t.Errorf("MaxOpenRequests = %d, want 1", cfg.Net.MaxOpenRequests)
 		}
+		if cfg.Producer.Compression != sarama.CompressionSnappy {
+			t.Errorf("Compression = %v, want snappy", cfg.Producer.Compression)
+		}
+		if cfg.Producer.Flush.Messages != 100 {
+			t.Errorf("Flush.Messages = %d, want 100", cfg.Producer.Flush.Messages)
+		}
+		if cfg.Producer.Flush.Frequency != 100*time.Millisecond {
+			t.Errorf("Flush.Frequency = %v, want 100ms", cfg.Producer.Flush.Frequency)
+		}
+	})
+
+	t.Run("explicit compression none disables snappy default", func(t *testing.T) {
+		cfg := sarama.NewConfig()
+		if err := applyKafkaProducerConfig(&v1.KafkaSinkSpec{Compression: "none"}, cfg); err != nil {
+			t.Fatalf("applyKafkaProducerConfig: %v", err)
+		}
 		if cfg.Producer.Compression != sarama.CompressionNone {
 			t.Errorf("Compression = %v, want none", cfg.Producer.Compression)
+		}
+	})
+
+	t.Run("sync producer skips async flush defaults", func(t *testing.T) {
+		async := false
+		cfg := sarama.NewConfig()
+		if err := applyKafkaProducerConfig(&v1.KafkaSinkSpec{Async: &async}, cfg); err != nil {
+			t.Fatalf("applyKafkaProducerConfig: %v", err)
+		}
+		if cfg.Producer.Flush.Messages != 0 {
+			t.Errorf("Flush.Messages = %d, want 0 for sync", cfg.Producer.Flush.Messages)
 		}
 	})
 
@@ -399,6 +426,35 @@ func TestApplyKafkaProducerConfig(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+}
+
+func TestAvroNeedsArrayNormalize(t *testing.T) {
+	t.Parallel()
+	if avroNeedsArrayNormalize(map[string]interface{}{"id": 1, "name": "a"}) {
+		t.Fatal("plain map should not need normalize")
+	}
+	if !avroNeedsArrayNormalize(map[string]interface{}{
+		"tags": map[string]interface{}{"array": []interface{}{"a", "b"}},
+	}) {
+		t.Fatal("nested wrapped array should need normalize")
+	}
+	if !avroNeedsArrayNormalize(map[string]interface{}{"array": []interface{}{1, 2}}) {
+		t.Fatal("top-level wrapped array should need normalize")
+	}
+}
+
+func TestKafkaSinkAsyncOrDefault(t *testing.T) {
+	t.Parallel()
+	if !kafkaSinkAsyncOrDefault(nil) {
+		t.Fatal("nil spec should default async=true")
+	}
+	if !kafkaSinkAsyncOrDefault(&v1.KafkaSinkSpec{}) {
+		t.Fatal("empty spec should default async=true")
+	}
+	async := false
+	if kafkaSinkAsyncOrDefault(&v1.KafkaSinkSpec{Async: &async}) {
+		t.Fatal("explicit async=false should be false")
+	}
 }
 
 func TestIsKafkaRequestTimedOutError(t *testing.T) {

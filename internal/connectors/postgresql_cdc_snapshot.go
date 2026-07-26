@@ -211,6 +211,8 @@ func (c *PostgreSQLCDCSourceConnector) sendCDCMessage(ctx context.Context, msgCh
 	c.reportChannelFill(msgChan, "source")
 	select {
 	case msgChan <- msg:
+		// Re-sample after enqueue so Prometheus reflects post-send occupancy under backpressure.
+		c.reportChannelFill(msgChan, "source")
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

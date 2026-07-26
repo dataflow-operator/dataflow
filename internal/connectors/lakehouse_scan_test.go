@@ -19,6 +19,7 @@ package connectors
 import (
 	"testing"
 
+	"github.com/dataflow-operator/dataflow/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,4 +37,21 @@ func TestLakehousePollLimitsFrom(t *testing.T) {
 	zero := int32(0)
 	gotZero := lakehousePollLimitsFrom(&zero, &zero)
 	assert.False(t, gotZero.active())
+}
+
+func TestAppendWithLimits(t *testing.T) {
+	t.Parallel()
+	msgs := make([]*types.Message, 0)
+	stats := &lakehouseEmitStats{}
+	limits := lakehousePollLimits{maxRows: 2}
+
+	hit, _ := appendWithLimits(&msgs, stats, types.NewMessage([]byte("a")), limits, 0)
+	assert.False(t, hit)
+	hit, out := appendWithLimits(&msgs, stats, types.NewMessage([]byte("b")), limits, 0)
+	assert.False(t, hit)
+	assert.Nil(t, out)
+	hit, out = appendWithLimits(&msgs, stats, types.NewMessage([]byte("c")), limits, 0)
+	assert.True(t, hit)
+	assert.Len(t, out, 2)
+	assert.True(t, stats.HitLimit)
 }

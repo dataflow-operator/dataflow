@@ -130,10 +130,13 @@ func TestConfigMapStore_FlushAfterBatchAck_EndToEnd(t *testing.T) {
 
 	require.NoError(t, syncStore.Save(ctx, "postgresql", []byte(`{"lastReadChangeTime":"2024-01-15T10:00:00Z"}`)))
 	require.NoError(t, syncStore.FlushAfterBatchAck(ctx))
+	// Ack path is async — wait via Sync Flush (also covers shutdown drain).
+	require.NoError(t, syncStore.Flush(ctx))
 
 	loaded, err := syncStore.Load(ctx, "postgresql")
 	require.NoError(t, err)
 	assert.Contains(t, string(loaded), "2024-01-15T10:00:00Z")
+	syncStore.Stop()
 }
 
 func TestConfigMapStore_Clear(t *testing.T) {

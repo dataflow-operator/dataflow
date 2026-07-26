@@ -115,7 +115,11 @@ func main() {
 				store,
 				dataflowv1.CheckpointSyncOnAckEnabled(&spec),
 				saveInterval,
+				checkpoint.WithFlushErrorHandler(func(err error) {
+					logger.Error(err, "async checkpoint flush after ack failed")
+				}),
 			)
+			defer checkpointStore.Stop()
 			procOpts = append(procOpts, processor.WithCheckpointStore(checkpointStore))
 		}
 	}

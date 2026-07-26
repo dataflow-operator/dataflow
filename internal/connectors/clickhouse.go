@@ -26,7 +26,8 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/ClickHouse/clickhouse-go/v2" // register clickhouse driver for database/sql
+	clickhouse "github.com/ClickHouse/clickhouse-go/v2"
+	chdriver "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
 	"github.com/dataflow-operator/dataflow/internal/checkpoint"
@@ -279,6 +280,7 @@ type ClickHouseSinkConnector struct {
 	flattenMetadataSinkState
 	config         *v1.ClickHouseSinkSpec
 	conn           *sql.DB
+	native         chdriver.Conn // PrepareBatch path; nil in unit tests that stub conn only
 	firstWriteOnce sync.Once
 }
 
@@ -304,18 +306,30 @@ func (c *ClickHouseSinkConnector) Connect(ctx context.Context) error {
 	defer c.Unlock()
 
 	c.logger.Info("Connecting to ClickHouse", "table", c.config.Table)
-	conn, err := sql.Open("clickhouse", c.config.ConnectionString)
+	opts, err := clickhouse.ParseDSN(c.config.ConnectionString)
 	if err != nil {
-		c.logger.Error(err, "Failed to open ClickHouse connection", "table", c.config.Table)
+		c.logger.Error(err, "Failed to parse ClickHouse DSN", "table", c.config.Table)
+		return fmt.Errorf("failed to parse ClickHouse DSN: %w", err)
+	}
+	native, err := clickhouse.Open(opts)
+	if err != nil {
+		c.logger.Error(err, "Failed to open ClickHouse native connection", "table", c.config.Table)
 		return fmt.Errorf("failed to connect to ClickHouse: %w", err)
 	}
-
-	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+	if err := native.Ping(ctx); err != nil {
+		_ = native.Close()
 		c.logger.Error(err, "Failed to ping ClickHouse", "table", c.config.Table)
 		return fmt.Errorf("failed to connect to ClickHouse: %w", err)
 	}
+	conn := clickhouse.OpenDB(opts)
+	if err := conn.PingContext(ctx); err != nil {
+		_ = native.Close()
+		_ = conn.Close()
+		c.logger.Error(err, "Failed to ping ClickHouse sql.DB", "table", c.config.Table)
+		return fmt.Errorf("failed to connect to ClickHouse: %w", err)
+	}
 
+	c.native = native
 	c.conn = conn
 	c.logger.Info("Successfully connected to ClickHouse", "table", c.config.Table)
 
@@ -574,26 +588,15 @@ func isWholeNumber(f float64) bool {
 }
 
 func (c *ClickHouseSinkConnector) flushBatchRaw(ctx context.Context, msgs []*types.Message) error {
-	insertQuery := fmt.Sprintf("INSERT INTO %s (data) VALUES (?)", c.config.Table)
-	tx, err := c.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+	if len(msgs) == 0 {
+		return nil
 	}
-	stmt, err := tx.PrepareContext(ctx, insertQuery)
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to prepare statement: %w", err)
-	}
-	defer stmt.Close()
-	for _, m := range msgs {
+	rows := make([][]interface{}, len(msgs))
+	for i, m := range msgs {
 		// Write payload as-is; avoid Unmarshal→Marshal roundtrip on the hot path.
-		if _, err := stmt.ExecContext(ctx, string(m.Data)); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to exec: %w", err)
-		}
+		rows[i] = []interface{}{string(m.Data)}
 	}
-	// Source ack runs in OnAck after Commit succeeds (at-least-once).
-	return tx.Commit()
+	return c.execClickHouseBulk(ctx, "data", rows)
 }
 
 func (c *ClickHouseSinkConnector) flushBatchColumnar(ctx context.Context, msgs []*types.Message) error {
@@ -631,45 +634,23 @@ func (c *ClickHouseSinkConnector) flushBatchColumnar(ctx context.Context, msgs [
 		columns = append(columns, "created_at")
 	}
 
-	placeholders := make([]string, len(columns))
-	for i := range placeholders {
-		placeholders[i] = "?"
-	}
 	colsQuoted := make([]string, len(columns))
 	for i, col := range columns {
 		colsQuoted[i] = fmt.Sprintf("`%s`", col)
 	}
-	insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", c.config.Table, strings.Join(colsQuoted, ", "), strings.Join(placeholders, ", "))
-
-	tx, err := c.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	stmt, err := tx.PrepareContext(ctx, insertQuery)
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to prepare statement: %w", err)
-	}
-	defer stmt.Close()
-
+	rows := make([][]interface{}, 0, len(msgs))
 	for _, m := range msgs {
 		var data map[string]interface{}
 		if err := json.Unmarshal(m.Data, &data); err != nil {
-			tx.Rollback()
 			return err
 		}
 		rowData := data
 		if v, ok := data["value"].(map[string]interface{}); ok && len(data) <= 2 {
 			rowData = v
 		}
-		values := buildInsertValues(columns, rowData, time.Now)
-		if _, err := stmt.ExecContext(ctx, values...); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to exec: %w", err)
-		}
+		rows = append(rows, buildInsertValues(columns, rowData, time.Now))
 	}
-	// Source ack runs in OnAck after Commit succeeds (at-least-once).
-	return tx.Commit()
+	return c.execClickHouseBulk(ctx, strings.Join(colsQuoted, ", "), rows)
 }
 
 func contains(ss []string, s string) bool {
@@ -777,8 +758,50 @@ func (c *ClickHouseSinkConnector) Close() error {
 	defer c.Unlock()
 
 	c.logger.Info("Closing ClickHouse sink connection", "table", c.config.Table)
+	var firstErr error
+	if c.native != nil {
+		if err := c.native.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.native = nil
+	}
 	if c.conn != nil {
-		return c.conn.Close()
+		if err := c.conn.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.conn = nil
+	}
+	return firstErr
+}
+
+// execClickHouseBulk writes rows via native PrepareBatch when available, else multi-VALUES Exec.
+func (c *ClickHouseSinkConnector) execClickHouseBulk(ctx context.Context, columnsClause string, rows [][]interface{}) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if c.native != nil {
+		query := fmt.Sprintf("INSERT INTO %s (%s)", c.config.Table, columnsClause)
+		batch, err := c.native.PrepareBatch(ctx, query)
+		if err != nil {
+			return fmt.Errorf("prepare batch: %w", err)
+		}
+		defer func() { _ = batch.Close() }()
+		for _, row := range rows {
+			if err := batch.Append(row...); err != nil {
+				return fmt.Errorf("batch append: %w", err)
+			}
+		}
+		if err := batch.Send(); err != nil {
+			return fmt.Errorf("batch send: %w", err)
+		}
+		return nil
+	}
+	insertQuery, args, err := buildClickHouseMultiValuesInsert(c.config.Table, columnsClause, rows)
+	if err != nil {
+		return err
+	}
+	if _, err := c.conn.ExecContext(ctx, insertQuery, args...); err != nil {
+		return fmt.Errorf("failed to exec bulk insert: %w", err)
 	}
 	return nil
 }

@@ -368,6 +368,8 @@ func TestCompositeCheckpointHolder_AdvanceAndSyncFlush(t *testing.T) {
 	ack := h.MakeAck(&t1, int64(5042), true)
 	ack()
 	require.NoError(t, syncStore.FlushAfterBatchAck(ctx))
+	require.NoError(t, syncStore.Flush(ctx))
+	syncStore.Stop()
 
 	loaded, err := syncStore.Load(ctx, "postgresql")
 	require.NoError(t, err)

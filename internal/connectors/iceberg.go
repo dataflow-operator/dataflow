@@ -181,7 +181,7 @@ func (c *IcebergSourceConnector) readOnceFullScan(ctx context.Context, msgChan c
 		}
 	}
 
-	msgs, stats, err := collectIcebergScanPage(ctx, tbl, snapID, c.config.Namespace, c.config.Table, limits, skip)
+	msgs, stats, err := collectIcebergScanPage(ctx, tbl, snapID, nil, c.config.Namespace, c.config.Table, limits, skip)
 	if err != nil {
 		c.RecordError("read", "scan_error")
 		return fmt.Errorf("iceberg scan: %w", err)
@@ -279,7 +279,7 @@ func (c *IcebergSourceConnector) readOnceIncremental(ctx context.Context, msgCha
 				"added_data_files", added)
 		}
 
-		msgs, stats, err := collectIcebergScanPage(ctx, tbl, &snapID, c.config.Namespace, c.config.Table, limits, skip)
+		msgs, stats, err := collectIcebergScanPage(ctx, tbl, &snapID, snap.ParentSnapshotID, c.config.Namespace, c.config.Table, limits, skip)
 		if err != nil {
 			c.RecordError("read", "scan_error")
 			return fmt.Errorf("iceberg scan snapshot %d: %w", snapID, err)

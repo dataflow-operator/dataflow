@@ -50,6 +50,12 @@ func (c *chAckFailConn) Close() error                        { return nil }
 func (c *chAckFailConn) Begin() (driver.Tx, error) {
 	return &chAckFailTx{failCommit: c.failCommit}, nil
 }
+func (c *chAckFailConn) Exec(string, []driver.Value) (driver.Result, error) {
+	if c.failCommit {
+		return nil, errors.New("exec failed")
+	}
+	return driver.RowsAffected(1), nil
+}
 
 type chAckFailTx struct {
 	failCommit bool
@@ -80,6 +86,13 @@ func (c *chAckFailConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, e
 }
 func (c *chAckFailConn) PrepareContext(_ context.Context, query string) (driver.Stmt, error) {
 	return c.Prepare(query)
+}
+func (c *chAckFailConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	vals := make([]driver.Value, len(args))
+	for i, a := range args {
+		vals[i] = a.Value
+	}
+	return c.Exec(query, vals)
 }
 func (s *chAckFailStmt) ExecContext(_ context.Context, args []driver.NamedValue) (driver.Result, error) {
 	vals := make([]driver.Value, len(args))
@@ -124,8 +137,8 @@ func TestClickHouseFlushBatchRaw_DoesNotAckBeforeCommit(t *testing.T) {
 
 	err := c.flushBatchRaw(context.Background(), []*types.Message{msg})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "commit failed")
-	assert.Equal(t, int32(0), acked.Load(), "Ack must not run before successful Commit")
+	assert.Contains(t, err.Error(), "exec failed")
+	assert.Equal(t, int32(0), acked.Load(), "Ack must not run before successful bulk write")
 }
 
 func TestClickHouseFlushBatchRaw_DoesNotAckInlineOnSuccess(t *testing.T) {
