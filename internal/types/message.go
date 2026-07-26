@@ -37,6 +37,11 @@ type Message struct {
 	// Used by sources (e.g. Kafka) to commit offset only after sink write, ensuring at-least-once delivery.
 	Ack func()
 
+	// AfterBatchAck is an optional flush-boundary callback. When ackGranularity is batch,
+	// AckMessagesAndNotifyProgress invokes the first non-nil AfterBatchAck once after all
+	// per-message Ack callbacks in the flushed batch (e.g. Kafka Commit-on-flush).
+	AfterBatchAck func()
+
 	// jsonCache holds a parsed form of Data to avoid Unmarshal on every transform stage.
 	// Invalidated when Data is replaced via SetData. Not safe for concurrent mutation of the same Message.
 	jsonCache      interface{}

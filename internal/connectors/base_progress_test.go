@@ -116,16 +116,20 @@ func TestAckAfterSuccessfulWrite_BatchGranularity(t *testing.T) {
 	t.Parallel()
 
 	var ackCalls atomic.Int32
+	var batchAckCalls atomic.Int32
 	rec := &progressRecorder{}
 	rec.SetAckGranularity("batch")
 
 	msg1 := types.NewMessage([]byte(`{"a":1}`))
 	msg1.Ack = func() { ackCalls.Add(1) }
+	msg1.AfterBatchAck = func() { batchAckCalls.Add(1) }
 	msg2 := types.NewMessage([]byte(`{"a":2}`))
 	msg2.Ack = func() { ackCalls.Add(1) }
+	msg2.AfterBatchAck = func() { batchAckCalls.Add(1) }
 
 	rec.AckAfterSuccessfulWrite([]*types.Message{msg1, msg2})
 	assert.Equal(t, int32(2), ackCalls.Load())
+	assert.Equal(t, int32(1), batchAckCalls.Load(), "AfterBatchAck fires once per flush")
 }
 
 func TestAckAfterSuccessfulWrite_MessageGranularity(t *testing.T) {

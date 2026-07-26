@@ -269,6 +269,29 @@ func TestApplyKafkaNetworkConfig_SASLPlaintextRejectsTLS(t *testing.T) {
 }
 
 func TestApplyKafkaConsumerConfig(t *testing.T) {
+	t.Run("disables AutoCommit", func(t *testing.T) {
+		cfg := sarama.NewConfig()
+		if !cfg.Consumer.Offsets.AutoCommit.Enable {
+			t.Fatal("precondition: Sarama default AutoCommit should be enabled")
+		}
+		if err := applyKafkaConsumerConfig(&v1.KafkaSourceSpec{}, cfg); err != nil {
+			t.Fatalf("applyKafkaConsumerConfig: %v", err)
+		}
+		if cfg.Consumer.Offsets.AutoCommit.Enable {
+			t.Fatal("AutoCommit.Enable = true, want false (commit-on-flush)")
+		}
+	})
+
+	t.Run("disables AutoCommit when spec is nil", func(t *testing.T) {
+		cfg := sarama.NewConfig()
+		if err := applyKafkaConsumerConfig(nil, cfg); err != nil {
+			t.Fatalf("applyKafkaConsumerConfig: %v", err)
+		}
+		if cfg.Consumer.Offsets.AutoCommit.Enable {
+			t.Fatal("AutoCommit.Enable = true, want false")
+		}
+	})
+
 	t.Run("maps all fields", func(t *testing.T) {
 		minBytes := int32(1)
 		maxBytes := int32(1048576)
@@ -284,6 +307,9 @@ func TestApplyKafkaConsumerConfig(t *testing.T) {
 		cfg := sarama.NewConfig()
 		if err := applyKafkaConsumerConfig(spec, cfg); err != nil {
 			t.Fatalf("applyKafkaConsumerConfig: %v", err)
+		}
+		if cfg.Consumer.Offsets.AutoCommit.Enable {
+			t.Fatal("AutoCommit.Enable = true, want false")
 		}
 		if cfg.Consumer.MaxWaitTime != 30*time.Second {
 			t.Errorf("MaxWaitTime = %v, want 30s", cfg.Consumer.MaxWaitTime)
@@ -1354,6 +1380,9 @@ func TestConsumeClaim_AckGranularity_MessageCommitsOffsets(t *testing.T) {
 	if msg.Ack == nil {
 		t.Fatal("expected Ack callback")
 	}
+	if msg.AfterBatchAck != nil {
+		t.Fatal("message ack must not set AfterBatchAck")
+	}
 	msg.Ack()
 	waitForAckMarks(t, session, 1, 1)
 
@@ -1366,7 +1395,122 @@ func TestConsumeClaim_AckGranularity_MessageCommitsOffsets(t *testing.T) {
 	}
 }
 
-func TestConsumeClaim_AckGranularity_BatchDoesNotCommitImmediately(t *testing.T) {
+func TestConsumeClaim_AckGranularity_MessageCommitsPerMark(t *testing.T) {
+	t.Parallel()
+
+	claim := &mockConsumerGroupClaim{
+		ch: make(chan *sarama.ConsumerMessage, 3),
+	}
+	for i := 0; i < 3; i++ {
+		claim.ch <- &sarama.ConsumerMessage{Value: []byte(`{}`), Offset: int64(i)}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	session := &countingConsumerGroupSession{mockConsumerGroupSession: mockConsumerGroupSession{ctx: ctx}}
+	msgChan := make(chan *types.Message, 3)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.SetAckGranularity(v1.AckGranularityMessage)
+
+	handler := &kafkaConsumerGroupHandler{
+		connector: k,
+		msgChan:   msgChan,
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.ConsumeClaim(session, claim)
+	}()
+
+	msgs := make([]*types.Message, 0, 3)
+	for i := 0; i < 3; i++ {
+		select {
+		case m := <-msgChan:
+			msgs = append(msgs, m)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout waiting for message %d", i)
+		}
+	}
+	for _, m := range msgs {
+		m.Ack()
+	}
+	waitForAckMarks(t, session, 3, 3)
+
+	close(claim.ch)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for ConsumeClaim exit")
+	}
+}
+
+func TestConsumeClaim_AckGranularity_BatchCommitsOncePerFlush(t *testing.T) {
+	t.Parallel()
+
+	claim := &mockConsumerGroupClaim{
+		ch: make(chan *sarama.ConsumerMessage, 3),
+	}
+	for i := 0; i < 3; i++ {
+		claim.ch <- &sarama.ConsumerMessage{Value: []byte(`{}`), Offset: int64(i)}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	session := &countingConsumerGroupSession{mockConsumerGroupSession: mockConsumerGroupSession{ctx: ctx}}
+	msgChan := make(chan *types.Message, 3)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.SetAckGranularity(v1.AckGranularityBatch)
+
+	handler := &kafkaConsumerGroupHandler{
+		connector: k,
+		msgChan:   msgChan,
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.ConsumeClaim(session, claim)
+	}()
+
+	msgs := make([]*types.Message, 0, 3)
+	for i := 0; i < 3; i++ {
+		select {
+		case m := <-msgChan:
+			msgs = append(msgs, m)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout waiting for message %d", i)
+		}
+	}
+	for _, m := range msgs {
+		if m.AfterBatchAck == nil {
+			t.Fatal("batch ack must set AfterBatchAck")
+		}
+	}
+
+	// Simulate sink flush: Ack all then AfterBatchAck once (AckMessagesAndNotifyProgress).
+	rec := &progressRecorder{}
+	rec.SetAckGranularity(v1.AckGranularityBatch)
+	rec.AckMessagesAndNotifyProgress(msgs)
+	waitForAckMarks(t, session, 3, 1)
+
+	close(claim.ch)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for ConsumeClaim exit")
+	}
+}
+
+func TestConsumeClaim_AckGranularity_BatchMarkWithoutFlushDoesNotCommit(t *testing.T) {
 	t.Parallel()
 
 	claim := &mockConsumerGroupClaim{
@@ -1410,5 +1554,61 @@ func TestConsumeClaim_AckGranularity_BatchDoesNotCommitImmediately(t *testing.T)
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for ConsumeClaim exit")
+	}
+
+	// Claim end drains remaining marks and Commits once for rebalance safety.
+	if session.commitCount.Load() != 1 {
+		t.Fatalf("commitCount after claim end = %d, want 1 (drain-on-exit)", session.commitCount.Load())
+	}
+}
+
+func TestConsumeClaim_BatchDrainOnSessionCancel(t *testing.T) {
+	t.Parallel()
+
+	claim := &mockConsumerGroupClaim{
+		ch: make(chan *sarama.ConsumerMessage, 1),
+	}
+	claim.ch <- &sarama.ConsumerMessage{Value: []byte(`{}`), Offset: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	session := &countingConsumerGroupSession{mockConsumerGroupSession: mockConsumerGroupSession{ctx: ctx}}
+	msgChan := make(chan *types.Message, 1)
+
+	k := NewKafkaSourceConnector(&v1.KafkaSourceSpec{Topic: "t", Brokers: []string{"localhost:9092"}})
+	k.SetAckGranularity(v1.AckGranularityBatch)
+
+	handler := &kafkaConsumerGroupHandler{
+		connector: k,
+		msgChan:   msgChan,
+		ready:     make(chan bool),
+		readyOnce: sync.Once{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.ConsumeClaim(session, claim)
+	}()
+
+	var msg *types.Message
+	select {
+	case msg = <-msgChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for message")
+	}
+	msg.Ack()
+	waitForAckMarks(t, session, 1, 0)
+
+	cancel() // rebalance / session end before AfterBatchAck
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for ConsumeClaim exit")
+	}
+	if session.markCount.Load() != 1 {
+		t.Fatalf("markCount = %d, want 1", session.markCount.Load())
+	}
+	if session.commitCount.Load() != 1 {
+		t.Fatalf("commitCount = %d, want 1 after session cancel drain", session.commitCount.Load())
 	}
 }

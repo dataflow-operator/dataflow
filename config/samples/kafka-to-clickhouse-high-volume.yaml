@@ -5,9 +5,8 @@ metadata:
 spec:
   # Высоконагруженный поток: увеличиваем буфер канала
   channelBufferSize: 1000
-  # Message-level source commit without collapsing ClickHouse bulk inserts
-  ackGranularity: message
-  collapseBatchOnMessageAck: false
+  # Commit Kafka offsets once per successful sink flush (AutoCommit off)
+  ackGranularity: batch
   source:
     type: kafka
     config:
@@ -25,7 +24,7 @@ spec:
       # Интервал сброса batch (секунды)
       batchFlushIntervalSeconds: 5
       autoCreateTable: true
-      # Идемпотентность для защиты от дубликатов
+      # Идемпотентность для защиты от дубликатов (обязательна при batch ack / crash re-read window)
       upsertMode: true
       conflictKey: event_id
   # Оптимальные ресурсы для высокой нагрузки

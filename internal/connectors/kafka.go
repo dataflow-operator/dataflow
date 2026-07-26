@@ -123,6 +123,8 @@ func (k *KafkaSourceConnector) Connect(ctx context.Context) error {
 	saramaConfig.Version = sarama.V2_8_0_0
 	saramaConfig.Consumer.Return.Errors = true
 	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
+	// Commit explicitly on sink flush (batch) or per mark (message). Do not rely on Sarama auto-commit (~1s).
+	saramaConfig.Consumer.Offsets.AutoCommit.Enable = false
 	saramaConfig.Consumer.Group.Rebalance.Strategy = sarama.NewBalanceStrategyRoundRobin()
 	saramaConfig.Metadata.Full = true           // Required for Yandex Cloud Kafka
 	saramaConfig.ClientID = "dataflow-operator" // Required for SASL authentication
@@ -650,7 +652,10 @@ func (k *KafkaSourceConnector) ReadErrors() <-chan error {
 }
 
 // applyKafkaConsumerConfig maps optional KafkaSourceSpec consumer tuning to Sarama.
+// Always disables AutoCommit: offsets are committed explicitly on sink flush (batch)
+// or per mark (message ack).
 func applyKafkaConsumerConfig(spec *v1.KafkaSourceSpec, cfg *sarama.Config) error {
+	cfg.Consumer.Offsets.AutoCommit.Enable = false
 	if spec == nil {
 		return nil
 	}
@@ -864,12 +869,18 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 	defer heartbeat.Stop()
 
 	markChan := make(chan *sarama.ConsumerMessage, kafkaMarkChannelBuffer)
+	// commitReq signals "sink flush acked" for batch granularity — drain marks then Commit once.
+	commitReq := make(chan struct{}, 1)
+	messageAck := h.connector.ackGranularityIsMessage()
+	marksSinceCommit := 0
 
 	markMessage := func(message *sarama.ConsumerMessage) {
 		session.MarkMessage(message, "")
-		if h.connector.ackGranularityIsMessage() {
+		if messageAck {
 			session.Commit()
+			return
 		}
+		marksSinceCommit++
 	}
 
 	markPending := func(message *sarama.ConsumerMessage) {
@@ -890,13 +901,32 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 		}
 	}
 
+	commitBatchOffsets := func() {
+		drainMarks()
+		if !messageAck && marksSinceCommit > 0 {
+			session.Commit()
+			marksSinceCommit = 0
+		}
+	}
+
+	signalBatchCommit := func() {
+		select {
+		case commitReq <- struct{}{}:
+		case <-session.Context().Done():
+		default:
+			// Coalesce: a commit is already pending; marks still drain before that Commit.
+		}
+	}
+
 	for {
 		select {
 		case <-heartbeat.C:
 			h.connector.notifyProgress()
+		case <-commitReq:
+			commitBatchOffsets()
 		case message := <-claim.Messages():
 			if message == nil {
-				drainMarks()
+				commitBatchOffsets()
 				return nil
 			}
 
@@ -942,6 +972,10 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 			// Commit offset only after the message is successfully written to the sink.
 			// Mark is queued and applied in this goroutine (not from sink goroutine).
 			msg.Ack = func() { markPending(message) }
+			if !messageAck {
+				// Flush-boundary Commit: fired once by AckMessagesAndNotifyProgress after all marks.
+				msg.AfterBatchAck = signalBatchCommit
+			}
 
 			enqueued := false
 			for !enqueued {
@@ -949,15 +983,19 @@ func (h *kafkaConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSes
 				case h.msgChan <- msg:
 					h.connector.RecordMessageRead()
 					enqueued = true
+				case <-commitReq:
+					commitBatchOffsets()
 				case m := <-markChan:
 					markMessage(m)
 				case <-session.Context().Done():
+					commitBatchOffsets()
 					return nil
 				}
 			}
 		case m := <-markChan:
 			markMessage(m)
 		case <-session.Context().Done():
+			commitBatchOffsets()
 			return nil
 		}
 	}
@@ -1257,7 +1295,7 @@ func (k *KafkaSinkConnector) writeSync(ctx context.Context, messages <-chan *typ
 			msg.Metadata["partition"] = partition
 			msg.Metadata["offset"] = offset
 
-			k.AckMessageAndNotifyProgress(msg)
+			k.AckAfterSuccessfulWrite([]*types.Message{msg})
 		}
 	}
 }
@@ -1289,7 +1327,7 @@ func (k *KafkaSinkConnector) writeAsync(ctx context.Context, messages <-chan *ty
 				msg.Metadata["partition"] = success.Partition
 				msg.Metadata["offset"] = success.Offset
 				k.RecordMessageWritten(getRouteFromMessage(msg))
-				k.AckMessageAndNotifyProgress(msg)
+				k.AckAfterSuccessfulWrite([]*types.Message{msg})
 				wg.Done()
 			case errMsg, ok := <-errorsCh:
 				if !ok {

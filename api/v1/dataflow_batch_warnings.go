@@ -102,3 +102,88 @@ func warnBatchSizeBelow(path string, batchSize *int32, recommended int32, sinkTy
 			path, sinkType, *batchSize, recommended),
 	}
 }
+
+// kafkaMessageAckLargeBatchThreshold is the sink batchSize above which Kafka + message-ack
+// (with collapseBatchOnMessageAck=false) warrants an admission warning to prefer batch ack.
+const kafkaMessageAckLargeBatchThreshold int32 = 1
+
+func warnKafkaMessageAckLargeBatch(spec *DataFlowSpec) admission.Warnings {
+	if spec == nil || spec.Source.Type != "kafka" {
+		return nil
+	}
+	if !AckGranularityIsMessage(spec) {
+		return nil
+	}
+	// With collapse enabled, runtime MaxBatchSize=1 — per-mark Commit matches flush size.
+	if CollapseBatchOnMessageAckOrDefault(spec) {
+		return nil
+	}
+	for _, ref := range collectOutputSinks(spec, field.NewPath("spec")) {
+		bs, ok := sinkBatchSizeForWarning(ref.sink)
+		if !ok || bs <= kafkaMessageAckLargeBatchThreshold {
+			continue
+		}
+		return admission.Warnings{
+			fmt.Sprintf("spec.ackGranularity=message with Kafka source and %s batchSize=%d (collapseBatchOnMessageAck=false): prefer ackGranularity=batch so Kafka commits once per sink flush; message mode commits on every mark. Use an idempotent sink (upsertMode + conflictKey) either way",
+				ref.role, bs),
+		}
+	}
+	return nil
+}
+
+// sinkBatchSizeForWarning returns the configured batchSize, or the processor default when omitted
+// for known batch-oriented sinks. ok is false when the sink has no batchSize concept / unreadable config.
+func sinkBatchSizeForWarning(sink *SinkSpec) (int32, bool) {
+	if sink == nil || sink.Config == nil || len(sink.Config.Raw) == 0 {
+		return 0, false
+	}
+	switch sink.Type {
+	case "postgresql":
+		cfg, err := sink.GetPostgreSQLConfig()
+		if err != nil || cfg == nil {
+			return 0, false
+		}
+		if cfg.BatchSize != nil && *cfg.BatchSize > 0 {
+			return *cfg.BatchSize, true
+		}
+		return sinkbatch.DefaultPostgreSQLBatchSize, true
+	case "clickhouse":
+		cfg, err := sink.GetClickHouseConfig()
+		if err != nil || cfg == nil {
+			return 0, false
+		}
+		if cfg.BatchSize != nil && *cfg.BatchSize > 0 {
+			return *cfg.BatchSize, true
+		}
+		return sinkbatch.DefaultClickHouseBatchSize, true
+	case "trino":
+		cfg, err := sink.GetTrinoConfig()
+		if err != nil || cfg == nil {
+			return 0, false
+		}
+		if cfg.BatchSize != nil && *cfg.BatchSize > 0 {
+			return *cfg.BatchSize, true
+		}
+		return sinkbatch.DefaultTrinoBatchSize, true
+	case "nessie":
+		cfg, err := sink.GetNessieConfig()
+		if err != nil || cfg == nil {
+			return 0, false
+		}
+		if cfg.BatchSize != nil && *cfg.BatchSize > 0 {
+			return *cfg.BatchSize, true
+		}
+		return sinkbatch.DefaultNessieBatchSize, true
+	case "iceberg":
+		cfg, err := sink.GetIcebergConfig()
+		if err != nil || cfg == nil {
+			return 0, false
+		}
+		if cfg.BatchSize != nil && *cfg.BatchSize > 0 {
+			return *cfg.BatchSize, true
+		}
+		return sinkbatch.DefaultIcebergBatchSize, true
+	default:
+		return 0, false
+	}
+}

@@ -115,6 +115,7 @@ func WarnDataFlowSpec(spec *DataFlowSpec) admission.Warnings {
 		return warnings
 	}
 	warnings = append(warnings, warnSinkBatchSizes(spec)...)
+	warnings = append(warnings, warnKafkaMessageAckLargeBatch(spec)...)
 	if !isPollingSourceType(spec.Source.Type) || StrictIdempotencyEnabled(spec) {
 		return warnings
 	}

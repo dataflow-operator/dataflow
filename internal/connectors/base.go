@@ -239,6 +239,16 @@ func AckMessages(msgs []*types.Message) {
 	}
 }
 
+// notifyAfterBatchAck fires the first non-nil AfterBatchAck in msgs (flush-boundary signal).
+func notifyAfterBatchAck(msgs []*types.Message) {
+	for _, m := range msgs {
+		if m != nil && m.AfterBatchAck != nil {
+			m.AfterBatchAck()
+			return
+		}
+	}
+}
+
 // AckMessageAndNotifyProgress commits one message and updates liveness progress after a successful write.
 func (p *progressRecorder) AckMessageAndNotifyProgress(msg *types.Message) {
 	if msg != nil && msg.Ack != nil {
@@ -249,8 +259,11 @@ func (p *progressRecorder) AckMessageAndNotifyProgress(msg *types.Message) {
 }
 
 // AckMessagesAndNotifyProgress commits offsets and updates liveness progress after a successful batch.
+// After per-message Ack callbacks, it fires AfterBatchAck once so sources (e.g. Kafka) can
+// Commit on the sink-flush boundary when ackGranularity is batch.
 func (p *progressRecorder) AckMessagesAndNotifyProgress(msgs []*types.Message) {
 	AckMessages(msgs)
+	notifyAfterBatchAck(msgs)
 	p.flushCheckpointAfterBatchAck()
 	p.notifyProgress()
 }
