@@ -1,3 +1,9 @@
+## 1.11.0 (2026-07-26)
+
+## Commits
+
+- 22498eb feat: enhance KafkaSinkSpec with producer tuning options
+
 ## 1.10.0 (2026-07-25)
 
 ## Commits
