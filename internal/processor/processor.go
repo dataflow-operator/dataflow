@@ -46,7 +46,6 @@ type Processor struct {
 	routerSinks     map[string]v1.SinkSpec
 	processedCount  int64
 	errorCount      int64
-	mu              sync.RWMutex
 	logger          logr.Logger
 	namespace       string
 	name            string
@@ -384,7 +383,9 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 
 					// Check if message has routing metadata
 					if routedCondition, ok := msg.Metadata["routed_condition"].(string); ok {
-						p.logger.V(1).Info("Message has routing condition", "condition", routedCondition, "message", string(msg.Data))
+						if log := p.logger.V(1); log.Enabled() {
+							log.Info("Message has routing condition", "condition", routedCondition, "message", payloadPreview(msg.Data))
+						}
 						// Find matching router sink by condition
 						if ch, ok := routerChans[routedCondition]; ok {
 							p.logger.V(1).Info("Routing message to condition sink", "condition", routedCondition)
@@ -412,7 +413,9 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 							}
 						}
 					} else {
-						p.logger.V(1).Info("Message has no routing condition, sending to default", "message", string(msg.Data))
+						if log := p.logger.V(1); log.Enabled() {
+							log.Info("Message has no routing condition, sending to default", "message", payloadPreview(msg.Data))
+						}
 						metrics.RecordTaskQueueWaitTime(p.namespace, p.name, "routing", time.Since(queueWaitStart).Seconds())
 						metrics.SetTaskQueueSize(p.namespace, p.name, "default", len(defaultChan))
 						select {
@@ -493,12 +496,10 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 			p.logger.Error(err, "Failed to write messages to sink")
 			return err
 		}
-		p.mu.RLock()
 		p.logger.Info("Successfully completed writing messages to sink",
-			logkeys.ProcessedCount, p.processedCount,
-			logkeys.ErrorCount, p.errorCount,
+			logkeys.ProcessedCount, atomic.LoadInt64(&p.processedCount),
+			logkeys.ErrorCount, atomic.LoadInt64(&p.errorCount),
 		)
-		p.mu.RUnlock()
 		return nil
 	}
 
@@ -581,9 +582,7 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 
 						p.logger.Error(err, "Failed to write message to sink, sending to error sink",
 							"message", string(msg.Data))
-						p.mu.Lock()
-						p.errorCount++
-						p.mu.Unlock()
+						atomic.AddInt64(&p.errorCount, 1)
 
 						// Create error message with error information embedded in the data.
 						// Message is approximate: sink returns one error per Write, so the real failed message may be earlier.
@@ -622,38 +621,24 @@ func (p *Processor) writeMessagesWithErrorHandling(ctx context.Context, messages
 	hasErrorsMu.Lock()
 	defer hasErrorsMu.Unlock()
 	if hasErrors {
-		p.mu.RLock()
 		p.logger.Info("Some messages were sent to error sink",
-			logkeys.ProcessedCount, p.processedCount,
-			logkeys.ErrorCount, p.errorCount,
+			logkeys.ProcessedCount, atomic.LoadInt64(&p.processedCount),
+			logkeys.ErrorCount, atomic.LoadInt64(&p.errorCount),
 		)
-		p.mu.RUnlock()
 		// Don't return error if error sink is configured - errors are handled
 		return nil
 	}
 
-	p.mu.RLock()
 	p.logger.Info("Successfully completed writing messages to sink",
-		logkeys.ProcessedCount, p.processedCount,
-		logkeys.ErrorCount, p.errorCount,
+		logkeys.ProcessedCount, atomic.LoadInt64(&p.processedCount),
+		logkeys.ErrorCount, atomic.LoadInt64(&p.errorCount),
 	)
-	p.mu.RUnlock()
 	return nil
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // GetStats returns processing statistics
 func (p *Processor) GetStats() (processedCount, errorCount int64) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.processedCount, p.errorCount
+	return atomic.LoadInt64(&p.processedCount), atomic.LoadInt64(&p.errorCount)
 }
 
 // getTransformerType returns the transformer type by index.

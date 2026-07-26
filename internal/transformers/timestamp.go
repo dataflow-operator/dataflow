@@ -50,7 +50,7 @@ func (t *TimestampTransformer) Transform(ctx context.Context, message *types.Mes
 
 	timestamp := time.Now().Format(format)
 
-	if _, ok := tryUnmarshalJSON(message); !ok {
+	if !isJSONObjectPayload(message.Data) {
 		return []*types.Message{message}, nil
 	}
 

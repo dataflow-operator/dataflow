@@ -737,12 +737,30 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		},
 		OnMessage: func(msg *types.Message) bool {
 			messageCount++
+			// Raw mode writes m.Data as-is; skip Unmarshal on the hot path.
+			if c.rawMode() {
+				if log := c.logger.V(1); log.Enabled() {
+					log.Info("Received message for ClickHouse",
+						logkeys.MessageID, types.MessageID(msg),
+						"messageNumber", messageCount,
+						"table", c.config.Table,
+						"messageSize", len(msg.Data),
+						"raw", true)
+				}
+				return true
+			}
 			var data map[string]interface{}
 			if err := json.Unmarshal(msg.Data, &data); err != nil {
 				c.logger.Error(err, "Failed to unmarshal message", logkeys.MessageID, types.MessageID(msg), "table", c.config.Table)
 				return false
 			}
-			c.logger.V(1).Info("Received message for ClickHouse", logkeys.MessageID, types.MessageID(msg), "messageNumber", messageCount, "table", c.config.Table, "fields", getKeys(data))
+			if log := c.logger.V(1); log.Enabled() {
+				log.Info("Received message for ClickHouse",
+					logkeys.MessageID, types.MessageID(msg),
+					"messageNumber", messageCount,
+					"table", c.config.Table,
+					"fields", getKeys(data))
+			}
 			return true
 		},
 		OnAck: func(msgs []*types.Message) {

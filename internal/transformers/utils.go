@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -119,14 +120,16 @@ func sjsonDeleteWithFallback(jsonStr, path string) (string, error) {
 	return result, nil
 }
 
-// tryUnmarshalJSON attempts to unmarshal message data as a JSON map.
-// Returns (data, true) on success or (nil, false) if the data is not valid JSON.
+// tryUnmarshalJSON returns Data as a JSON object, using Message's parse-once cache.
+// Returns (data, true) on success or (nil, false) if the data is not a JSON object.
 func tryUnmarshalJSON(message *types.Message) (map[string]interface{}, bool) {
-	var data map[string]interface{}
-	if err := json.Unmarshal(message.Data, &data); err != nil {
-		return nil, false
-	}
-	return data, true
+	return message.JSONObject()
+}
+
+// isJSONObjectPayload reports whether data is a JSON object without building a full map.
+// Prefer this over tryUnmarshalJSON when only validating before sjson/gjson mutations.
+func isJSONObjectPayload(data []byte) bool {
+	return gjson.ParseBytes(data).IsObject()
 }
 
 // newMessageFrom creates a new message with the given data, copying Metadata and Timestamp from src.
@@ -135,4 +138,26 @@ func newMessageFrom(src *types.Message, data []byte) *types.Message {
 	msg.Metadata = src.Metadata
 	msg.Timestamp = src.Timestamp
 	return msg
+}
+
+// newMessageFromJSON marshals value once, copies Metadata/Timestamp, and primes the parse cache
+// so the next transform stage can reuse the object without Unmarshal.
+func newMessageFromJSON(src *types.Message, value interface{}) (*types.Message, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	msg := newMessageFrom(src, data)
+	msg.PrimeJSONCache(value)
+	return msg, nil
+}
+
+// payloadPreview returns a short string view of payload for debug logs.
+// Call only after checking logger.V(n).Enabled() — Go evaluates Info args eagerly.
+func payloadPreview(data []byte) string {
+	const maxPreview = 200
+	if len(data) <= maxPreview {
+		return string(data)
+	}
+	return string(data[:maxPreview])
 }

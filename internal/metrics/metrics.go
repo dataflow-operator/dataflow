@@ -17,7 +17,8 @@ limitations under the License.
 package metrics
 
 import (
-	"fmt"
+	"strconv"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -419,7 +420,36 @@ func SetDataFlowStatus(namespace, name, phase string) {
 
 // formatIndex formats index as string.
 func formatIndex(index int) string {
-	return fmt.Sprintf("%d", index)
+	return strconv.Itoa(index)
+}
+
+// Hot-path histogram sampling: Observe every Nth call (default 16) to cut Prometheus tax.
+// Counters (Inc/Add/Set) are always recorded. Set every=1 to disable sampling (tests).
+var (
+	hotPathHistogramCounter atomic.Uint64
+	hotPathHistogramEvery   atomic.Uint64
+)
+
+func init() {
+	hotPathHistogramEvery.Store(16)
+}
+
+// SetHotPathHistogramSampleEvery configures sampling period for ShouldSampleHotPathHistogram.
+// Values <= 1 mean always observe. Intended for tests and low-volume debugging.
+func SetHotPathHistogramSampleEvery(every uint64) {
+	if every == 0 {
+		every = 1
+	}
+	hotPathHistogramEvery.Store(every)
+}
+
+// ShouldSampleHotPathHistogram reports whether this call should Observe a hot-path histogram.
+func ShouldSampleHotPathHistogram() bool {
+	every := hotPathHistogramEvery.Load()
+	if every <= 1 {
+		return true
+	}
+	return hotPathHistogramCounter.Add(1)%every == 0
 }
 
 // RecordTaskStageDuration records task stage execution duration.

@@ -18,7 +18,6 @@ package transformers
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"unicode"
 
@@ -40,20 +39,19 @@ func NewCamelCaseTransformer(config *v1.CamelCaseTransformation) *CamelCaseTrans
 
 // Transform converts all field names in the message to CamelCase
 func (c *CamelCaseTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	var data interface{}
-	if err := json.Unmarshal(message.Data, &data); err != nil {
+	data, err := message.JSONValue()
+	if err != nil {
 		// If data is not valid JSON, return original message unchanged
 		return []*types.Message{message}, nil
 	}
 
 	converted := convertKeysRecursive(data, c.config.Deep, toCamelCase)
 
-	jsonData, err := json.Marshal(converted)
+	out, err := newMessageFromJSON(message, converted)
 	if err != nil {
 		return nil, err
 	}
-
-	return []*types.Message{newMessageFrom(message, jsonData)}, nil
+	return []*types.Message{out}, nil
 }
 
 // toCamelCase converts a string to CamelCase

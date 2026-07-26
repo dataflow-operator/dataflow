@@ -49,7 +49,7 @@ func NewInsertFieldTransformer(config *v1.InsertFieldTransformation) *InsertFiel
 // Non-JSON payloads are passed through unchanged. Metadata is preserved.
 // Missing metadata keys resolve to an empty string. Invalid json: values return an error.
 func (t *InsertFieldTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	if _, ok := tryUnmarshalJSON(message); !ok {
+	if !isJSONObjectPayload(message.Data) {
 		return []*types.Message{message}, nil
 	}
 

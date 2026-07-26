@@ -18,7 +18,6 @@ package transformers
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"unicode"
 
@@ -40,20 +39,19 @@ func NewSnakeCaseTransformer(config *v1.SnakeCaseTransformation) *SnakeCaseTrans
 
 // Transform converts all field names in the message to snake_case
 func (s *SnakeCaseTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	var data interface{}
-	if err := json.Unmarshal(message.Data, &data); err != nil {
+	data, err := message.JSONValue()
+	if err != nil {
 		// If data is not valid JSON, return original message unchanged
 		return []*types.Message{message}, nil
 	}
 
 	converted := convertKeysRecursive(data, s.config.Deep, toSnakeCase)
 
-	jsonData, err := json.Marshal(converted)
+	out, err := newMessageFromJSON(message, converted)
 	if err != nil {
 		return nil, err
 	}
-
-	return []*types.Message{newMessageFrom(message, jsonData)}, nil
+	return []*types.Message{out}, nil
 }
 
 // toSnakeCase converts a string to snake_case
@@ -68,26 +66,21 @@ func toSnakeCase(s string) string {
 	prevUpper := false
 
 	for i, r := range runes {
-		if unicode.IsUpper(r) {
-			// Add underscore if:
-			// 1. Previous letter was lowercase, or
-			// 2. Previous was uppercase but next is lowercase (end of uppercase sequence)
-			nextIsLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
-			if i > 0 && (prevLower || (prevUpper && nextIsLower)) {
-				result.WriteRune('_')
+		isUpper := unicode.IsUpper(r)
+		isLower := unicode.IsLower(r)
+
+		if i > 0 && isUpper {
+			// Insert underscore before uppercase when previous was lowercase,
+			// or when previous was uppercase and next is lowercase (XMLParser → XML_Parser).
+			nextLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+			if prevLower || (prevUpper && nextLower) {
+				result.WriteByte('_')
 			}
-			result.WriteRune(unicode.ToLower(r))
-			prevLower = false
-			prevUpper = true
-		} else if unicode.IsLower(r) || unicode.IsDigit(r) {
-			result.WriteRune(r)
-			prevLower = true
-			prevUpper = false
-		} else {
-			result.WriteRune(r)
-			prevLower = false
-			prevUpper = false
 		}
+
+		result.WriteRune(unicode.ToLower(r))
+		prevLower = isLower
+		prevUpper = isUpper
 	}
 
 	return result.String()

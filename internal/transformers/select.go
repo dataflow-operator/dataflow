@@ -18,7 +18,6 @@ package transformers
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/dataflow-operator/dataflow/api/v1"
@@ -59,10 +58,10 @@ func (s *SelectTransformer) Transform(ctx context.Context, message *types.Messag
 		return []*types.Message{message}, nil
 	}
 
-	jsonData, err := json.Marshal(newData)
+	out, err := newMessageFromJSON(message, newData)
 	if err != nil {
 		return nil, err
 	}
 
-	return []*types.Message{newMessageFrom(message, jsonData)}, nil
+	return []*types.Message{out}, nil
 }

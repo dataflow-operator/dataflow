@@ -39,7 +39,7 @@ func NewHeadersToPayloadTransformer(config *v1.HeadersToPayloadTransformation) *
 // Transform copies mapped headers from Metadata["headers"] into JSON fields.
 // Missing headers are skipped. Invalid headers metadata type leaves the message unchanged.
 func (h *HeadersToPayloadTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	if _, ok := tryUnmarshalJSON(message); !ok {
+	if !isJSONObjectPayload(message.Data) {
 		return []*types.Message{message}, nil
 	}
 

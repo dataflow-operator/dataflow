@@ -40,7 +40,7 @@ func NewReplaceFieldTransformer(config *v1.ReplaceFieldTransformation) *ReplaceF
 // Transform applies include/exclude filtering, then renames fields.
 // Include preserves nested structure (unlike select). Include and exclude are mutually exclusive.
 func (r *ReplaceFieldTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
-	if _, ok := tryUnmarshalJSON(message); !ok {
+	if !isJSONObjectPayload(message.Data) {
 		return []*types.Message{message}, nil
 	}
 

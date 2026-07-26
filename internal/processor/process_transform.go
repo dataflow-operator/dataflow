@@ -67,6 +67,7 @@ func attachAckBarrier(parent *types.Message, derived []*types.Message) {
 func (p *Processor) applyTransformations(ctx context.Context, msg *types.Message) []*types.Message {
 	messages := []*types.Message{msg}
 	transformationStageStart := time.Now()
+	debug := p.logger.V(1)
 
 	for i, transformer := range p.transformers {
 		transformerType := getTransformerType(p.spec, i)
@@ -74,7 +75,8 @@ func (p *Processor) applyTransformations(ctx context.Context, msg *types.Message
 		inputCount := len(messages)
 		metrics.RecordTransformerMessagesIn(p.namespace, p.name, transformerType, i, inputCount)
 
-		if i > 0 {
+		sampleHist := metrics.ShouldSampleHotPathHistogram()
+		if sampleHist && i > 0 {
 			prevStage := fmt.Sprintf("transformer_%d", i-1)
 			currStage := fmt.Sprintf("transformer_%d", i)
 			metrics.RecordTaskStageLatency(p.namespace, p.name, prevStage, currStage, time.Since(transformationStageStart).Seconds())
@@ -83,12 +85,16 @@ func (p *Processor) applyTransformations(ctx context.Context, msg *types.Message
 
 		for _, m := range messages {
 			msgStart := time.Now()
-			p.logger.V(1).Info("Applying transformer",
-				"transformerIndex", i,
-				"inputMessageSize", len(m.Data),
-				"inputMessagePreview", string(m.Data)[:min(200, len(m.Data))])
+			if debug.Enabled() {
+				debug.Info("Applying transformer",
+					"transformerIndex", i,
+					"inputMessageSize", len(m.Data),
+					"inputMessagePreview", payloadPreview(m.Data))
+			}
 
-			metrics.RecordTaskMessageSize(p.namespace, p.name, fmt.Sprintf("transformer_%d_input", i), len(m.Data))
+			if sampleHist {
+				metrics.RecordTaskMessageSize(p.namespace, p.name, fmt.Sprintf("transformer_%d_input", i), len(m.Data))
+			}
 
 			transformed, err := transformer.Transform(ctx, m)
 			transformationDuration := time.Since(msgStart).Seconds()
@@ -101,31 +107,38 @@ func (p *Processor) applyTransformations(ctx context.Context, msg *types.Message
 				metrics.RecordTransformerError(p.namespace, p.name, transformerType, i, errclass.GetErrorType(err))
 				metrics.RecordTaskStageError(p.namespace, p.name, fmt.Sprintf("transformer_%d", i), errclass.GetErrorType(err))
 				metrics.RecordTaskOperation(p.namespace, p.name, "transform", "error")
-				p.mu.Lock()
-				p.errorCount++
-				p.mu.Unlock()
+				atomic.AddInt64(&p.errorCount, 1)
 				continue
 			}
 
-			metrics.RecordTaskStageDuration(p.namespace, p.name, fmt.Sprintf("transformer_%d", i), transformationDuration)
+			if sampleHist {
+				metrics.RecordTaskStageDuration(p.namespace, p.name, fmt.Sprintf("transformer_%d", i), transformationDuration)
+				metrics.RecordTransformerDuration(p.namespace, p.name, transformerType, i, transformationDuration)
+			}
 			metrics.RecordTransformerExecution(p.namespace, p.name, transformerType, i)
-			metrics.RecordTransformerDuration(p.namespace, p.name, transformerType, i, transformationDuration)
 			metrics.RecordTaskOperation(p.namespace, p.name, "transform", "success")
 
-			for j, tmsg := range transformed {
-				metrics.RecordTaskMessageSize(p.namespace, p.name, fmt.Sprintf("transformer_%d_output", i), len(tmsg.Data))
+			if debug.Enabled() {
+				for j, tmsg := range transformed {
+					if sampleHist {
+						metrics.RecordTaskMessageSize(p.namespace, p.name, fmt.Sprintf("transformer_%d_output", i), len(tmsg.Data))
+					}
+					debug.Info("Transformation result",
+						"transformerIndex", i,
+						"outputMessageIndex", j,
+						"outputMessageSize", len(tmsg.Data),
+						"outputMessagePreview", payloadPreview(tmsg.Data))
 
-				p.logger.V(1).Info("Transformation result",
-					"transformerIndex", i,
-					"outputMessageIndex", j,
-					"outputMessageSize", len(tmsg.Data),
-					"outputMessagePreview", string(tmsg.Data)[:min(200, len(tmsg.Data))])
-
-				if routedCond, ok := tmsg.Metadata["routed_condition"].(string); ok {
-					p.logger.V(1).Info("Router set routed_condition",
-						logkeys.MessageID, types.MessageID(tmsg),
-						"condition", routedCond,
-						"message", string(tmsg.Data))
+					if routedCond, ok := tmsg.Metadata["routed_condition"].(string); ok {
+						debug.Info("Router set routed_condition",
+							logkeys.MessageID, types.MessageID(tmsg),
+							"condition", routedCond,
+							"message", string(tmsg.Data))
+					}
+				}
+			} else if sampleHist {
+				for _, tmsg := range transformed {
+					metrics.RecordTaskMessageSize(p.namespace, p.name, fmt.Sprintf("transformer_%d_output", i), len(tmsg.Data))
 				}
 			}
 
@@ -145,6 +158,14 @@ func (p *Processor) applyTransformations(ctx context.Context, msg *types.Message
 
 	attachAckBarrier(msg, messages)
 	return messages
+}
+
+func payloadPreview(data []byte) string {
+	const maxPreview = 200
+	if len(data) <= maxPreview {
+		return string(data)
+	}
+	return string(data[:maxPreview])
 }
 
 type transformJob struct {
@@ -202,22 +223,17 @@ func (p *Processor) processMessagesSerial(ctx context.Context, input <-chan *typ
 			messageReceivedTime := time.Now()
 			startTime := messageReceivedTime
 
-			readStageStart := time.Now()
-			metrics.RecordTaskStageDuration(p.namespace, p.name, "read", time.Since(readStageStart).Seconds())
-
 			transformationStart := time.Now()
 			messages := p.applyTransformations(ctx, msg)
-			metrics.RecordTaskStageDuration(p.namespace, p.name, "transformation", time.Since(transformationStart).Seconds())
-
-			writeStageStart := time.Now()
-			metrics.RecordTaskStageLatency(p.namespace, p.name, "transformation", "write", time.Since(writeStageStart).Seconds())
+			if metrics.ShouldSampleHotPathHistogram() {
+				metrics.RecordTaskStageDuration(p.namespace, p.name, "transformation", time.Since(transformationStart).Seconds())
+				metrics.DataFlowProcessingDuration.WithLabelValues(p.namespace, p.name).Observe(time.Since(startTime).Seconds())
+				metrics.RecordTaskEndToEndLatency(p.namespace, p.name, time.Since(messageReceivedTime).Seconds())
+			}
 
 			if len(messages) > 0 {
 				p.logger.V(1).Info("Processed message", "inputMessages", 1, "outputMessages", len(messages))
 			}
-
-			metrics.DataFlowProcessingDuration.WithLabelValues(p.namespace, p.name).Observe(time.Since(startTime).Seconds())
-			metrics.RecordTaskEndToEndLatency(p.namespace, p.name, time.Since(messageReceivedTime).Seconds())
 
 			if !p.emitTransformed(ctx, output, messages, &activeMessages, &messageCount) {
 				return
@@ -332,9 +348,11 @@ func (p *Processor) processMessagesParallel(ctx context.Context, input <-chan *t
 				activeMessages++
 				metrics.SetTaskActiveMessages(p.namespace, p.name, activeMessages)
 
-				metrics.RecordTaskStageDuration(p.namespace, p.name, "transformation", time.Since(ready.transformStarted).Seconds())
-				metrics.DataFlowProcessingDuration.WithLabelValues(p.namespace, p.name).Observe(time.Since(ready.receivedAt).Seconds())
-				metrics.RecordTaskEndToEndLatency(p.namespace, p.name, time.Since(ready.receivedAt).Seconds())
+				if metrics.ShouldSampleHotPathHistogram() {
+					metrics.RecordTaskStageDuration(p.namespace, p.name, "transformation", time.Since(ready.transformStarted).Seconds())
+					metrics.DataFlowProcessingDuration.WithLabelValues(p.namespace, p.name).Observe(time.Since(ready.receivedAt).Seconds())
+					metrics.RecordTaskEndToEndLatency(p.namespace, p.name, time.Since(ready.receivedAt).Seconds())
+				}
 
 				if len(ready.out) > 0 {
 					p.logger.V(1).Info("Processed message", "inputMessages", 1, "outputMessages", len(ready.out))
@@ -375,17 +393,20 @@ func (p *Processor) emitTransformed(
 	}
 
 	writeStart := time.Now()
+	sampleHist := metrics.ShouldSampleHotPathHistogram()
 	for _, m := range messages {
-		metrics.RecordTaskMessageSize(p.namespace, p.name, "output", len(m.Data))
+		if sampleHist {
+			metrics.RecordTaskMessageSize(p.namespace, p.name, "output", len(m.Data))
+		}
 
 		select {
 		case output <- m:
-			metrics.RecordTaskStageDuration(p.namespace, p.name, "write", time.Since(writeStart).Seconds())
+			if sampleHist {
+				metrics.RecordTaskStageDuration(p.namespace, p.name, "write", time.Since(writeStart).Seconds())
+			}
 
-			p.mu.Lock()
-			p.processedCount++
+			atomic.AddInt64(&p.processedCount, 1)
 			*messageCount++
-			p.mu.Unlock()
 
 			route := getRouteFromMessage(m)
 			metrics.RecordMessageSent(p.namespace, p.name, p.spec.Sink.Type, route)
@@ -399,16 +420,14 @@ func (p *Processor) emitTransformed(
 }
 
 func (p *Processor) recordThroughput(messageCount int64, throughputWindow time.Duration) {
-	p.mu.RLock()
 	throughput := float64(messageCount) / throughputWindow.Seconds()
-	total := p.processedCount + p.errorCount
+	processed := atomic.LoadInt64(&p.processedCount)
+	errors := atomic.LoadInt64(&p.errorCount)
+	total := processed + errors
 	var successRate float64
 	if total > 0 {
-		successRate = float64(p.processedCount) / float64(total)
+		successRate = float64(processed) / float64(total)
 	}
-	processed := p.processedCount
-	errors := p.errorCount
-	p.mu.RUnlock()
 
 	metrics.SetTaskThroughput(p.namespace, p.name, throughput)
 	metrics.SetTaskSuccessRate(p.namespace, p.name, successRate)

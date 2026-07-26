@@ -18,7 +18,6 @@ package transformers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -52,12 +51,12 @@ func (s *StructFlattenTransformer) Transform(ctx context.Context, message *types
 		return nil, err
 	}
 
-	jsonData, err := json.Marshal(flat)
+	out, err := newMessageFromJSON(message, flat)
 	if err != nil {
 		return nil, fmt.Errorf("structFlatten marshal: %w", err)
 	}
 
-	return []*types.Message{newMessageFrom(message, jsonData)}, nil
+	return []*types.Message{out}, nil
 }
 
 func (s *StructFlattenTransformer) delimiter() string {

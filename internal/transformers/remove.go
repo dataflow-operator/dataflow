@@ -50,9 +50,11 @@ func (r *RemoveTransformer) SetLogger(logger logr.Logger) {
 func (r *RemoveTransformer) Transform(ctx context.Context, message *types.Message) ([]*types.Message, error) {
 	jsonStr := string(message.Data)
 
-	r.logger.V(1).Info("Remove transformer processing",
-		"fields", r.config.Fields,
-		"messagePreview", string(message.Data)[:min(200, len(message.Data))])
+	if log := r.logger.V(1); log.Enabled() {
+		log.Info("Remove transformer processing",
+			"fields", r.config.Fields,
+			"messagePreview", payloadPreview(message.Data))
+	}
 
 	for _, field := range r.config.Fields {
 		normalizedField := normalizeFieldPath(field)
@@ -77,7 +79,6 @@ func (r *RemoveTransformer) Transform(ctx context.Context, message *types.Messag
 				var data map[string]interface{}
 				if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 					// If data is not valid JSON, return original message unchanged
-					// This allows handling binary data or other formats
 					r.logger.V(1).Info("Invalid JSON, returning original message",
 						"field", field)
 					return []*types.Message{message}, nil

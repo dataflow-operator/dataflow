@@ -18,7 +18,6 @@ package transformers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
@@ -54,12 +53,14 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 	// Get the array field using JSONPath
 	result := gjson.GetBytes(message.Data, fieldPath)
 
-	f.logger.V(1).Info("Flatten transformer processing",
-		"field", f.config.Field,
-		"normalizedField", fieldPath,
-		"exists", result.Exists(),
-		"isArray", result.IsArray(),
-		"messagePreview", string(message.Data)[:min(200, len(message.Data))])
+	if log := f.logger.V(1); log.Enabled() {
+		log.Info("Flatten transformer processing",
+			"field", f.config.Field,
+			"normalizedField", fieldPath,
+			"exists", result.Exists(),
+			"isArray", result.IsArray(),
+			"messagePreview", payloadPreview(message.Data))
+	}
 
 	if !result.Exists() {
 		// Field doesn't exist, return original message
@@ -94,11 +95,10 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 		}
 	}
 
-	// Parse the original message
-	var originalData map[string]interface{}
-	if err := json.Unmarshal(message.Data, &originalData); err != nil {
-		// If data is not valid JSON, return original message unchanged
-		// This allows handling binary data or other formats
+	// Parse the original message (parse-once cache)
+	originalData, ok := tryUnmarshalJSON(message)
+	if !ok {
+		// If data is not a JSON object, return original message unchanged
 		return []*types.Message{message}, nil
 	}
 
@@ -108,12 +108,13 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 		// Empty array, return original message without the array field
 		f.logger.V(1).Info("Empty array found, removing field and returning original message",
 			"field", fieldPath)
-		// Try to delete both normalized and original field names
 		delete(originalData, fieldPath)
 		delete(originalData, f.config.Field)
-		newData, _ := json.Marshal(originalData)
-		newMsg := newMessageFrom(message, newData)
-		return []*types.Message{newMsg}, nil
+		out, err := newMessageFromJSON(message, originalData)
+		if err != nil {
+			return []*types.Message{message}, nil
+		}
+		return []*types.Message{out}, nil
 	}
 
 	f.logger.V(1).Info("Flattening array",
@@ -123,33 +124,27 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 	// Create a message for each element in the array
 	messages := make([]*types.Message, 0, len(array))
 	for _, item := range array {
-		// Create a copy of the original data
 		newData := make(map[string]interface{})
 		for k, v := range originalData {
-			// Skip both normalized and original field names
 			if k != fieldPath && k != f.config.Field {
 				newData[k] = v
 			}
 		}
 
-		// Add the flattened item fields to the root
 		if item.IsObject() {
 			itemMap := item.Map()
 			for k, v := range itemMap {
 				newData[k] = v.Value()
 			}
 		} else {
-			// If it's a primitive, add it with the field name
 			newData[f.config.Field] = item.Value()
 		}
 
-		jsonData, err := json.Marshal(newData)
+		out, err := newMessageFromJSON(message, newData)
 		if err != nil {
 			continue
 		}
-
-		newMsg := newMessageFrom(message, jsonData)
-		messages = append(messages, newMsg)
+		messages = append(messages, out)
 	}
 
 	f.logger.V(1).Info("Flatten completed",
@@ -157,17 +152,17 @@ func (f *FlattenTransformer) Transform(ctx context.Context, message *types.Messa
 		"inputMessages", 1,
 		"outputMessages", len(messages))
 
-	// Log first flattened message structure for debugging
 	if len(messages) > 0 {
-		var firstFlattened map[string]interface{}
-		if err := json.Unmarshal(messages[0].Data, &firstFlattened); err == nil {
-			firstKeys := make([]string, 0, len(firstFlattened))
-			for k := range firstFlattened {
-				firstKeys = append(firstKeys, k)
+		if log := f.logger.V(1); log.Enabled() {
+			if obj, ok := messages[0].JSONObject(); ok {
+				firstKeys := make([]string, 0, len(obj))
+				for k := range obj {
+					firstKeys = append(firstKeys, k)
+				}
+				log.Info("First flattened message structure",
+					"keys", firstKeys,
+					"messagePreview", payloadPreview(messages[0].Data))
 			}
-			f.logger.V(1).Info("First flattened message structure",
-				"keys", firstKeys,
-				"messagePreview", string(messages[0].Data)[:min(300, len(messages[0].Data))])
 		}
 	}
 

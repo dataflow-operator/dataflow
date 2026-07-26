@@ -42,9 +42,9 @@ func (t *DebeziumUnwrapTransformer) Transform(ctx context.Context, message *type
 		return t.transformTombstone(message)
 	}
 
-	var root map[string]interface{}
-	if err := json.Unmarshal(message.Data, &root); err != nil {
-		return nil, fmt.Errorf("debezium unwrap: invalid JSON payload: %w", err)
+	root, ok := message.JSONObject()
+	if !ok {
+		return nil, fmt.Errorf("debezium unwrap: invalid JSON payload: not a JSON object")
 	}
 
 	payload, ok := root["payload"].(map[string]interface{})
@@ -63,13 +63,10 @@ func (t *DebeziumUnwrapTransformer) Transform(ctx context.Context, message *type
 	}
 	record = t.enrichRecord(record, op, operation, payload)
 
-	data, err := json.Marshal(record)
+	out, err := newMessageFromJSON(message, record)
 	if err != nil {
 		return nil, fmt.Errorf("debezium unwrap: marshal record: %w", err)
 	}
-
-	out := types.NewMessage(data)
-	out.Timestamp = message.Timestamp
 	out.Ack = message.Ack
 	out.Metadata = cloneMetadata(message.Metadata)
 	out.Metadata["operation"] = operation
