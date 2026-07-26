@@ -1,3 +1,14 @@
+## 1.12.0 (2026-07-26)
+
+## Commits
+
+- bf4d380 feat: add dataflow batch warnings and tests
+- 1ac440f feat: enhance Iceberg and Nessie source connectors with polling limits and scan progress tracking
+- aa839d5 feat: optimize message processing and logging in transformers and processors
+- 139a0e7 feat: enhance task management and error handling in processors and connectors
+- 5b88aa2 feat: add Kafka message acknowledgment warnings and enhance batch processing
+- 1da8b34 fix: align source configuration formatting in dataflow batch warnings tests
+
 ## 1.11.0 (2026-07-26)
 
 ## Commits
