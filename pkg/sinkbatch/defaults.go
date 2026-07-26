@@ -24,8 +24,8 @@ const (
 	DefaultPostgreSQLBatchSize int32 = 100
 	DefaultClickHouseBatchSize int32 = 500
 	DefaultTrinoBatchSize      int32 = 10
-	DefaultNessieBatchSize     int32 = 100
-	DefaultIcebergBatchSize    int32 = 100
+	DefaultNessieBatchSize     int32 = 500
+	DefaultIcebergBatchSize    int32 = 500
 )
 
 // RecommendedMin*BatchSize is the admission-warning floor when batchSize is set explicitly.
@@ -34,6 +34,8 @@ const (
 	RecommendedMinPostgreSQLBatchSize = DefaultPostgreSQLBatchSize
 	RecommendedMinClickHouseBatchSize = DefaultClickHouseBatchSize
 	RecommendedMinTrinoBatchSize      = DefaultTrinoBatchSize
+	RecommendedMinNessieBatchSize     = DefaultNessieBatchSize
+	RecommendedMinIcebergBatchSize    = DefaultIcebergBatchSize
 )
 
 // DefaultBatchFlushIntervalSeconds is the processor default when batchFlushIntervalSeconds is omitted.

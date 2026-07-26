@@ -471,6 +471,34 @@ func TestSetTaskQueueSize(t *testing.T) {
 	}
 }
 
+func TestSetChannelFillRatio(t *testing.T) {
+	SetChannelFillRatio("test-ns", "test-df", "source", 0.75)
+
+	metric, err := ChannelFillRatio.GetMetricWithLabelValues("test-ns", "test-df", "source")
+	if err != nil {
+		t.Fatalf("Failed to get metric: %v", err)
+	}
+
+	var dtoMetric dto.Metric
+	if err := metric.Write(&dtoMetric); err != nil {
+		t.Fatalf("Failed to write metric: %v", err)
+	}
+	if dtoMetric.Gauge == nil {
+		t.Fatal("Gauge is nil")
+	}
+	if *dtoMetric.Gauge.Value != 0.75 {
+		t.Errorf("Expected gauge value 0.75, got %f", *dtoMetric.Gauge.Value)
+	}
+
+	SetChannelFillRatio("test-ns", "test-df", "source", 1.5)
+	if err := metric.Write(&dtoMetric); err != nil {
+		t.Fatalf("Failed to write metric: %v", err)
+	}
+	if *dtoMetric.Gauge.Value != 1.0 {
+		t.Errorf("Expected clamped gauge value 1.0, got %f", *dtoMetric.Gauge.Value)
+	}
+}
+
 func TestRecordTaskQueueWaitTime(t *testing.T) {
 	RecordTaskQueueWaitTime("test-ns", "test-name", "output", 0.01)
 

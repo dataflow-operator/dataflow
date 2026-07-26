@@ -28,6 +28,12 @@ func TestDefaultsMatchRecommendedMins(t *testing.T) {
 	if DefaultTrinoBatchSize != RecommendedMinTrinoBatchSize {
 		t.Fatalf("trino default %d != recommended min %d", DefaultTrinoBatchSize, RecommendedMinTrinoBatchSize)
 	}
+	if DefaultNessieBatchSize != RecommendedMinNessieBatchSize {
+		t.Fatalf("nessie default %d != recommended min %d", DefaultNessieBatchSize, RecommendedMinNessieBatchSize)
+	}
+	if DefaultIcebergBatchSize != RecommendedMinIcebergBatchSize {
+		t.Fatalf("iceberg default %d != recommended min %d", DefaultIcebergBatchSize, RecommendedMinIcebergBatchSize)
+	}
 }
 
 func TestDefaultsPositive(t *testing.T) {

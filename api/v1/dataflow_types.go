@@ -652,6 +652,18 @@ type NessieSourceSpec struct {
 	// Default: true. Requires spec.checkpointPersistence and incrementalBySnapshot.
 	// +optional
 	SnapshotCheckpoints *bool `json:"snapshotCheckpoints,omitempty"`
+
+	// MaxRowsPerPoll caps rows emitted per poll cycle (streaming scan with offset resume).
+	// 0 or unset means no row cap. Prefer with incrementalBySnapshot for large tables.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxRowsPerPoll *int32 `json:"maxRowsPerPoll,omitempty"`
+
+	// MaxBytesPerPoll caps approximate payload bytes (sum of message data) emitted per poll.
+	// 0 or unset means no byte cap.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxBytesPerPoll *int32 `json:"maxBytesPerPoll,omitempty"`
 }
 
 // IcebergRESTAuthenticationType selects how Authorization is sent to the Iceberg REST catalog.
@@ -759,6 +771,18 @@ type IcebergSourceSpec struct {
 	// SnapshotCheckpoints persists snapshot progress to the checkpoint store when true.
 	// +optional
 	SnapshotCheckpoints *bool `json:"snapshotCheckpoints,omitempty"`
+
+	// MaxRowsPerPoll caps rows emitted per poll cycle (streaming scan with offset resume).
+	// 0 or unset means no row cap.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxRowsPerPoll *int32 `json:"maxRowsPerPoll,omitempty"`
+
+	// MaxBytesPerPoll caps approximate payload bytes emitted per poll.
+	// 0 or unset means no byte cap.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxBytesPerPoll *int32 `json:"maxBytesPerPoll,omitempty"`
 }
 
 // KeycloakConfig defines Keycloak OAuth2/OIDC authentication configuration

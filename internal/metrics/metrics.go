@@ -228,6 +228,15 @@ var (
 		[]string{"namespace", "name", "queue_type"},
 	)
 
+	// ChannelFillRatio — buffered channel occupancy (len/cap) for backpressure visibility.
+	ChannelFillRatio = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dataflow_channel_fill_ratio",
+			Help: "Buffered channel fill ratio (len/cap) for backpressure observability",
+		},
+		[]string{"namespace", "name", "channel"},
+	)
+
 	// TaskQueueWaitTime — queue wait time
 	TaskQueueWaitTime = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -309,6 +318,7 @@ func init() {
 		TaskEndToEndLatency,
 		TaskActiveMessages,
 		TaskQueueSize,
+		ChannelFillRatio,
 		TaskQueueWaitTime,
 		TaskOperationsTotal,
 		TaskStageErrors,
@@ -450,6 +460,18 @@ func SetTaskActiveMessages(namespace, name string, count int) {
 // SetTaskQueueSize sets queue size.
 func SetTaskQueueSize(namespace, name, queueType string, size int) {
 	TaskQueueSize.WithLabelValues(namespace, name, queueType).Set(float64(size))
+}
+
+// SetChannelFillRatio sets buffered channel fill ratio in [0, 1].
+// No-op when capacity is zero (unbuffered channel).
+func SetChannelFillRatio(namespace, name, channel string, fillRatio float64) {
+	if fillRatio < 0 {
+		fillRatio = 0
+	}
+	if fillRatio > 1 {
+		fillRatio = 1
+	}
+	ChannelFillRatio.WithLabelValues(namespace, name, channel).Set(fillRatio)
 }
 
 // RecordTaskQueueWaitTime records queue wait time.

@@ -321,6 +321,13 @@ func (c *connectorMetadata) RecordMessageWritten(route string) {
 	}
 }
 
+// SetChannelFillRatio records buffered channel occupancy if metadata is set.
+func (c *connectorMetadata) SetChannelFillRatio(channel string, fillRatio float64) {
+	if c.hasMetadata() {
+		metrics.SetChannelFillRatio(c.namespace, c.name, channel, fillRatio)
+	}
+}
+
 // rawModeConfig provides rawMode and flatten metadata helpers. Embed in sink connectors that support raw mode.
 type rawModeConfig struct {
 	RawMode                      *bool

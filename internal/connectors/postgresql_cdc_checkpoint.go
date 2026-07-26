@@ -38,6 +38,9 @@ type postgresCDCCheckpoint struct {
 	PublicationName         string   `json:"publicationName,omitempty"`
 	Phase                   string   `json:"phase,omitempty"`
 	SnapshotCompletedTables []string `json:"snapshotCompletedTables,omitempty"`
+	// Mid-table snapshot resume (requires explicit primaryKeyColumn).
+	SnapshotCursorTable string `json:"snapshotCursorTable,omitempty"`
+	SnapshotCursorKey   string `json:"snapshotCursorKey,omitempty"` // JSON-encoded PK value
 }
 
 type postgresCDCCheckpointHolder struct {
@@ -50,6 +53,8 @@ type postgresCDCCheckpointHolder struct {
 	snapshotLSN     pglogrepl.LSN
 	phase           string
 	snapshotDone    []string
+	cursorTable     string
+	cursorKey       string
 	onAdvance       func(lsn pglogrepl.LSN)
 	reporter        checkpointSaveReporter
 }
@@ -90,6 +95,8 @@ func (h *postgresCDCCheckpointHolder) applyInitial(data []byte) {
 	if len(cp.SnapshotCompletedTables) > 0 {
 		h.snapshotDone = append([]string(nil), cp.SnapshotCompletedTables...)
 	}
+	h.cursorTable = cp.SnapshotCursorTable
+	h.cursorKey = cp.SnapshotCursorKey
 }
 
 func (h *postgresCDCCheckpointHolder) startLSN() pglogrepl.LSN {
@@ -130,6 +137,35 @@ func (h *postgresCDCCheckpointHolder) markSnapshotTableDone(table string) {
 	h.persistSnapshotProgress([]string{table}, 0, false)
 }
 
+func (h *postgresCDCCheckpointHolder) snapshotCursor() (table, keyJSON string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cursorTable, h.cursorKey
+}
+
+// setSnapshotCursor persists mid-table snapshot resume position.
+func (h *postgresCDCCheckpointHolder) setSnapshotCursor(table, keyJSON string) {
+	h.mu.Lock()
+	h.cursorTable = table
+	h.cursorKey = keyJSON
+	data := h.marshalLocked()
+	h.mu.Unlock()
+	h.persist(data)
+}
+
+func (h *postgresCDCCheckpointHolder) clearSnapshotCursor() {
+	h.mu.Lock()
+	if h.cursorTable == "" && h.cursorKey == "" {
+		h.mu.Unlock()
+		return
+	}
+	h.cursorTable = ""
+	h.cursorKey = ""
+	data := h.marshalLocked()
+	h.mu.Unlock()
+	h.persist(data)
+}
+
 // persistSnapshotProgress records snapshot table completion and optional LSN after the
 // snapshot transaction commits. Phase transitions to streaming only when allTablesDone.
 func (h *postgresCDCCheckpointHolder) persistSnapshotProgress(completedTables []string, lsn pglogrepl.LSN, allTablesDone bool) {
@@ -151,6 +187,8 @@ func (h *postgresCDCCheckpointHolder) persistSnapshotProgress(completedTables []
 	}
 	if allTablesDone {
 		h.phase = postgresCDCPhaseStreaming
+		h.cursorTable = ""
+		h.cursorKey = ""
 	}
 	data := h.marshalLocked()
 	h.mu.Unlock()
@@ -167,6 +205,8 @@ func (h *postgresCDCCheckpointHolder) resetSnapshotProgress() {
 	h.mu.Lock()
 	h.snapshotDone = nil
 	h.snapshotLSN = 0
+	h.cursorTable = ""
+	h.cursorKey = ""
 	h.phase = postgresCDCPhaseStreaming
 	data := h.marshalLocked()
 	h.mu.Unlock()
@@ -220,6 +260,8 @@ func (h *postgresCDCCheckpointHolder) marshalLocked() []byte {
 		PublicationName:         h.publicationName,
 		Phase:                   h.phase,
 		SnapshotCompletedTables: append([]string(nil), h.snapshotDone...),
+		SnapshotCursorTable:     h.cursorTable,
+		SnapshotCursorKey:       h.cursorKey,
 	}
 	if h.lastAckedLSN != 0 {
 		cp.LastAckedLSN = h.lastAckedLSN.String()

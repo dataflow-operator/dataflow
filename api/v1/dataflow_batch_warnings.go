@@ -30,6 +30,8 @@ const (
 	RecommendedPostgreSQLSinkBatchSize = sinkbatch.RecommendedMinPostgreSQLBatchSize
 	RecommendedClickHouseSinkBatchSize = sinkbatch.RecommendedMinClickHouseBatchSize
 	RecommendedTrinoSinkBatchSize      = sinkbatch.RecommendedMinTrinoBatchSize
+	RecommendedNessieSinkBatchSize     = sinkbatch.RecommendedMinNessieBatchSize
+	RecommendedIcebergSinkBatchSize    = sinkbatch.RecommendedMinIcebergBatchSize
 )
 
 func warnSinkBatchSizes(spec *DataFlowSpec) admission.Warnings {
@@ -74,6 +76,18 @@ func warnOneSinkBatchSize(ref outputSinkRef) admission.Warnings {
 					ref.path.Child("config", "upsertMode")))
 		}
 		return warnings
+	case "nessie":
+		cfg, err := ref.sink.GetNessieConfig()
+		if err != nil || cfg == nil {
+			return nil
+		}
+		return warnBatchSizeBelow(path, cfg.BatchSize, sinkbatch.RecommendedMinNessieBatchSize, "nessie")
+	case "iceberg":
+		cfg, err := ref.sink.GetIcebergConfig()
+		if err != nil || cfg == nil {
+			return nil
+		}
+		return warnBatchSizeBelow(path, cfg.BatchSize, sinkbatch.RecommendedMinIcebergBatchSize, "iceberg")
 	default:
 		return nil
 	}

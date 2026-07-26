@@ -96,10 +96,10 @@ var _ driver.Rows = (*emptyRows)(nil)
 
 type emptyRows struct{}
 
-func (*emptyRows) Columns() []string              { return nil }
-func (*emptyRows) Close() error                   { return nil }
-func (*emptyRows) Next([]driver.Value) error      { return io.EOF }
-func (*emptyRows) ColumnTypeScanType(int) any     { return nil }
+func (*emptyRows) Columns() []string          { return nil }
+func (*emptyRows) Close() error               { return nil }
+func (*emptyRows) Next([]driver.Value) error  { return io.EOF }
+func (*emptyRows) ColumnTypeScanType(int) any { return nil }
 func (*emptyRows) ColumnTypeDatabaseTypeName(int) string {
 	return ""
 }

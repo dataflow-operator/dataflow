@@ -381,12 +381,10 @@ func (c *PostgreSQLCDCSourceConnector) processWALData(
 		lsn := *txnCommitLSN
 		for _, msg := range *txnMessages {
 			msg.Ack = c.cp.makeAck(lsn)
-			select {
-			case msgChan <- msg:
-				c.RecordMessageRead()
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := c.sendCDCMessage(ctx, msgChan, msg); err != nil {
+				return err
 			}
+			c.RecordMessageRead()
 		}
 		*txnMessages = nil
 		*txnCommitLSN = 0

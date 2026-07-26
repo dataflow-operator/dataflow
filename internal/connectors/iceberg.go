@@ -51,6 +51,8 @@ type IcebergSourceConnector struct {
 	checkpointMu              sync.Mutex
 	lastAckedSnapshotID       int64
 	lastAckedSnapshotSequence int64
+	scanSnapshotID            int64
+	scanRowOffset             int64
 }
 
 // NewIcebergSourceConnector creates a new Iceberg REST source connector.
@@ -66,7 +68,10 @@ func NewIcebergSourceConnectorWithOptions(config *v1.IcebergSourceSpec, opts *So
 		connectorMetadata: connectorMetadata{connectorType: "iceberg", connectorRole: "source"},
 	}
 	if opts != nil {
-		if icebergIncrementalEnabled(config) {
+		needsCheckpoint := icebergIncrementalEnabled(config) ||
+			(config != nil && ((config.MaxRowsPerPoll != nil && *config.MaxRowsPerPoll > 0) ||
+				(config.MaxBytesPerPoll != nil && *config.MaxBytesPerPoll > 0)))
+		if needsCheckpoint {
 			c.checkpointStore = opts.CheckpointStore
 			c.sourceType = opts.SourceType
 			if c.sourceType == "" {
@@ -158,29 +163,47 @@ func (c *IcebergSourceConnector) readOnce(ctx context.Context, msgChan chan *typ
 
 func (c *IcebergSourceConnector) readOnceFullScan(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
 	pollStart := time.Now()
-	arrowTbl, err := tbl.Scan().ToArrowTable(ctx)
+	limits := lakehousePollLimitsFrom(c.config.MaxRowsPerPoll, c.config.MaxBytesPerPoll)
+
+	c.checkpointMu.Lock()
+	skip := c.scanRowOffset
+	scanSnap := c.scanSnapshotID
+	c.checkpointMu.Unlock()
+
+	current := tbl.CurrentSnapshot()
+	var snapID *int64
+	var snapIDVal int64
+	if current != nil {
+		snapIDVal = current.SnapshotID
+		snapID = &snapIDVal
+		if scanSnap != 0 && scanSnap != snapIDVal {
+			skip = 0
+		}
+	}
+
+	msgs, stats, err := collectIcebergScanPage(ctx, tbl, snapID, c.config.Namespace, c.config.Table, limits, skip)
 	if err != nil {
 		c.RecordError("read", "scan_error")
 		return fmt.Errorf("iceberg scan: %w", err)
 	}
-	defer arrowTbl.Release()
-
-	msgs := arrowTableToMessages(arrowTbl, c.config.Namespace, c.config.Table, false)
-	if len(msgs) == 0 {
+	if stats.Emitted == 0 && !stats.HitLimit {
+		c.clearScanProgress()
 		return ErrSourceExhausted
 	}
-	for _, msg := range msgs {
-		select {
-		case msgChan <- msg:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	if err := sendLakehouseMessages(ctx, msgChan, msgs, c.lakehouseFillReporter(msgChan)); err != nil {
+		return err
+	}
+	if stats.HitLimit {
+		c.setScanProgress(snapIDVal, stats.NextOffset)
+	} else {
+		c.clearScanProgress()
 	}
 	c.logger.Info("Iceberg poll cycle completed",
 		"namespace", c.config.Namespace,
 		"table", c.config.Table,
 		"mode", "full_scan",
-		"rows_total", len(msgs),
+		"rows_total", stats.Emitted,
+		"hit_limit", stats.HitLimit,
 		"duration_ms", time.Since(pollStart).Milliseconds(),
 	)
 	return nil
@@ -188,6 +211,7 @@ func (c *IcebergSourceConnector) readOnceFullScan(ctx context.Context, msgChan c
 
 func (c *IcebergSourceConnector) readOnceIncremental(ctx context.Context, msgChan chan *types.Message, tbl *table.Table) error {
 	pollStart := time.Now()
+	limits := lakehousePollLimitsFrom(c.config.MaxRowsPerPoll, c.config.MaxBytesPerPoll)
 	current := tbl.CurrentSnapshot()
 	if current == nil {
 		return ErrSourceExhausted
@@ -196,6 +220,8 @@ func (c *IcebergSourceConnector) readOnceIncremental(ctx context.Context, msgCha
 	c.checkpointMu.Lock()
 	afterID := c.lastAckedSnapshotID
 	afterSeq := c.lastAckedSnapshotSequence
+	scanSnap := c.scanSnapshotID
+	scanOff := c.scanRowOffset
 	c.checkpointMu.Unlock()
 
 	hasAfter := afterSeq > 0 || afterID != 0
@@ -238,32 +264,61 @@ func (c *IcebergSourceConnector) readOnceIncremental(ctx context.Context, msgCha
 	}
 
 	var total int
+	snapsRead := 0
 	for _, snap := range chain {
-		arrowTbl, err := tbl.Scan(table.WithSnapshotID(snap.SnapshotID)).ToArrowTable(ctx)
-		if err != nil {
-			c.RecordError("read", "scan_error")
-			return fmt.Errorf("iceberg scan snapshot %d: %w", snap.SnapshotID, err)
-		}
-		msgs := arrowTableToMessages(arrowTbl, c.config.Namespace, c.config.Table, false)
-		arrowTbl.Release()
-		if len(msgs) == 0 {
-			continue
-		}
 		snapID := snap.SnapshotID
 		snapSeq := snap.SequenceNumber
+		skip := int64(0)
+		if scanSnap == snapID {
+			skip = scanOff
+		}
+
+		if added, aerr := countAddedDataFiles(ctx, tbl, snapID, snap.ParentSnapshotID); aerr == nil {
+			c.logger.V(1).Info("Iceberg snapshot file delta",
+				"snapshot_id", snapID,
+				"added_data_files", added)
+		}
+
+		msgs, stats, err := collectIcebergScanPage(ctx, tbl, &snapID, c.config.Namespace, c.config.Table, limits, skip)
+		if err != nil {
+			c.RecordError("read", "scan_error")
+			return fmt.Errorf("iceberg scan snapshot %d: %w", snapID, err)
+		}
+		snapsRead++
 		for _, msg := range msgs {
 			if msg.Metadata == nil {
 				msg.Metadata = make(map[string]interface{})
 			}
 			msg.Metadata["snapshot_id"] = snapID
 			msg.Metadata["snapshot_sequence"] = snapSeq
-			msg.Ack = func() { c.advanceCheckpoint(snapID, snapSeq) }
-			select {
-			case msgChan <- msg:
-				total++
-			case <-ctx.Done():
-				return ctx.Err()
+			if !stats.HitLimit {
+				msg.Ack = func() { c.advanceCheckpoint(snapID, snapSeq) }
 			}
+		}
+		if err := sendLakehouseMessages(ctx, msgChan, msgs, c.lakehouseFillReporter(msgChan)); err != nil {
+			return err
+		}
+		total += stats.Emitted
+		if stats.HitLimit {
+			c.setScanProgress(snapID, stats.NextOffset)
+			c.logger.Info("Iceberg poll cycle completed",
+				"namespace", c.config.Namespace,
+				"table", c.config.Table,
+				"mode", "incremental",
+				"snapshots_read", snapsRead,
+				"rows_total", total,
+				"hit_limit", true,
+				"duration_ms", time.Since(pollStart).Milliseconds(),
+				"from_snapshot_id", afterID,
+				"to_snapshot_id", snapID,
+			)
+			return nil
+		}
+		c.clearScanProgress()
+		scanSnap, scanOff = 0, 0
+		if stats.Emitted == 0 {
+			// Empty snapshot still advances so we do not re-read it forever.
+			c.advanceCheckpoint(snapID, snapSeq)
 		}
 	}
 	if total == 0 {
@@ -274,8 +329,9 @@ func (c *IcebergSourceConnector) readOnceIncremental(ctx context.Context, msgCha
 		"namespace", c.config.Namespace,
 		"table", c.config.Table,
 		"mode", "incremental",
-		"snapshots_read", len(chain),
+		"snapshots_read", snapsRead,
 		"rows_total", total,
+		"hit_limit", false,
 		"duration_ms", time.Since(pollStart).Milliseconds(),
 		"from_snapshot_id", afterID,
 		"to_snapshot_id", lastSnap.SnapshotID,
@@ -283,6 +339,15 @@ func (c *IcebergSourceConnector) readOnceIncremental(ctx context.Context, msgCha
 		"to_snapshot_sequence", lastSnap.SequenceNumber,
 	)
 	return nil
+}
+
+func (c *IcebergSourceConnector) lakehouseFillReporter(msgChan chan *types.Message) func(*types.Message) {
+	return func(_ *types.Message) {
+		if !c.hasMetadata() || cap(msgChan) <= 0 {
+			return
+		}
+		c.SetChannelFillRatio("source", float64(len(msgChan))/float64(cap(msgChan)))
+	}
 }
 
 // Close closes the Iceberg source connector.
@@ -441,6 +506,7 @@ func (c *IcebergSinkConnector) flushBatch(batchCtx context.Context, msgs []*type
 		newTbl, appendErr := c.tbl.AppendTable(attemptCtx, arrowTbl, appendSize, nil)
 		if appendErr != nil {
 			if isRetryableIcebergRESTSnapshotConflict(appendErr) {
+				c.RecordError("write", "snapshot_conflict")
 				if refreshErr := c.tbl.Refresh(attemptCtx); refreshErr != nil {
 					return fmt.Errorf("append table: %w (refresh after snapshot conflict: %v)", appendErr, refreshErr)
 				}

@@ -436,6 +436,12 @@ func validateNessieSource(n *NessieSourceSpec, f *field.Path) field.ErrorList {
 			all = append(all, field.Invalid(f.Child("startSnapshotID"), id, err.Error()))
 		}
 	}
+	if n.MaxRowsPerPoll != nil && *n.MaxRowsPerPoll < 0 {
+		all = append(all, field.Invalid(f.Child("maxRowsPerPoll"), *n.MaxRowsPerPoll, "must be >= 0"))
+	}
+	if n.MaxBytesPerPoll != nil && *n.MaxBytesPerPoll < 0 {
+		all = append(all, field.Invalid(f.Child("maxBytesPerPoll"), *n.MaxBytesPerPoll, "must be >= 0"))
+	}
 	return all
 }
 
@@ -535,6 +541,12 @@ func validateIcebergSource(i *IcebergSourceSpec, f *field.Path) field.ErrorList 
 		if _, err := parseNessieSnapshotID(id); err != nil {
 			all = append(all, field.Invalid(f.Child("startSnapshotID"), id, err.Error()))
 		}
+	}
+	if i.MaxRowsPerPoll != nil && *i.MaxRowsPerPoll < 0 {
+		all = append(all, field.Invalid(f.Child("maxRowsPerPoll"), *i.MaxRowsPerPoll, "must be >= 0"))
+	}
+	if i.MaxBytesPerPoll != nil && *i.MaxBytesPerPoll < 0 {
+		all = append(all, field.Invalid(f.Child("maxBytesPerPoll"), *i.MaxBytesPerPoll, "must be >= 0"))
 	}
 	return all
 }

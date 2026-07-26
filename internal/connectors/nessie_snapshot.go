@@ -31,6 +31,8 @@ import (
 type nessieSnapshotCheckpoint struct {
 	LastAckedSnapshotID       string `json:"lastAckedSnapshotID,omitempty"`
 	LastAckedSnapshotSequence int64  `json:"lastAckedSnapshotSequence,omitempty"`
+	ScanSnapshotID            int64  `json:"scanSnapshotID,omitempty"`
+	ScanRowOffset             int64  `json:"scanRowOffset,omitempty"`
 	Branch                    string `json:"branch,omitempty"`
 	Namespace                 string `json:"namespace,omitempty"`
 	Table                     string `json:"table,omitempty"`
@@ -78,6 +80,8 @@ func (c *NessieSourceConnector) applyInitialCheckpoint(data []byte) {
 	if cp.LastAckedSnapshotSequence > c.lastAckedSnapshotSequence {
 		c.lastAckedSnapshotSequence = cp.LastAckedSnapshotSequence
 	}
+	c.scanSnapshotID = cp.ScanSnapshotID
+	c.scanRowOffset = cp.ScanRowOffset
 }
 
 func (c *NessieSourceConnector) marshalCheckpointLocked() []byte {
@@ -88,6 +92,8 @@ func (c *NessieSourceConnector) marshalCheckpointLocked() []byte {
 	cp := nessieSnapshotCheckpoint{
 		LastAckedSnapshotID:       formatSnapshotID(c.lastAckedSnapshotID),
 		LastAckedSnapshotSequence: c.lastAckedSnapshotSequence,
+		ScanSnapshotID:            c.scanSnapshotID,
+		ScanRowOffset:             c.scanRowOffset,
 		Branch:                    branch,
 		Namespace:                 c.config.Namespace,
 		Table:                     c.config.Table,
@@ -105,6 +111,10 @@ func (c *NessieSourceConnector) advanceCheckpoint(snapshotID int64, sequence int
 	}
 	c.lastAckedSnapshotID = snapshotID
 	c.lastAckedSnapshotSequence = sequence
+	if c.scanSnapshotID == snapshotID {
+		c.scanSnapshotID = 0
+		c.scanRowOffset = 0
+	}
 	persist := c.checkpointStore != nil && nessieSnapshotCheckpointsEnabled(c.config)
 	var data []byte
 	if persist {
@@ -120,6 +130,30 @@ func (c *NessieSourceConnector) advanceCheckpoint(snapshotID int64, sequence int
 		err := c.checkpointStore.Save(context.Background(), sourceType, data)
 		reportCheckpointSaveError(c.logger, &c.connectorMetadata, sourceType, err)
 	}
+}
+
+func (c *NessieSourceConnector) setScanProgress(snapshotID, rowOffset int64) {
+	c.checkpointMu.Lock()
+	c.scanSnapshotID = snapshotID
+	c.scanRowOffset = rowOffset
+	persist := c.checkpointStore != nil
+	var data []byte
+	if persist {
+		data = c.marshalCheckpointLocked()
+	}
+	c.checkpointMu.Unlock()
+	if persist && len(data) > 0 {
+		sourceType := c.sourceType
+		if sourceType == "" {
+			sourceType = "nessie"
+		}
+		err := c.checkpointStore.Save(context.Background(), sourceType, data)
+		reportCheckpointSaveError(c.logger, &c.connectorMetadata, sourceType, err)
+	}
+}
+
+func (c *NessieSourceConnector) clearScanProgress() {
+	c.setScanProgress(0, 0)
 }
 
 type snapshotByIDFunc func(int64) *table.Snapshot

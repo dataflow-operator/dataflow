@@ -26,6 +26,8 @@ import (
 type icebergSnapshotCheckpoint struct {
 	LastAckedSnapshotID       string `json:"lastAckedSnapshotID,omitempty"`
 	LastAckedSnapshotSequence int64  `json:"lastAckedSnapshotSequence,omitempty"`
+	ScanSnapshotID            int64  `json:"scanSnapshotID,omitempty"`
+	ScanRowOffset             int64  `json:"scanRowOffset,omitempty"`
 	Namespace                 string `json:"namespace,omitempty"`
 	Table                     string `json:"table,omitempty"`
 }
@@ -56,12 +58,16 @@ func (c *IcebergSourceConnector) applyInitialCheckpoint(data []byte) {
 	if cp.LastAckedSnapshotSequence > c.lastAckedSnapshotSequence {
 		c.lastAckedSnapshotSequence = cp.LastAckedSnapshotSequence
 	}
+	c.scanSnapshotID = cp.ScanSnapshotID
+	c.scanRowOffset = cp.ScanRowOffset
 }
 
 func (c *IcebergSourceConnector) marshalCheckpointLocked() []byte {
 	cp := icebergSnapshotCheckpoint{
 		LastAckedSnapshotID:       formatSnapshotID(c.lastAckedSnapshotID),
 		LastAckedSnapshotSequence: c.lastAckedSnapshotSequence,
+		ScanSnapshotID:            c.scanSnapshotID,
+		ScanRowOffset:             c.scanRowOffset,
 		Namespace:                 c.config.Namespace,
 		Table:                     c.config.Table,
 	}
@@ -77,6 +83,10 @@ func (c *IcebergSourceConnector) advanceCheckpoint(snapshotID int64, sequence in
 	}
 	c.lastAckedSnapshotID = snapshotID
 	c.lastAckedSnapshotSequence = sequence
+	if c.scanSnapshotID == snapshotID {
+		c.scanSnapshotID = 0
+		c.scanRowOffset = 0
+	}
 	persist := c.checkpointStore != nil && icebergSnapshotCheckpointsEnabled(c.config)
 	var data []byte
 	if persist {
@@ -92,4 +102,28 @@ func (c *IcebergSourceConnector) advanceCheckpoint(snapshotID int64, sequence in
 		err := c.checkpointStore.Save(context.Background(), sourceType, data)
 		reportCheckpointSaveError(c.logger, &c.connectorMetadata, sourceType, err)
 	}
+}
+
+func (c *IcebergSourceConnector) setScanProgress(snapshotID, rowOffset int64) {
+	c.checkpointMu.Lock()
+	c.scanSnapshotID = snapshotID
+	c.scanRowOffset = rowOffset
+	persist := c.checkpointStore != nil
+	var data []byte
+	if persist {
+		data = c.marshalCheckpointLocked()
+	}
+	c.checkpointMu.Unlock()
+	if persist && len(data) > 0 {
+		sourceType := c.sourceType
+		if sourceType == "" {
+			sourceType = "iceberg"
+		}
+		err := c.checkpointStore.Save(context.Background(), sourceType, data)
+		reportCheckpointSaveError(c.logger, &c.connectorMetadata, sourceType, err)
+	}
+}
+
+func (c *IcebergSourceConnector) clearScanProgress() {
+	c.setScanProgress(0, 0)
 }

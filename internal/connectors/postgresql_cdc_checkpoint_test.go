@@ -117,3 +117,34 @@ func TestPostgresCDCCheckpointHolder_persistSnapshotProgress(t *testing.T) {
 	assert.False(t, h.phaseSnapshot())
 	assert.True(t, h.allSnapshotTablesDone([]string{"public.a", "public.b"}))
 }
+
+func TestPostgresCDCCheckpointHolder_snapshotCursor(t *testing.T) {
+	t.Parallel()
+	var h postgresCDCCheckpointHolder
+	h.init(nil, "postgresql-cdc", "slot1", "pub1", nil)
+	h.setPhase(postgresCDCPhaseSnapshot)
+
+	h.setSnapshotCursor("public.orders", `"42"`)
+	table, key := h.snapshotCursor()
+	assert.Equal(t, "public.orders", table)
+	assert.Equal(t, `"42"`, key)
+
+	data := h.marshalLocked()
+	var h2 postgresCDCCheckpointHolder
+	h2.init(nil, "postgresql-cdc", "slot1", "pub1", data)
+	table2, key2 := h2.snapshotCursor()
+	assert.Equal(t, "public.orders", table2)
+	assert.Equal(t, `"42"`, key2)
+
+	h.clearSnapshotCursor()
+	table, key = h.snapshotCursor()
+	assert.Empty(t, table)
+	assert.Empty(t, key)
+
+	h.setSnapshotCursor("public.orders", `"99"`)
+	h.persistSnapshotProgress([]string{"public.orders"}, 0, true)
+	table, key = h.snapshotCursor()
+	assert.Empty(t, table)
+	assert.Empty(t, key)
+	assert.False(t, h.phaseSnapshot())
+}

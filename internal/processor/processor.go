@@ -378,6 +378,9 @@ func (p *Processor) writeMessages(ctx context.Context, messages <-chan *types.Me
 					// Track queue size before routing
 					queueWaitStart := time.Now()
 					metrics.SetTaskQueueSize(p.namespace, p.name, "routing", len(messages))
+					if cap(messages) > 0 {
+						metrics.SetChannelFillRatio(p.namespace, p.name, "routing", float64(len(messages))/float64(cap(messages)))
+					}
 
 					// Check if message has routing metadata
 					if routedCondition, ok := msg.Metadata["routed_condition"].(string); ok {
