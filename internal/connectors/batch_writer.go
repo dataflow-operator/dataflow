@@ -23,6 +23,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/dataflow-operator/dataflow/pkg/sinkbatch"
 	"github.com/go-logr/logr"
 )
 
@@ -40,7 +41,7 @@ type BatchWriteConfig struct {
 }
 
 // NewBatchWriteConfig builds batch settings from sink spec pointers.
-// defaultBatchSize is used when batchSize is nil (e.g. 100 for ClickHouse/Nessie, 1 for Trino).
+// defaultBatchSize is used when batchSize is nil (see pkg/sinkbatch defaults).
 func NewBatchWriteConfig(batchSize, flushIntervalSec *int32, defaultBatchSize int) BatchWriteConfig {
 	maxBatchSize := defaultBatchSize
 	if batchSize != nil {
@@ -50,7 +51,7 @@ func NewBatchWriteConfig(batchSize, flushIntervalSec *int32, defaultBatchSize in
 		maxBatchSize = constants.MaxBatchSizeWhenTimerOnly
 	}
 
-	flushIntervalSecVal := 10
+	flushIntervalSecVal := int(sinkbatch.DefaultBatchFlushIntervalSeconds)
 	if flushIntervalSec != nil {
 		flushIntervalSecVal = int(*flushIntervalSec)
 	}

@@ -32,6 +32,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/dataflow-operator/dataflow/pkg/sinkbatch"
 	"github.com/go-logr/logr"
 	"github.com/jackc/pgx/v5"
 )
@@ -643,7 +644,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	batchSize := 1
+	batchSize := int(sinkbatch.DefaultPostgreSQLBatchSize)
 	if p.config.BatchSize != nil {
 		batchSize = int(*p.config.BatchSize)
 	}
@@ -655,7 +656,7 @@ func (p *PostgreSQLSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		maxBatchSize = 1
 	}
 
-	flushIntervalSec := 10
+	flushIntervalSec := int(sinkbatch.DefaultBatchFlushIntervalSeconds)
 	if p.config.BatchFlushIntervalSeconds != nil {
 		flushIntervalSec = int(*p.config.BatchFlushIntervalSeconds)
 	}

@@ -165,10 +165,8 @@ func (c *ClickHouseSinkConnector) flushBatchFlattened(ctx context.Context, msgs 
 			tx.Rollback()
 			return fmt.Errorf("failed to exec flatten insert: %w", err)
 		}
-		if m.Ack != nil {
-			m.Ack()
-		}
 	}
+	// Source ack runs in OnAck after Commit succeeds (at-least-once).
 	return tx.Commit()
 }
 

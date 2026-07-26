@@ -1155,9 +1155,9 @@ type PostgreSQLSinkSpec struct {
 	// Table to write to
 	Table string `json:"table"`
 
-	// BatchSize for batch inserts (default: 1)
+	// BatchSize for batch inserts (default: pkg/sinkbatch.DefaultPostgreSQLBatchSize = 100). Prefer 100–1000 for throughput.
 	// +optional
-	// +kubebuilder:default=1
+	// +kubebuilder:default=100
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
 	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).
@@ -1223,8 +1223,9 @@ type TrinoSinkSpec struct {
 	// Table to write to
 	Table string `json:"table"`
 
-	// BatchSize for batch inserts
+	// BatchSize for batch inserts (default: pkg/sinkbatch.DefaultTrinoBatchSize = 10). Prefer ≥10; MERGE upsert is a slower path.
 	// +optional
+	// +kubebuilder:default=10
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
 	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).
@@ -1287,8 +1288,9 @@ type ClickHouseSinkSpec struct {
 	// Table to write to
 	Table string `json:"table"`
 
-	// BatchSize for batch inserts
+	// BatchSize for batch inserts (default: pkg/sinkbatch.DefaultClickHouseBatchSize = 500). Prefer 500–1000 for throughput and fewer parts.
 	// +optional
+	// +kubebuilder:default=500
 	BatchSize *int32 `json:"batchSize,omitempty"`
 
 	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached (default: 10; 0 disables timer).

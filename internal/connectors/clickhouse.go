@@ -34,6 +34,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/dataflow-operator/dataflow/pkg/sinkbatch"
 	"github.com/go-logr/logr"
 )
 
@@ -585,20 +586,13 @@ func (c *ClickHouseSinkConnector) flushBatchRaw(ctx context.Context, msgs []*typ
 	}
 	defer stmt.Close()
 	for _, m := range msgs {
-		var data map[string]interface{}
-		if err := json.Unmarshal(m.Data, &data); err != nil {
-			tx.Rollback()
-			return err
-		}
-		jsonData, _ := json.Marshal(data)
-		if _, err := stmt.ExecContext(ctx, string(jsonData)); err != nil {
+		// Write payload as-is; avoid Unmarshal→Marshal roundtrip on the hot path.
+		if _, err := stmt.ExecContext(ctx, string(m.Data)); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to exec: %w", err)
 		}
-		if m.Ack != nil {
-			m.Ack()
-		}
 	}
+	// Source ack runs in OnAck after Commit succeeds (at-least-once).
 	return tx.Commit()
 }
 
@@ -673,10 +667,8 @@ func (c *ClickHouseSinkConnector) flushBatchColumnar(ctx context.Context, msgs [
 			tx.Rollback()
 			return fmt.Errorf("failed to exec: %w", err)
 		}
-		if m.Ack != nil {
-			m.Ack()
-		}
 	}
+	// Source ack runs in OnAck after Commit succeeds (at-least-once).
 	return tx.Commit()
 }
 
@@ -715,12 +707,9 @@ func (c *ClickHouseSinkConnector) Write(ctx context.Context, messages <-chan *ty
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100), c.shouldCollapseBatchForAck())
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, int(sinkbatch.DefaultClickHouseBatchSize)), c.shouldCollapseBatchForAck())
 	batchSize := cfg.MaxBatchSize
-	if c.config.BatchSize != nil {
-		batchSize = int(*c.config.BatchSize)
-	}
-	flushIntervalSec := 10
+	flushIntervalSec := int(sinkbatch.DefaultBatchFlushIntervalSeconds)
 	if c.config.BatchFlushIntervalSeconds != nil {
 		flushIntervalSec = int(*c.config.BatchFlushIntervalSeconds)
 	}

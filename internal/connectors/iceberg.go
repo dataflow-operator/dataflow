@@ -33,6 +33,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/constants"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/dataflow-operator/dataflow/pkg/sinkbatch"
 	"github.com/go-logr/logr"
 )
 
@@ -400,7 +401,7 @@ func (c *IcebergSinkConnector) Write(ctx context.Context, messages <-chan *types
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, 100), c.shouldCollapseBatchForAck())
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(c.config.BatchSize, c.config.BatchFlushIntervalSeconds, int(sinkbatch.DefaultIcebergBatchSize)), c.shouldCollapseBatchForAck())
 	return RunBatchWriteLoop(ctx, messages, cfg, BatchWriteOptions{
 		Logger:    c.logger,
 		LogFields: []any{"table", c.config.Table},

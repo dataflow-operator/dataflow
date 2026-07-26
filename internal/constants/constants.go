@@ -30,3 +30,5 @@ const DefaultTransformWorkers = 1
 
 // MaxTransformWorkers caps spec.transformWorkers to bound memory and scheduler overhead.
 const MaxTransformWorkers = 64
+
+// Sink batchSize / flush defaults live in pkg/sinkbatch (shared by connectors and admission).

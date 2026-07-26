@@ -30,6 +30,7 @@ import (
 	"github.com/dataflow-operator/dataflow/internal/logkeys"
 	"github.com/dataflow-operator/dataflow/internal/retry"
 	"github.com/dataflow-operator/dataflow/internal/types"
+	"github.com/dataflow-operator/dataflow/pkg/sinkbatch"
 	"github.com/go-logr/logr"
 )
 
@@ -509,12 +510,9 @@ func (t *TrinoSinkConnector) Write(ctx context.Context, messages <-chan *types.M
 		return fmt.Errorf("not connected, call Connect first")
 	}
 
-	cfg := ApplyAckGranularity(NewBatchWriteConfig(t.config.BatchSize, t.config.BatchFlushIntervalSeconds, 1), t.shouldCollapseBatchForAck())
-	batchSize := 1
-	if t.config.BatchSize != nil {
-		batchSize = int(*t.config.BatchSize)
-	}
-	flushIntervalSec := 10
+	cfg := ApplyAckGranularity(NewBatchWriteConfig(t.config.BatchSize, t.config.BatchFlushIntervalSeconds, int(sinkbatch.DefaultTrinoBatchSize)), t.shouldCollapseBatchForAck())
+	batchSize := cfg.MaxBatchSize
+	flushIntervalSec := int(sinkbatch.DefaultBatchFlushIntervalSeconds)
 	if t.config.BatchFlushIntervalSeconds != nil {
 		flushIntervalSec = int(*t.config.BatchFlushIntervalSeconds)
 	}

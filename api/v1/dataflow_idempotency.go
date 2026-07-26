@@ -114,6 +114,7 @@ func WarnDataFlowSpec(spec *DataFlowSpec) admission.Warnings {
 	if spec == nil {
 		return warnings
 	}
+	warnings = append(warnings, warnSinkBatchSizes(spec)...)
 	if !isPollingSourceType(spec.Source.Type) || StrictIdempotencyEnabled(spec) {
 		return warnings
 	}
