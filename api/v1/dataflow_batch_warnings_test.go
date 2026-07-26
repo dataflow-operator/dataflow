@@ -144,7 +144,7 @@ func TestWarnDataFlowSpec_kafkaMessageAckLargeBatch(t *testing.T) {
 	spec := DataFlowSpec{
 		AckGranularity:            AckGranularityMessage,
 		CollapseBatchOnMessageAck: &collapseFalse,
-		Source: SourceSpec{Type: "kafka", Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b:9092"}, Topic: "t", ConsumerGroup: "g"})},
+		Source:                    SourceSpec{Type: "kafka", Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b:9092"}, Topic: "t", ConsumerGroup: "g"})},
 		Sink: SinkSpec{
 			Type: "clickhouse",
 			Config: mustConfig(ClickHouseSinkSpec{
@@ -198,7 +198,7 @@ func TestWarnDataFlowSpec_kafkaBatchAckNoMessageWarn(t *testing.T) {
 	spec := DataFlowSpec{
 		AckGranularity:            AckGranularityBatch,
 		CollapseBatchOnMessageAck: &collapseFalse,
-		Source: SourceSpec{Type: "kafka", Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b:9092"}, Topic: "t", ConsumerGroup: "g"})},
+		Source:                    SourceSpec{Type: "kafka", Config: mustConfig(KafkaSourceSpec{Brokers: []string{"b:9092"}, Topic: "t", ConsumerGroup: "g"})},
 		Sink: SinkSpec{
 			Type: "clickhouse",
 			Config: mustConfig(ClickHouseSinkSpec{
