@@ -1,3 +1,9 @@
+## 1.13.0 (2026-10-12)
+
+## Commits
+
+- dec4eee feat: add one-shot options to in-process pipeline runs
+
 ## 1.12.0 (2026-07-26)
 
 ## Commits
