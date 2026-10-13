@@ -1,3 +1,9 @@
+## 1.14.0 (2026-10-13)
+
+## Commits
+
+- 02e3bf4 feat: add Hive source and sink support with configuration validation
+
 ## 1.13.0 (2026-10-12)
 
 ## Commits
