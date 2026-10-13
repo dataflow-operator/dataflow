@@ -183,7 +183,7 @@ type MaintenanceSpec struct {
 // SourceSpec defines the source configuration (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type SourceSpec struct {
-	// Type of source: kafka, postgresql, trino, clickhouse, nessie, or plugin type
+	// Type of source: kafka, postgresql, trino, clickhouse, nessie, iceberg, hive, or plugin type
 	Type string `json:"type"`
 
 	// Config holds connector configuration. Structure depends on type.
@@ -238,6 +238,11 @@ func (s *SourceSpec) GetNessieConfig() (*NessieSourceSpec, error) {
 // GetIcebergConfig returns Iceberg REST catalog source config.
 func (s *SourceSpec) GetIcebergConfig() (*IcebergSourceSpec, error) {
 	return getTypedConfig[IcebergSourceSpec](s.Config)
+}
+
+// GetHiveConfig returns Hive Metastore source config.
+func (s *SourceSpec) GetHiveConfig() (*HiveSourceSpec, error) {
+	return getTypedConfig[HiveSourceSpec](s.Config)
 }
 
 // KafkaSourceSpec defines Kafka source configuration
@@ -846,7 +851,7 @@ type KeycloakConfig struct {
 // SinkSpec defines the sink configuration (type + config).
 // +kubebuilder:pruning:PreserveUnknownFields
 type SinkSpec struct {
-	// Type of sink: kafka, postgresql, trino, clickhouse, nessie, or plugin type
+	// Type of sink: kafka, postgresql, trino, clickhouse, nessie, iceberg, hive, or plugin type
 	Type string `json:"type"`
 
 	// Config holds connector configuration. Structure depends on type.
@@ -883,6 +888,11 @@ func (s *SinkSpec) GetNessieConfig() (*NessieSinkSpec, error) {
 // GetIcebergConfig returns Iceberg REST catalog sink config.
 func (s *SinkSpec) GetIcebergConfig() (*IcebergSinkSpec, error) {
 	return getTypedConfig[IcebergSinkSpec](s.Config)
+}
+
+// GetHiveConfig returns Hive Metastore sink config.
+func (s *SinkSpec) GetHiveConfig() (*HiveSinkSpec, error) {
+	return getTypedConfig[HiveSinkSpec](s.Config)
 }
 
 // NessieSinkSpec defines Nessie (Iceberg REST catalog) sink configuration.
@@ -1081,6 +1091,108 @@ type IcebergSinkSpec struct {
 	// SecretAccessKeySecretRef references a Kubernetes Secret key for the S3 secret access key.
 	// +optional
 	SecretAccessKeySecretRef *SecretRef `json:"secretAccessKeySecretRef,omitempty"`
+}
+
+// HiveEndpointSpec is the shared Hive Metastore connection for source and sink.
+type HiveEndpointSpec struct {
+	// MetastoreURI is the Hive Metastore Thrift address (for example thrift://hive-metastore:9083).
+	MetastoreURI string `json:"metastoreURI"`
+
+	// Database is the Hive database name.
+	Database string `json:"database"`
+
+	// Table is the Hive table name.
+	Table string `json:"table"`
+
+	// MetastoreURISecretRef references a Kubernetes secret for the metastore URI.
+	// +optional
+	MetastoreURISecretRef *SecretRef `json:"metastoreURISecretRef,omitempty"`
+
+	// DatabaseSecretRef references a Kubernetes secret for the database name.
+	// +optional
+	DatabaseSecretRef *SecretRef `json:"databaseSecretRef,omitempty"`
+
+	// TableSecretRef references a Kubernetes secret for the table name.
+	// +optional
+	TableSecretRef *SecretRef `json:"tableSecretRef,omitempty"`
+
+	// S3Endpoint is an S3-compatible API endpoint. When empty, the AWS SDK default endpoint is used.
+	// +optional
+	S3Endpoint string `json:"s3Endpoint,omitempty"`
+
+	// S3Region is the region for object storage operations.
+	// +optional
+	S3Region string `json:"s3Region,omitempty"`
+
+	// AccessKey is an inline S3 access key. Prefer AccessKeySecretRef in production.
+	// +optional
+	AccessKey string `json:"accessKey,omitempty"`
+
+	// SecretKey is an inline S3 secret key. Prefer SecretAccessKeySecretRef in production.
+	// +optional
+	SecretKey string `json:"secretKey,omitempty"`
+
+	// ForcePathStyle forces path-style S3 addressing. When unset, path style is used only if S3Endpoint is set.
+	// +optional
+	ForcePathStyle *bool `json:"forcePathStyle,omitempty"`
+
+	// AccessKeySecretRef references a Kubernetes Secret for the S3 access key.
+	// The value is injected as AWS_ACCESS_KEY_ID and is not copied into the processor ConfigMap.
+	// +optional
+	AccessKeySecretRef *SecretRef `json:"accessKeySecretRef,omitempty"`
+
+	// SecretAccessKeySecretRef references a Kubernetes Secret for the S3 secret key.
+	// +optional
+	SecretAccessKeySecretRef *SecretRef `json:"secretAccessKeySecretRef,omitempty"`
+
+	// HDFSUser is the remote user for hdfs://host:port locations.
+	// +optional
+	HDFSUser string `json:"hdfsUser,omitempty"`
+}
+
+// HiveSourceSpec reads a Parquet Hive table via the Hive Metastore.
+type HiveSourceSpec struct {
+	HiveEndpointSpec `json:",inline"`
+
+	// PollInterval in seconds between polls (default 10).
+	// +optional
+	PollInterval *int32 `json:"pollInterval,omitempty"`
+
+	// MaxRowsPerPoll caps rows emitted per poll. 0 or unset means no row cap.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxRowsPerPoll *int32 `json:"maxRowsPerPoll,omitempty"`
+
+	// MaxBytesPerPoll caps approximate payload bytes emitted per poll. 0 or unset means no byte cap.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxBytesPerPoll *int32 `json:"maxBytesPerPoll,omitempty"`
+}
+
+// HiveSinkSpec appends Parquet files to a Hive table and registers new partitions in the metastore.
+type HiveSinkSpec struct {
+	HiveEndpointSpec `json:",inline"`
+
+	// BatchSize for batch appends.
+	// +optional
+	BatchSize *int32 `json:"batchSize,omitempty"`
+
+	// BatchFlushIntervalSeconds flushes the batch after this many seconds even if BatchSize is not reached.
+	// +optional
+	BatchFlushIntervalSeconds *int32 `json:"batchFlushIntervalSeconds,omitempty"`
+
+	// AutoCreateTable creates an external Parquet table when it does not exist.
+	// Requires rawMode and location.
+	// +optional
+	AutoCreateTable *bool `json:"autoCreateTable,omitempty"`
+
+	// RawMode stores each message as JSON strings in data and _metadata columns.
+	// +optional
+	RawMode *bool `json:"rawMode,omitempty"`
+
+	// Location is the warehouse path used when AutoCreateTable creates the table (s3a://, hdfs://host:port, or file://).
+	// +optional
+	Location string `json:"location,omitempty"`
 }
 
 // FlattenMetadataSpec configures writing msg.Metadata as separate columns instead of a single _metadata field.

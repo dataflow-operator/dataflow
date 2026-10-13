@@ -167,7 +167,7 @@ func (r *DataFlowCronReconciler) reconcileSpecConfigMap(ctx context.Context, dfc
 
 func (r *DataFlowCronReconciler) reconcileProcessorManifests(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) error {
 	checkpointOn := checkpointPersistenceEnabled(resolvedSpec)
-	catalogLocalS3Secrets := catalogSinkUsesLocalObjectStorageSecretRefs(&resolvedSpec.Sink, dfc.Namespace)
+	catalogLocalS3Secrets := len(catalogObjectStorageSecretNames(resolvedSpec, dfc.Namespace)) > 0
 	if checkpointOn {
 		if _, err := createOrUpdateCheckpointConfigMap(ctx, r.Client, r.Scheme, dfc.Namespace, dfc.Name, dfc); err != nil {
 			return fmt.Errorf("checkpoint ConfigMap: %w", err)
@@ -199,7 +199,10 @@ func (r *DataFlowCronReconciler) reconcileCronJob(ctx context.Context, dfc *data
 	case dataflowv1.DataFlowCronConcurrencyReplace:
 		concurrency = batchv1.ReplaceConcurrent
 	}
-	jobTemplate := r.buildFirstStepJobTemplate(dfc, resolvedSpec)
+	jobTemplate, err := r.buildFirstStepJobTemplate(ctx, dfc, resolvedSpec)
+	if err != nil {
+		return err
+	}
 	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: dfc.Namespace},
 		Spec: batchv1.CronJobSpec{
@@ -216,7 +219,7 @@ func (r *DataFlowCronReconciler) reconcileCronJob(ctx context.Context, dfc *data
 		return err
 	}
 	var existing batchv1.CronJob
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: dfc.Namespace}, &existing)
+	err = r.Get(ctx, types.NamespacedName{Name: name, Namespace: dfc.Namespace}, &existing)
 	if apierrors.IsNotFound(err) {
 		return r.Create(ctx, cronJob)
 	}
@@ -227,20 +230,24 @@ func (r *DataFlowCronReconciler) reconcileCronJob(ctx context.Context, dfc *data
 	return r.Update(ctx, &existing)
 }
 
-func (r *DataFlowCronReconciler) buildFirstStepJobTemplate(dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) batchv1.JobTemplateSpec {
+func (r *DataFlowCronReconciler) buildFirstStepJobTemplate(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) (batchv1.JobTemplateSpec, error) {
 	labels := map[string]string{
 		dataFlowCronOwnerLabel:          dfc.Name,
 		dataFlowCronTemplateGeneratedBy: "dataflowcron-controller",
 		dataFlowCronTriggerIndexLabel:   dataFlowCronProcessorStepLabel,
 	}
+	podSpec, err := r.processorPodSpec(ctx, dfc, resolvedSpec)
+	if err != nil {
+		return batchv1.JobTemplateSpec{}, err
+	}
 	return batchv1.JobTemplateSpec{
 		Spec: batchv1.JobSpec{
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       r.processorPodSpec(dfc, resolvedSpec),
+				Spec:       podSpec,
 			},
 		},
-	}
+	}, nil
 }
 
 func (r *DataFlowCronReconciler) reconcileTriggeredJobs(ctx context.Context, req ctrl.Request, dfc *dataflowv1.DataFlowCron) error {
@@ -493,6 +500,10 @@ func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *da
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
+	podSpec, err := r.processorPodSpec(ctx, dfc, resolvedSpec)
+	if err != nil {
+		return err
+	}
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -510,7 +521,7 @@ func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *da
 					dataFlowCronRunIDLabel:        runID,
 					dataFlowCronTriggerIndexLabel: dataFlowCronProcessorStepLabel,
 				}},
-				Spec: r.processorPodSpec(dfc, resolvedSpec),
+				Spec: podSpec,
 			},
 		},
 	}
@@ -520,7 +531,17 @@ func (r *DataFlowCronReconciler) ensureProcessorJob(ctx context.Context, dfc *da
 	return r.Create(ctx, job)
 }
 
-func (r *DataFlowCronReconciler) processorPodSpec(dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) corev1.PodSpec {
+func (r *DataFlowCronReconciler) processorPodSpec(ctx context.Context, dfc *dataflowv1.DataFlowCron, resolvedSpec *dataflowv1.DataFlowSpec) (corev1.PodSpec, error) {
+	env := []corev1.EnvVar{
+		{Name: "LOG_LEVEL", Value: processorLogLevel()},
+	}
+	if resolvedSpec != nil {
+		s3Env, err := catalogObjectStorageEnvForSpec(ctx, r.secretResolver, dfc.Namespace, resolvedSpec)
+		if err != nil {
+			return corev1.PodSpec{}, err
+		}
+		env = append(env, s3Env...)
+	}
 	return corev1.PodSpec{
 		RestartPolicy:      corev1.RestartPolicyNever,
 		ServiceAccountName: processorServiceAccountName(dfc.Name, resolvedSpec, dfc.Namespace),
@@ -534,9 +555,7 @@ func (r *DataFlowCronReconciler) processorPodSpec(dfc *dataflowv1.DataFlowCron, 
 					"--namespace=" + dfc.Namespace,
 					"--name=" + dfc.Name,
 				},
-				Env: []corev1.EnvVar{
-					{Name: "LOG_LEVEL", Value: processorLogLevel()},
-				},
+				Env: env,
 				VolumeMounts: []corev1.VolumeMount{{
 					Name:      "spec",
 					MountPath: "/etc/dataflow",
@@ -557,7 +576,7 @@ func (r *DataFlowCronReconciler) processorPodSpec(dfc *dataflowv1.DataFlowCron, 
 		NodeSelector:     dfc.Spec.NodeSelector,
 		Affinity:         dfc.Spec.Affinity,
 		Tolerations:      dfc.Spec.Tolerations,
-	}
+	}, nil
 }
 
 func (r *DataFlowCronReconciler) triggerToContainer(trigger dataflowv1.DataFlowCronTrigger, idx int) corev1.Container {

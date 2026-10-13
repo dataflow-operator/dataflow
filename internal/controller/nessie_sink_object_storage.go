@@ -68,9 +68,128 @@ func catalogSinkObjectStorageFromSink(sink *dataflowv1.SinkSpec) (catalogSinkObj
 			s3Endpoint:               cfg.S3Endpoint,
 			s3Region:                 cfg.S3Region,
 		}, "iceberg", true
+	case "hive":
+		cfg, err := sink.GetHiveConfig()
+		if err != nil || cfg == nil {
+			return catalogSinkObjectStorage{}, "", false
+		}
+		return hiveEndpointObjectStorage(cfg.HiveEndpointSpec), "hive", true
 	default:
 		return catalogSinkObjectStorage{}, "", false
 	}
+}
+
+func hiveEndpointObjectStorage(cfg dataflowv1.HiveEndpointSpec) catalogSinkObjectStorage {
+	return catalogSinkObjectStorage{
+		accessKeySecretRef:       cfg.AccessKeySecretRef,
+		secretAccessKeySecretRef: cfg.SecretAccessKeySecretRef,
+		s3Endpoint:               cfg.S3Endpoint,
+		s3Region:                 cfg.S3Region,
+	}
+}
+
+func catalogObjectStorageFromSource(source *dataflowv1.SourceSpec) (catalogSinkObjectStorage, string, bool) {
+	if source == nil || strings.ToLower(source.Type) != "hive" {
+		return catalogSinkObjectStorage{}, "", false
+	}
+	cfg, err := source.GetHiveConfig()
+	if err != nil || cfg == nil {
+		return catalogSinkObjectStorage{}, "", false
+	}
+	return hiveEndpointObjectStorage(cfg.HiveEndpointSpec), "hive", true
+}
+
+func catalogObjectStorageEnvForSpec(ctx context.Context, resolver *SecretResolver, dataflowNamespace string, spec *dataflowv1.DataFlowSpec) ([]corev1.EnvVar, error) {
+	if spec == nil {
+		return nil, nil
+	}
+	var lists [][]corev1.EnvVar
+	if cfg, label, ok := catalogObjectStorageFromSource(&spec.Source); ok {
+		env, err := catalogSinkObjectStorageEnvFromConfig(ctx, resolver, dataflowNamespace, cfg, label)
+		if err != nil {
+			return nil, err
+		}
+		lists = append(lists, env)
+	}
+	if cfg, label, ok := catalogSinkObjectStorageFromSink(&spec.Sink); ok {
+		env, err := catalogSinkObjectStorageEnvFromConfig(ctx, resolver, dataflowNamespace, cfg, label)
+		if err != nil {
+			return nil, err
+		}
+		lists = append(lists, env)
+	}
+	if spec.Errors != nil {
+		if cfg, label, ok := catalogSinkObjectStorageFromSink(&spec.Errors.SinkSpec); ok {
+			env, err := catalogSinkObjectStorageEnvFromConfig(ctx, resolver, dataflowNamespace, cfg, label)
+			if err != nil {
+				return nil, err
+			}
+			lists = append(lists, env)
+		}
+	}
+	return mergeObjectStorageEnv(lists...)
+}
+
+func mergeObjectStorageEnv(lists ...[]corev1.EnvVar) ([]corev1.EnvVar, error) {
+	seen := map[string]corev1.EnvVar{}
+	var order []string
+	for _, list := range lists {
+		for _, env := range list {
+			prev, ok := seen[env.Name]
+			if !ok {
+				seen[env.Name] = env
+				order = append(order, env.Name)
+				continue
+			}
+			if prev.Value != env.Value || !objectStorageEnvFromEqual(prev.ValueFrom, env.ValueFrom) {
+				return nil, fmt.Errorf("conflicting object storage env %s", env.Name)
+			}
+		}
+	}
+	out := make([]corev1.EnvVar, 0, len(order))
+	for _, name := range order {
+		out = append(out, seen[name])
+	}
+	return out, nil
+}
+
+func objectStorageEnvFromEqual(a, b *corev1.EnvVarSource) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.SecretKeyRef == nil || b.SecretKeyRef == nil {
+		return a.SecretKeyRef == nil && b.SecretKeyRef == nil
+	}
+	return a.SecretKeyRef.Name == b.SecretKeyRef.Name && a.SecretKeyRef.Key == b.SecretKeyRef.Key && a.SecretKeyRef.Optional == b.SecretKeyRef.Optional
+}
+
+func catalogObjectStorageSecretNames(spec *dataflowv1.DataFlowSpec, dataflowNamespace string) []string {
+	if spec == nil {
+		return nil
+	}
+	names := map[string]struct{}{}
+	add := func(cfg catalogSinkObjectStorage, ok bool) {
+		if !ok {
+			return
+		}
+		for _, name := range catalogSinkObjectStorageSecretNames(cfg, dataflowNamespace) {
+			names[name] = struct{}{}
+		}
+	}
+	cfg, _, ok := catalogObjectStorageFromSource(&spec.Source)
+	add(cfg, ok)
+	cfg, _, ok = catalogSinkObjectStorageFromSink(&spec.Sink)
+	add(cfg, ok)
+	if spec.Errors != nil {
+		cfg, _, ok = catalogSinkObjectStorageFromSink(&spec.Errors.SinkSpec)
+		add(cfg, ok)
+	}
+	out := make([]string, 0, len(names))
+	for name := range names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func catalogSinkUsesObjectStorageSecretRefs(sink *dataflowv1.SinkSpec) bool {
@@ -205,17 +324,27 @@ func catalogSinkObjectStorageRefsSecret(df *dataflowv1.DataFlow, secret *corev1.
 	if df == nil || secret == nil {
 		return false
 	}
-	cfg, _, ok := catalogSinkObjectStorageFromSink(&df.Spec.Sink)
-	if !ok {
-		return false
-	}
 	match := func(ref *dataflowv1.SecretRef) bool {
 		if ref == nil || ref.Name != secret.Name {
 			return false
 		}
 		return effectiveSecretNamespace(ref, df.Namespace) == secret.Namespace
 	}
-	return match(cfg.accessKeySecretRef) || match(cfg.secretAccessKeySecretRef)
+	refs := func(cfg catalogSinkObjectStorage, ok bool) bool {
+		return ok && (match(cfg.accessKeySecretRef) || match(cfg.secretAccessKeySecretRef))
+	}
+	if cfg, _, ok := catalogObjectStorageFromSource(&df.Spec.Source); refs(cfg, ok) {
+		return true
+	}
+	if cfg, _, ok := catalogSinkObjectStorageFromSink(&df.Spec.Sink); refs(cfg, ok) {
+		return true
+	}
+	if df.Spec.Errors != nil {
+		if cfg, _, ok := catalogSinkObjectStorageFromSink(&df.Spec.Errors.SinkSpec); refs(cfg, ok) {
+			return true
+		}
+	}
+	return false
 }
 
 func nessieSinkUsesLocalObjectStorageSecretRefs(sink *dataflowv1.SinkSpec, dataflowNamespace string) bool {

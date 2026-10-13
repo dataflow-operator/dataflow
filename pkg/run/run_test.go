@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	dataflowv1 "github.com/dataflow-operator/dataflow/api/v1"
+	"github.com/dataflow-operator/dataflow/pkg/providers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -81,11 +83,38 @@ func TestRun_OnceRejectsStreamingSources(t *testing.T) {
 }
 
 func TestSourceExhausts(t *testing.T) {
-	for _, sourceType := range []string{"postgresql", "clickhouse", "trino", "iceberg", "nessie"} {
-		assert.True(t, SourceExhausts(sourceType), sourceType)
+	want := map[string]bool{
+		"clickhouse":     true,
+		"hive":           true,
+		"iceberg":        true,
+		"kafka":          false,
+		"nessie":         true,
+		"postgresql":     true,
+		"postgresql-cdc": false,
+		"trino":          true,
 	}
-	assert.False(t, SourceExhausts("kafka"))
-	assert.False(t, SourceExhausts("postgresql-cdc"))
+	listed := providers.ListSourceTypes()
+	require.NotEmpty(t, listed)
+	got := make(map[string]bool, len(listed))
+	for _, sourceType := range listed {
+		got[sourceType] = SourceExhausts(sourceType)
+	}
+	assert.Equal(t, want, got)
+}
+
+func TestOnceUnsupportedErrorListsExhaustingSources(t *testing.T) {
+	err := onceUnsupportedError("kafka")
+	require.Error(t, err)
+	_, supported, ok := strings.Cut(err.Error(), "supported sources: ")
+	require.True(t, ok)
+	supported, _, _ = strings.Cut(supported, ".")
+	var want []string
+	for _, sourceType := range providers.ListSourceTypes() {
+		if SourceExhausts(sourceType) {
+			want = append(want, sourceType)
+		}
+	}
+	assert.Equal(t, want, strings.Split(supported, ", "))
 }
 
 func TestRun_ResetCheckpointClearsFile(t *testing.T) {

@@ -34,6 +34,9 @@ func TestDefaultsMatchRecommendedMins(t *testing.T) {
 	if DefaultIcebergBatchSize != RecommendedMinIcebergBatchSize {
 		t.Fatalf("iceberg default %d != recommended min %d", DefaultIcebergBatchSize, RecommendedMinIcebergBatchSize)
 	}
+	if DefaultHiveBatchSize != RecommendedMinHiveBatchSize {
+		t.Fatalf("hive default %d != recommended min %d", DefaultHiveBatchSize, RecommendedMinHiveBatchSize)
+	}
 }
 
 func TestDefaultsPositive(t *testing.T) {
@@ -43,6 +46,7 @@ func TestDefaultsPositive(t *testing.T) {
 		"trino":      DefaultTrinoBatchSize,
 		"nessie":     DefaultNessieBatchSize,
 		"iceberg":    DefaultIcebergBatchSize,
+		"hive":       DefaultHiveBatchSize,
 		"flushSec":   DefaultBatchFlushIntervalSeconds,
 	} {
 		if v <= 0 {

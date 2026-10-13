@@ -187,6 +187,7 @@ func sourceEntries() []connectorEntry {
 		{Type: "clickhouse", Sample: v1.ClickHouseSourceSpec{}, Description: "ClickHouse source configuration"},
 		{Type: "nessie", Sample: v1.NessieSourceSpec{}, Description: "Nessie / Iceberg catalog source configuration"},
 		{Type: "iceberg", Sample: v1.IcebergSourceSpec{}, Description: "Apache Iceberg REST catalog source configuration"},
+		{Type: "hive", Sample: v1.HiveSourceSpec{}, Description: "Hive Metastore Parquet source configuration"},
 	}
 }
 
@@ -198,6 +199,7 @@ func sinkEntries() []connectorEntry {
 		{Type: "clickhouse", Sample: v1.ClickHouseSinkSpec{}, Description: "ClickHouse sink configuration"},
 		{Type: "nessie", Sample: v1.NessieSinkSpec{}, Description: "Nessie / Iceberg catalog sink configuration"},
 		{Type: "iceberg", Sample: v1.IcebergSinkSpec{}, Description: "Apache Iceberg REST catalog sink configuration"},
+		{Type: "hive", Sample: v1.HiveSinkSpec{}, Description: "Hive Metastore Parquet sink configuration"},
 	}
 }
 

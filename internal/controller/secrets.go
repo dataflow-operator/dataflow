@@ -177,6 +177,15 @@ func (r *SecretResolver) resolveSinkSpecRecursive(ctx context.Context, namespace
 				return err
 			}
 			return marshalConfig(sink.Config, &cfg)
+		case "hive":
+			var cfg dataflowv1.HiveSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveHiveSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(sink.Config, &cfg)
 		}
 	}
 	return nil
@@ -248,6 +257,15 @@ func (r *SecretResolver) resolveSourceSpec(ctx context.Context, namespace string
 				return err
 			}
 			if err := r.resolveIcebergSourceSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			return marshalConfig(source.Config, &cfg)
+		case "hive":
+			var cfg dataflowv1.HiveSourceSpec
+			if err := unmarshalConfig(source.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveHiveSourceSpec(ctx, namespace, &cfg); err != nil {
 				return err
 			}
 			return marshalConfig(source.Config, &cfg)
@@ -323,6 +341,17 @@ func (r *SecretResolver) resolveSinkSpec(ctx context.Context, namespace string, 
 				return err
 			}
 			if err := r.resolveIcebergSinkSpec(ctx, namespace, &cfg); err != nil {
+				return err
+			}
+			if err := marshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+		case "hive":
+			var cfg dataflowv1.HiveSinkSpec
+			if err := unmarshalConfig(sink.Config, &cfg); err != nil {
+				return err
+			}
+			if err := r.resolveHiveSinkSpec(ctx, namespace, &cfg); err != nil {
 				return err
 			}
 			if err := marshalConfig(sink.Config, &cfg); err != nil {
@@ -408,6 +437,17 @@ func (r *SecretResolver) resolveRouterSinks(ctx context.Context, namespace strin
 						return err
 					}
 					if err := r.resolveIcebergSinkSpec(ctx, namespace, &cfg); err != nil {
+						return err
+					}
+					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+				case "hive":
+					var cfg dataflowv1.HiveSinkSpec
+					if err := unmarshalConfig(routeSink.Config, &cfg); err != nil {
+						return err
+					}
+					if err := r.resolveHiveSinkSpec(ctx, namespace, &cfg); err != nil {
 						return err
 					}
 					if err := marshalConfig(routeSink.Config, &cfg); err != nil {
@@ -1124,6 +1164,40 @@ func (r *SecretResolver) resolveIcebergSourceSpec(ctx context.Context, namespace
 		}
 	}
 	return nil
+}
+
+func (r *SecretResolver) resolveHiveEndpoint(ctx context.Context, namespace string, spec *dataflowv1.HiveEndpointSpec) error {
+	// S3 keys stay out of the spec ConfigMap; the controller injects them as pod env.
+	if spec.MetastoreURISecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.MetastoreURISecretRef)
+		if err != nil {
+			return err
+		}
+		spec.MetastoreURI = value
+	}
+	if spec.DatabaseSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.DatabaseSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Database = value
+	}
+	if spec.TableSecretRef != nil {
+		value, err := r.ResolveSecretValue(ctx, namespace, spec.TableSecretRef)
+		if err != nil {
+			return err
+		}
+		spec.Table = value
+	}
+	return nil
+}
+
+func (r *SecretResolver) resolveHiveSourceSpec(ctx context.Context, namespace string, spec *dataflowv1.HiveSourceSpec) error {
+	return r.resolveHiveEndpoint(ctx, namespace, &spec.HiveEndpointSpec)
+}
+
+func (r *SecretResolver) resolveHiveSinkSpec(ctx context.Context, namespace string, spec *dataflowv1.HiveSinkSpec) error {
+	return r.resolveHiveEndpoint(ctx, namespace, &spec.HiveEndpointSpec)
 }
 
 func (r *SecretResolver) resolveIcebergSinkSpec(ctx context.Context, namespace string, spec *dataflowv1.IcebergSinkSpec) error {

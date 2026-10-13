@@ -44,7 +44,8 @@ const (
 	InsertField      = "insertField"
 )
 
-// keys is built from constants only — add a new transformer: new const, append here, register in factory.
+// keys is built from constants only — add a new transformer: new const, append here,
+// register a validator in api/v1, and register a factory.
 var keys = []string{
 	Timestamp,
 	Flatten,

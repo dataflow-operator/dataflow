@@ -22,7 +22,6 @@ import (
 	"sync"
 
 	v1 "github.com/dataflow-operator/dataflow/api/v1"
-	"github.com/dataflow-operator/dataflow/internal/providers"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -38,7 +37,7 @@ var (
 	sinkConnectorRegistry   = map[string]sinkConnectorFactory{}
 )
 
-func registerSourceConnector(sourceType string, factory sourceConnectorFactory, supportsCheckpoint bool) {
+func registerSourceConnector(sourceType string, factory sourceConnectorFactory) {
 	if sourceType == "" {
 		panic("connectors: source type is required")
 	}
@@ -47,11 +46,10 @@ func registerSourceConnector(sourceType string, factory sourceConnectorFactory, 
 	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
+	if _, exists := sourceConnectorRegistry[sourceType]; exists {
+		panic("connectors: duplicate source factory: " + sourceType)
+	}
 	sourceConnectorRegistry[sourceType] = factory
-	providers.RegisterSource(providers.SourceDefinition{
-		Type:               sourceType,
-		SupportsCheckpoint: supportsCheckpoint,
-	})
 }
 
 func registerSinkConnector(sinkType string, factory sinkConnectorFactory) {
@@ -63,8 +61,10 @@ func registerSinkConnector(sinkType string, factory sinkConnectorFactory) {
 	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
+	if _, exists := sinkConnectorRegistry[sinkType]; exists {
+		panic("connectors: duplicate sink factory: " + sinkType)
+	}
 	sinkConnectorRegistry[sinkType] = factory
-	providers.RegisterSink(providers.SinkDefinition{Type: sinkType})
 }
 
 // unmarshalConfig unmarshals raw extension into T. Returns (nil, nil) if raw is nil or empty.

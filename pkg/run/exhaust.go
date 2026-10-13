@@ -16,19 +16,30 @@ limitations under the License.
 
 package run
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/dataflow-operator/dataflow/pkg/providers"
+)
 
 // SourceExhausts reports whether a source closes its read channel after a snapshot
-// (empty poll). Streaming sources such as kafka and postgresql-cdc do not.
+// (empty poll). The flag is Exhausts on the source registration in pkg/providers.
+// Streaming sources such as kafka and postgresql-cdc do not exhaust.
 func SourceExhausts(sourceType string) bool {
-	switch sourceType {
-	case "postgresql", "clickhouse", "trino", "iceberg", "nessie":
-		return true
-	default:
-		return false
-	}
+	return providers.SourceExhausts(sourceType)
 }
 
 func onceUnsupportedError(sourceType string) error {
-	return fmt.Errorf("source type %q does not finish a one-shot run; supported sources: postgresql, clickhouse, trino, iceberg, nessie. Run without --once for continuous sources", sourceType)
+	return fmt.Errorf("source type %q does not finish a one-shot run; supported sources: %s. Run without --once for continuous sources", sourceType, strings.Join(exhaustingSourceTypes(), ", "))
+}
+
+func exhaustingSourceTypes() []string {
+	var types []string
+	for _, sourceType := range providers.ListSourceTypes() {
+		if providers.SourceExhausts(sourceType) {
+			types = append(types, sourceType)
+		}
+	}
+	return types
 }

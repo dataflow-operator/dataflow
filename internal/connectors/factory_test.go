@@ -165,6 +165,31 @@ func TestCreateSourceConnector_Iceberg(t *testing.T) {
 	})
 }
 
+func TestCreateSourceConnector_Hive(t *testing.T) {
+	runCreateSourceConnectorTests(t, []sourceConnectorTestCase{
+		{
+			name: "valid hive source",
+			source: func() *v1.SourceSpec {
+				cfg := v1.HiveSourceSpec{HiveEndpointSpec: v1.HiveEndpointSpec{
+					MetastoreURI: "thrift://hive:9083",
+					Database:     "default",
+					Table:        "events",
+				}}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SourceSpec{Type: "hive", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
+		},
+		{
+			name: "hive source without config",
+			source: &v1.SourceSpec{
+				Type: "hive",
+			},
+			wantErr:     true,
+			errContains: "hive source configuration is required",
+		},
+	})
+}
+
 func TestCreateSourceConnector_UnsupportedType(t *testing.T) {
 	source := &v1.SourceSpec{
 		Type: "unsupported",
@@ -268,6 +293,31 @@ func TestCreateSinkConnector_Iceberg(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "iceberg sink configuration is required",
+		},
+	})
+}
+
+func TestCreateSinkConnector_Hive(t *testing.T) {
+	runCreateSinkConnectorTests(t, []sinkConnectorTestCase{
+		{
+			name: "valid hive sink",
+			sink: func() *v1.SinkSpec {
+				cfg := v1.HiveSinkSpec{HiveEndpointSpec: v1.HiveEndpointSpec{
+					MetastoreURI: "thrift://hive:9083",
+					Database:     "default",
+					Table:        "events",
+				}}
+				raw, _ := json.Marshal(cfg)
+				return &v1.SinkSpec{Type: "hive", Config: &runtime.RawExtension{Raw: raw}}
+			}(),
+		},
+		{
+			name: "hive sink without config",
+			sink: &v1.SinkSpec{
+				Type: "hive",
+			},
+			wantErr:     true,
+			errContains: "hive sink configuration is required",
 		},
 	})
 }

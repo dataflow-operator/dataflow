@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -485,4 +486,38 @@ func TestSecretResolver_ResolveTLSConfig_CleanupTempFiles(t *testing.T) {
 	_, err = os.Stat(tempFile)
 	require.Error(t, err, "temp file should be removed after cleanup")
 	assert.True(t, os.IsNotExist(err))
+}
+
+func TestSecretResolver_ResolveHiveEndpointRefs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "hive-meta", Namespace: "default"},
+		Data: map[string][]byte{
+			"uri":      []byte("thrift://hive:9083"),
+			"database": []byte("analytics"),
+			"table":    []byte("events"),
+			"access":   []byte("AKIA"),
+		},
+	}
+	resolver := NewSecretResolver(fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build())
+	raw, err := json.Marshal(dataflowv1.HiveSourceSpec{HiveEndpointSpec: dataflowv1.HiveEndpointSpec{
+		MetastoreURISecretRef: &dataflowv1.SecretRef{Name: "hive-meta", Key: "uri"},
+		DatabaseSecretRef:     &dataflowv1.SecretRef{Name: "hive-meta", Key: "database"},
+		TableSecretRef:        &dataflowv1.SecretRef{Name: "hive-meta", Key: "table"},
+		AccessKeySecretRef:    &dataflowv1.SecretRef{Name: "hive-meta", Key: "access"},
+	}})
+	require.NoError(t, err)
+	spec := &dataflowv1.DataFlowSpec{
+		Source: dataflowv1.SourceSpec{Type: "hive", Config: &runtime.RawExtension{Raw: raw}},
+		Sink:   dataflowv1.SinkSpec{Type: "kafka", Config: &runtime.RawExtension{Raw: []byte(`{"brokers":["k:9092"],"topic":"t"}`)}},
+	}
+	resolved, err := resolver.ResolveDataFlowSpec(context.Background(), "default", spec)
+	require.NoError(t, err)
+	var cfg dataflowv1.HiveSourceSpec
+	require.NoError(t, json.Unmarshal(resolved.Source.Config.Raw, &cfg))
+	assert.Equal(t, "thrift://hive:9083", cfg.MetastoreURI)
+	assert.Equal(t, "analytics", cfg.Database)
+	assert.Equal(t, "events", cfg.Table)
+	assert.Empty(t, cfg.AccessKey)
 }

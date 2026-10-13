@@ -112,15 +112,13 @@ func createOrUpdateProcessorRBAC(
 		})
 	}
 	if resolvedSpec != nil {
-		if cfg, _, ok := catalogSinkObjectStorageFromSink(&resolvedSpec.Sink); ok {
-			if secretNames := catalogSinkObjectStorageSecretNames(cfg, namespace); len(secretNames) > 0 {
-				rules = append(rules, rbacv1.PolicyRule{
-					APIGroups:     []string{""},
-					Resources:     []string{"secrets"},
-					ResourceNames: secretNames,
-					Verbs:         []string{"get"},
-				})
-			}
+		if secretNames := catalogObjectStorageSecretNames(resolvedSpec, namespace); len(secretNames) > 0 {
+			rules = append(rules, rbacv1.PolicyRule{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				ResourceNames: secretNames,
+				Verbs:         []string{"get"},
+			})
 		}
 	}
 

@@ -26,6 +26,7 @@ const (
 	DefaultTrinoBatchSize      int32 = 10
 	DefaultNessieBatchSize     int32 = 500
 	DefaultIcebergBatchSize    int32 = 500
+	DefaultHiveBatchSize       int32 = 500
 )
 
 // RecommendedMin*BatchSize is the admission-warning floor when batchSize is set explicitly.
@@ -36,6 +37,7 @@ const (
 	RecommendedMinTrinoBatchSize      = DefaultTrinoBatchSize
 	RecommendedMinNessieBatchSize     = DefaultNessieBatchSize
 	RecommendedMinIcebergBatchSize    = DefaultIcebergBatchSize
+	RecommendedMinHiveBatchSize       = DefaultHiveBatchSize
 )
 
 // DefaultBatchFlushIntervalSeconds is the processor default when batchFlushIntervalSeconds is omitted.

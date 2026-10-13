@@ -1,0 +1,30 @@
+apiVersion: dataflow.dataflow.io/v1
+kind: DataFlow
+metadata:
+  name: kafka-to-hive
+spec:
+  source:
+    type: kafka
+    config:
+      brokers:
+        - kafka:9092
+      topic: input-topic
+      consumerGroup: dataflow-group
+  sink:
+    type: hive
+    config:
+      metastoreURI: thrift://hive-metastore:9083
+      database: analytics
+      table: events
+      batchSize: 500
+      autoCreateTable: true
+      rawMode: true
+      location: s3a://warehouse/analytics/events
+      s3Endpoint: http://minio:9000
+      s3Region: us-east-1
+      accessKeySecretRef:
+        name: hive-s3
+        key: accessKey
+      secretAccessKeySecretRef:
+        name: hive-s3
+        key: secretKey

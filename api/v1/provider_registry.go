@@ -9,53 +9,70 @@ import (
 )
 
 func init() {
+	// One record per source: validator, checkpoint, and whether a read finishes.
+	// Runtime factories bind to these types in internal/connectors and panic if the sets differ.
 	providers.RegisterSource(providers.SourceDefinition{
-		Type: "kafka",
+		Type:     "kafka",
+		Exhausts: false,
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "kafka", path, validateKafkaSource)
 		},
 	})
 	providers.RegisterSource(providers.SourceDefinition{
-		Type: "postgresql",
+		Type:               "postgresql",
+		SupportsCheckpoint: true,
+		Exhausts:           true,
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "postgresql", path, validatePostgreSQLSource)
 		},
-		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
-		Type: "postgresql-cdc",
+		Type:               "postgresql-cdc",
+		SupportsCheckpoint: true,
+		Exhausts:           false,
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "postgresql-cdc", path, validatePostgreSQLCDCSource)
 		},
-		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
-		Type: "trino",
+		Type:               "trino",
+		SupportsCheckpoint: true,
+		Exhausts:           true,
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "trino", path, validateTrinoSource)
 		},
-		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
-		Type: "clickhouse",
+		Type:               "clickhouse",
+		SupportsCheckpoint: true,
+		Exhausts:           true,
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "clickhouse", path, validateClickHouseSource)
 		},
-		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
-		Type: "nessie",
+		Type:               "nessie",
+		SupportsCheckpoint: true,
+		Exhausts:           true,
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "nessie", path, validateNessieSource)
 		},
-		SupportsCheckpoint: true,
 	})
 	providers.RegisterSource(providers.SourceDefinition{
-		Type: "iceberg",
+		Type:               "iceberg",
+		SupportsCheckpoint: true,
+		Exhausts:           true,
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSourceConfig(raw, "iceberg", path, validateIcebergSource)
 		},
+	})
+	providers.RegisterSource(providers.SourceDefinition{
+		Type:               "hive",
 		SupportsCheckpoint: true,
+		Exhausts:           true,
+		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
+			return validateSourceConfig(raw, "hive", path, validateHiveSource)
+		},
 	})
 
 	providers.RegisterSink(providers.SinkDefinition{
@@ -92,6 +109,12 @@ func init() {
 		Type: "iceberg",
 		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
 			return validateSinkConfig(raw, "iceberg", path, validateIcebergSink)
+		},
+	})
+	providers.RegisterSink(providers.SinkDefinition{
+		Type: "hive",
+		ValidateConfig: func(raw []byte, path *field.Path) field.ErrorList {
+			return validateSinkConfig(raw, "hive", path, validateHiveSink)
 		},
 	})
 }

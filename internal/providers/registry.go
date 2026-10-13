@@ -17,6 +17,7 @@ var (
 	ListSourceTypes          = pkg.ListSourceTypes
 	ListSinkTypes            = pkg.ListSinkTypes
 	SourceSupportsCheckpoint = pkg.SourceSupportsCheckpoint
+	SourceExhausts           = pkg.SourceExhausts
 	SourceValidator          = pkg.SourceValidator
 	SinkValidator            = pkg.SinkValidator
 )

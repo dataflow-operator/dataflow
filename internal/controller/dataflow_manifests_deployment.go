@@ -163,7 +163,7 @@ func (r *DataFlowReconciler) createOrUpdateDeployment(ctx context.Context, req c
 		processorSentryEnvVars()...,
 	)
 	if resolvedSpec != nil {
-		s3Env, err := catalogSinkObjectStorageEnvWithResolve(ctx, r.secretResolver, req.Namespace, &resolvedSpec.Sink)
+		s3Env, err := catalogObjectStorageEnvForSpec(ctx, r.secretResolver, req.Namespace, resolvedSpec)
 		if err != nil {
 			return fmt.Errorf("catalog sink object storage env: %w", err)
 		}

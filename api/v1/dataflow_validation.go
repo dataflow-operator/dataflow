@@ -19,6 +19,7 @@ package v1
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -602,6 +603,119 @@ func validateIcebergSink(i *IcebergSinkSpec, f *field.Path) field.ErrorList {
 	return all
 }
 
+func validateHiveSource(h *HiveSourceSpec, f *field.Path) field.ErrorList {
+	all := validateHiveEndpoint(&h.HiveEndpointSpec, f)
+	if h.MaxRowsPerPoll != nil && *h.MaxRowsPerPoll < 0 {
+		all = append(all, field.Invalid(f.Child("maxRowsPerPoll"), *h.MaxRowsPerPoll, "must be >= 0"))
+	}
+	if h.MaxBytesPerPoll != nil && *h.MaxBytesPerPoll < 0 {
+		all = append(all, field.Invalid(f.Child("maxBytesPerPoll"), *h.MaxBytesPerPoll, "must be >= 0"))
+	}
+	return all
+}
+
+func validateHiveSink(h *HiveSinkSpec, f *field.Path) field.ErrorList {
+	all := validateHiveEndpoint(&h.HiveEndpointSpec, f)
+	autoCreate := h.AutoCreateTable != nil && *h.AutoCreateTable
+	raw := h.RawMode != nil && *h.RawMode
+	if autoCreate && !raw {
+		all = append(all, field.Invalid(f.Child("autoCreateTable"), true, "autoCreateTable requires rawMode"))
+	}
+	if autoCreate && strings.TrimSpace(h.Location) == "" {
+		all = append(all, field.Required(f.Child("location"), "location is required when autoCreateTable is true"))
+	}
+	if loc := strings.TrimSpace(h.Location); loc != "" {
+		all = append(all, validateHiveLocation(loc, f.Child("location"))...)
+		if autoCreate && hiveLocationIsS3(loc) && !hiveHasS3Credentials(&h.HiveEndpointSpec) {
+			all = append(all, field.Required(f.Child("accessKeySecretRef"), "S3 location requires accessKey/secretKey or accessKeySecretRef/secretAccessKeySecretRef"))
+		}
+	}
+	return all
+}
+
+func validateHiveEndpoint(h *HiveEndpointSpec, f *field.Path) field.ErrorList {
+	var all field.ErrorList
+	if h.MetastoreURI == "" && h.MetastoreURISecretRef == nil {
+		all = append(all, field.Required(f.Child("metastoreURI"), "metastoreURI or metastoreURISecretRef is required"))
+	}
+	if h.Database == "" && h.DatabaseSecretRef == nil {
+		all = append(all, field.Required(f.Child("database"), "database or databaseSecretRef is required"))
+	}
+	if h.Table == "" && h.TableSecretRef == nil {
+		all = append(all, field.Required(f.Child("table"), "table or tableSecretRef is required"))
+	}
+	if h.MetastoreURISecretRef != nil {
+		all = append(all, validateSecretRef(h.MetastoreURISecretRef, f.Child("metastoreURISecretRef"))...)
+	}
+	if h.DatabaseSecretRef != nil {
+		all = append(all, validateSecretRef(h.DatabaseSecretRef, f.Child("databaseSecretRef"))...)
+	}
+	if h.TableSecretRef != nil {
+		all = append(all, validateSecretRef(h.TableSecretRef, f.Child("tableSecretRef"))...)
+	}
+	hasAK := h.AccessKey != ""
+	hasSK := h.SecretKey != ""
+	if hasAK != hasSK {
+		all = append(all, field.Invalid(f.Child("accessKey"), h.AccessKey, "accessKey and secretKey must both be set or both omitted"))
+	}
+	hasAKRef := h.AccessKeySecretRef != nil
+	hasSKRef := h.SecretAccessKeySecretRef != nil
+	if hasAKRef != hasSKRef {
+		all = append(all, field.Invalid(f.Child("accessKeySecretRef"), h.AccessKeySecretRef, "accessKeySecretRef and secretAccessKeySecretRef must both be set or both omitted"))
+	}
+	if h.AccessKeySecretRef != nil {
+		all = append(all, validateSecretRef(h.AccessKeySecretRef, f.Child("accessKeySecretRef"))...)
+	}
+	if h.SecretAccessKeySecretRef != nil {
+		all = append(all, validateSecretRef(h.SecretAccessKeySecretRef, f.Child("secretAccessKeySecretRef"))...)
+	}
+	return all
+}
+
+func hiveHasS3Credentials(h *HiveEndpointSpec) bool {
+	if h.AccessKey != "" && h.SecretKey != "" {
+		return true
+	}
+	return h.AccessKeySecretRef != nil && h.SecretAccessKeySecretRef != nil
+}
+
+func hiveLocationIsS3(location string) bool {
+	u, err := url.Parse(location)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "s3", "s3a", "s3n":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateHiveLocation(location string, f *field.Path) field.ErrorList {
+	u, err := url.Parse(location)
+	if err != nil || u.Scheme == "" {
+		return field.ErrorList{field.Invalid(f, location, "location must be an s3a://, hdfs://host:port, or file:// URI")}
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "s3", "s3a", "s3n":
+		if u.Host == "" {
+			return field.ErrorList{field.Invalid(f, location, "S3 location requires a bucket")}
+		}
+	case "hdfs":
+		if u.Port() == "" {
+			return field.ErrorList{field.Invalid(f, location, "HDFS HA nameservice is not supported; use hdfs://host:port/path")}
+		}
+	case "file":
+		if u.Path == "" {
+			return field.ErrorList{field.Invalid(f, location, "file location requires a path")}
+		}
+	default:
+		return field.ErrorList{field.Invalid(f, location, "unsupported location scheme")}
+	}
+	return nil
+}
+
 func validateIcebergRESTAuthConfig(authType, bearerToken string, tokenSecretRef *SecretRef, basicAuth *BasicAuthConfig, oauth2ClientID string, oauth2ClientIDSecretRef *SecretRef, oauth2ClientSecret string, oauth2ClientSecretSecretRef *SecretRef, f *field.Path) field.ErrorList {
 	all := validateNessieAuthConfig(authType, bearerToken, tokenSecretRef, basicAuth, f)
 	hasOAuthID := oauth2ClientID != "" || oauth2ClientIDSecretRef != nil
@@ -994,282 +1108,12 @@ func validateTransformations(transformations []TransformationSpec, f *field.Path
 			all = append(all, field.Required(idx.Child("type"), "transformation type is required"))
 			continue
 		}
-		if !transformtypes.IsRegistered(t.Type) {
+		validator := transformtypes.Validator(t.Type)
+		if validator == nil {
 			all = append(all, field.NotSupported(idx.Child("type"), t.Type, transformtypes.All()))
 			continue
 		}
-		hasConfig := t.Config != nil && len(t.Config.Raw) > 0
-		switch t.Type {
-		case transformtypes.Timestamp:
-			if hasConfig {
-				var cfg TimestampTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid timestamp config: "+err.Error()))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "timestamp transformation configuration is required"))
-			}
-		case transformtypes.Flatten:
-			if hasConfig {
-				var cfg FlattenTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid flatten config: "+err.Error()))
-				} else if cfg.Field == "" {
-					all = append(all, field.Required(idx.Child("config", "field"), "field is required"))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "flatten transformation configuration is required"))
-			}
-		case transformtypes.Filter:
-			if hasConfig {
-				var cfg FilterTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid filter config: "+err.Error()))
-				} else if cfg.Condition == "" {
-					all = append(all, field.Required(idx.Child("config", "condition"), "condition is required"))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "filter transformation configuration is required"))
-			}
-		case transformtypes.Mask:
-			if hasConfig {
-				var cfg MaskTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid mask config: "+err.Error()))
-				} else if len(cfg.Fields) == 0 {
-					all = append(all, field.Required(idx.Child("config", "fields"), "at least one field is required"))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "mask transformation configuration is required"))
-			}
-		case transformtypes.Router:
-			routerCfg, _ := t.GetRouterConfig()
-			if routerCfg == nil {
-				all = append(all, field.Required(idx.Child("config"), "router transformation configuration is required (config or router)"))
-			} else {
-				routesPath := idx.Child("router", "routes")
-				if hasConfig {
-					routesPath = idx.Child("config", "routes")
-				}
-				for j, route := range routerCfg.Routes {
-					if route.Condition == "" {
-						all = append(all, field.Required(routesPath.Index(j).Child("condition"), "condition is required"))
-					}
-					all = append(all, validateSink(&route.Sink, routesPath.Index(j).Child("sink"))...)
-				}
-			}
-		case transformtypes.Select:
-			if hasConfig {
-				var cfg SelectTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid select config: "+err.Error()))
-				} else if len(cfg.Fields) == 0 {
-					all = append(all, field.Required(idx.Child("config", "fields"), "at least one field is required"))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "select transformation configuration is required"))
-			}
-		case transformtypes.Remove:
-			if hasConfig {
-				var cfg RemoveTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid remove config: "+err.Error()))
-				} else if len(cfg.Fields) == 0 {
-					all = append(all, field.Required(idx.Child("config", "fields"), "at least one field is required"))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "remove transformation configuration is required"))
-			}
-		case transformtypes.SnakeCase:
-			if hasConfig {
-				var cfg SnakeCaseTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid snakeCase config: "+err.Error()))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "snakeCase transformation configuration is required"))
-			}
-		case transformtypes.CamelCase:
-			if hasConfig {
-				var cfg CamelCaseTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid camelCase config: "+err.Error()))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "camelCase transformation configuration is required"))
-			}
-		case transformtypes.DebeziumUnwrap:
-			if hasConfig {
-				var cfg DebeziumUnwrapTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid debeziumUnwrap config: "+err.Error()))
-				} else {
-					if cfg.SnapshotOperation != "" && cfg.SnapshotOperation != "insert" && cfg.SnapshotOperation != "update" {
-						all = append(all, field.NotSupported(idx.Child("config", "snapshotOperation"), cfg.SnapshotOperation, []string{"insert", "update"}))
-					}
-					for j, name := range cfg.AddSourceFields {
-						if strings.TrimSpace(name) == "" {
-							all = append(all, field.Required(idx.Child("config", "addSourceFields").Index(j), "source field name must not be empty"))
-						}
-					}
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "debeziumUnwrap transformation configuration is required"))
-			}
-		case transformtypes.ReplaceField:
-			if hasConfig {
-				var cfg ReplaceFieldTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid replaceField config: "+err.Error()))
-				} else {
-					if len(cfg.Include) > 0 && len(cfg.Exclude) > 0 {
-						all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "include and exclude are mutually exclusive"))
-					}
-					if len(cfg.Renames) == 0 && len(cfg.Include) == 0 && len(cfg.Exclude) == 0 {
-						all = append(all, field.Required(idx.Child("config"), "at least one of renames, include, or exclude is required"))
-					}
-					for j, rename := range cfg.Renames {
-						if !isValidColonMapping(rename) {
-							all = append(all, field.Invalid(idx.Child("config", "renames").Index(j), rename, "rename must be in oldPath:newPath format"))
-						}
-					}
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "replaceField transformation configuration is required"))
-			}
-		case transformtypes.HeadersToPayload:
-			if hasConfig {
-				var cfg HeadersToPayloadTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid headersToPayload config: "+err.Error()))
-				} else if len(cfg.Mappings) == 0 {
-					all = append(all, field.Required(idx.Child("config", "mappings"), "at least one mapping is required"))
-				} else {
-					for j, mapping := range cfg.Mappings {
-						if !isValidColonMapping(mapping) {
-							all = append(all, field.Invalid(idx.Child("config", "mappings").Index(j), mapping, "mapping must be in headerName:fieldPath format"))
-						}
-					}
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "headersToPayload transformation configuration is required"))
-			}
-		case transformtypes.StructFlatten:
-			if hasConfig {
-				var cfg StructFlattenTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid structFlatten config: "+err.Error()))
-				} else if err := validateStructFlattenDelimiter(t.Config.Raw); err != nil {
-					all = append(all, field.Invalid(idx.Child("config", "delimiter"), cfg.Delimiter, err.Error()))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "structFlatten transformation configuration is required"))
-			}
-		case transformtypes.ExtractField:
-			if hasConfig {
-				var cfg ExtractFieldTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid extractField config: "+err.Error()))
-				} else if normalizeJSONPathField(cfg.Field) == "" {
-					all = append(all, field.Required(idx.Child("config", "field"), "field is required"))
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "extractField transformation configuration is required"))
-			}
-		case transformtypes.HoistField:
-			if hasConfig {
-				var cfg HoistFieldTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid hoistField config: "+err.Error()))
-				} else {
-					fieldName := strings.TrimSpace(cfg.Field)
-					if fieldName == "" {
-						all = append(all, field.Required(idx.Child("config", "field"), "field is required"))
-					} else if strings.Contains(fieldName, ".") {
-						all = append(all, field.Invalid(idx.Child("config", "field"), cfg.Field, "field must be a simple top-level key without dots"))
-					}
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "hoistField transformation configuration is required"))
-			}
-		case transformtypes.Cast:
-			if hasConfig {
-				var cfg CastTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid cast config: "+err.Error()))
-				} else if len(cfg.Spec) == 0 {
-					all = append(all, field.Required(idx.Child("config", "spec"), "spec is required and must be non-empty"))
-				} else {
-					for path, typ := range cfg.Spec {
-						if normalizeJSONPathField(path) == "" {
-							all = append(all, field.Invalid(idx.Child("config", "spec"), path, "spec keys must be non-empty JSONPaths"))
-							continue
-						}
-						if !isValidCastType(typ) {
-							all = append(all, field.NotSupported(idx.Child("config", "spec").Key(path), typ, validCastTypes))
-						}
-					}
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "cast transformation configuration is required"))
-			}
-		case transformtypes.Timezone:
-			if hasConfig {
-				var cfg TimezoneTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid timezone config: "+err.Error()))
-				} else {
-					if strings.TrimSpace(cfg.Timezone) == "" {
-						all = append(all, field.Required(idx.Child("config", "timezone"), "timezone is required"))
-					} else if _, err := LoadTimezoneLocation(cfg.Timezone); err != nil {
-						all = append(all, field.Invalid(idx.Child("config", "timezone"), cfg.Timezone, "must be a valid IANA timezone or ±HH:MM offset"))
-					}
-					if len(cfg.Fields) == 0 {
-						all = append(all, field.Required(idx.Child("config", "fields"), "fields is required and must be non-empty"))
-					} else {
-						for i, f := range cfg.Fields {
-							if normalizeJSONPathField(f) == "" {
-								all = append(all, field.Invalid(idx.Child("config", "fields").Index(i), f, "field path must be a non-empty JSONPath"))
-							}
-						}
-					}
-					if src := strings.TrimSpace(cfg.SourceTimezone); src != "" {
-						if _, err := LoadTimezoneLocation(src); err != nil {
-							all = append(all, field.Invalid(idx.Child("config", "sourceTimezone"), cfg.SourceTimezone, "must be a valid IANA timezone or ±HH:MM offset"))
-						}
-					}
-					if format := strings.TrimSpace(cfg.Format); format != "" && !isValidTimezoneFormat(format) {
-						all = append(all, field.NotSupported(idx.Child("config", "format"), cfg.Format, validTimezoneFormats))
-					}
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "timezone transformation configuration is required"))
-			}
-		case transformtypes.InsertField:
-			if hasConfig {
-				var cfg InsertFieldTransformation
-				if err := json.Unmarshal(t.Config.Raw, &cfg); err != nil {
-					all = append(all, field.Invalid(idx.Child("config"), string(t.Config.Raw), "invalid insertField config: "+err.Error()))
-				} else if len(cfg.Fields) == 0 {
-					all = append(all, field.Required(idx.Child("config", "fields"), "fields is required and must be non-empty"))
-				} else {
-					for path, value := range cfg.Fields {
-						if normalizeJSONPathField(path) == "" {
-							all = append(all, field.Invalid(idx.Child("config", "fields"), path, "fields keys must be non-empty JSONPaths"))
-							continue
-						}
-						if strings.HasPrefix(value, "json:") {
-							raw := strings.TrimPrefix(value, "json:")
-							if !json.Valid([]byte(raw)) {
-								all = append(all, field.Invalid(idx.Child("config", "fields").Key(path), value, "json: value must be valid JSON"))
-							}
-						}
-					}
-				}
-			} else {
-				all = append(all, field.Required(idx.Child("config"), "insertField transformation configuration is required"))
-			}
-		}
+		all = append(all, validator(safeRawConfig(t.Config), idx)...)
 	}
 	return all
 }

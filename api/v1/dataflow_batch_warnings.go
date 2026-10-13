@@ -32,6 +32,7 @@ const (
 	RecommendedTrinoSinkBatchSize      = sinkbatch.RecommendedMinTrinoBatchSize
 	RecommendedNessieSinkBatchSize     = sinkbatch.RecommendedMinNessieBatchSize
 	RecommendedIcebergSinkBatchSize    = sinkbatch.RecommendedMinIcebergBatchSize
+	RecommendedHiveSinkBatchSize       = sinkbatch.RecommendedMinHiveBatchSize
 )
 
 func warnSinkBatchSizes(spec *DataFlowSpec) admission.Warnings {
@@ -88,6 +89,12 @@ func warnOneSinkBatchSize(ref outputSinkRef) admission.Warnings {
 			return nil
 		}
 		return warnBatchSizeBelow(path, cfg.BatchSize, sinkbatch.RecommendedMinIcebergBatchSize, "iceberg")
+	case "hive":
+		cfg, err := ref.sink.GetHiveConfig()
+		if err != nil || cfg == nil {
+			return nil
+		}
+		return warnBatchSizeBelow(path, cfg.BatchSize, sinkbatch.RecommendedMinHiveBatchSize, "hive")
 	default:
 		return nil
 	}
@@ -183,6 +190,15 @@ func sinkBatchSizeForWarning(sink *SinkSpec) (int32, bool) {
 			return *cfg.BatchSize, true
 		}
 		return sinkbatch.DefaultIcebergBatchSize, true
+	case "hive":
+		cfg, err := sink.GetHiveConfig()
+		if err != nil || cfg == nil {
+			return 0, false
+		}
+		if cfg.BatchSize != nil && *cfg.BatchSize > 0 {
+			return *cfg.BatchSize, true
+		}
+		return sinkbatch.DefaultHiveBatchSize, true
 	default:
 		return 0, false
 	}

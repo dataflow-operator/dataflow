@@ -13,7 +13,10 @@ type SinkConfigValidator func(raw []byte, path *field.Path) field.ErrorList
 type SourceDefinition struct {
 	Type               string
 	SupportsCheckpoint bool
-	ValidateConfig     SourceConfigValidator
+	// Exhausts reports that a read closes after a finite snapshot.
+	// Streaming sources leave it false. Checkpoint support does not imply Exhausts.
+	Exhausts       bool
+	ValidateConfig SourceConfigValidator
 }
 
 type SinkDefinition struct {
@@ -31,15 +34,15 @@ func RegisterSource(def SourceDefinition) {
 	if def.Type == "" {
 		panic("providers: source type is required")
 	}
+	if def.ValidateConfig == nil {
+		panic("providers: source validator is required")
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	existing := sources[def.Type]
-	existing.Type = def.Type
-	existing.SupportsCheckpoint = existing.SupportsCheckpoint || def.SupportsCheckpoint
-	if def.ValidateConfig != nil {
-		existing.ValidateConfig = def.ValidateConfig
+	if _, exists := sources[def.Type]; exists {
+		panic("providers: duplicate source registration: " + def.Type)
 	}
-	sources[def.Type] = existing
+	sources[def.Type] = def
 }
 
 func RegisterSink(def SinkDefinition) {
@@ -48,12 +51,10 @@ func RegisterSink(def SinkDefinition) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	existing := sinks[def.Type]
-	existing.Type = def.Type
-	if def.ValidateConfig != nil {
-		existing.ValidateConfig = def.ValidateConfig
+	if _, exists := sinks[def.Type]; exists {
+		panic("providers: duplicate sink registration: " + def.Type)
 	}
-	sinks[def.Type] = existing
+	sinks[def.Type] = def
 }
 
 func ListSourceTypes() []string {
@@ -83,6 +84,12 @@ func SourceSupportsCheckpoint(sourceType string) bool {
 	defer mu.RUnlock()
 	def, ok := sources[sourceType]
 	return ok && def.SupportsCheckpoint
+}
+
+func SourceExhausts(sourceType string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return sources[sourceType].Exhausts
 }
 
 func SourceValidator(sourceType string) SourceConfigValidator {
